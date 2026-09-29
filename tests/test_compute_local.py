@@ -34,6 +34,7 @@ from lightcone.engine.compute.model import (
     Request,
     Resources,
     TimeLimits,
+    UnavailableOfferError,
 )
 from lightcone.engine.compute.runtime import (
     configured_directory,
@@ -42,6 +43,8 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
+
+pytestmark = pytest.mark.usefixtures("local_allocation_lock")
 
 
 @pytest.fixture
@@ -74,10 +77,13 @@ def test_singleton_survives_cli_exit_and_spans_names_and_connection_roots(
     # Independent launchers compete for the same host/user lock, with distinct catalogs.
     script = """
 import json, sys
+from pathlib import Path
+from lightcone.engine.compute import local
 from lightcone.engine.compute.local import LocalProvider
 from lightcone.engine.compute.model import (
     Connection, ComputeError, Offer, Request, Resources, TimeLimits,
 )
+local._LOCK_ROOT = Path(sys.argv[3])
 p = LocalProvider(Connection.model_validate_json(sys.argv[1]))
 offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
               max_nodes=1, time=TimeLimits(default='1m', max='1m'))
@@ -93,7 +99,8 @@ except ComputeError as exc:
     ))
     providers = [provider, other]
     processes = [subprocess.Popen(
-        [sys.executable, "-c", script, item.connection.model_dump_json(), f"local-{index}"],
+        [sys.executable, "-c", script, item.connection.model_dump_json(),
+         f"local-{index}", str(local._LOCK_ROOT)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     ) for index, item in enumerate(providers)]
     identities: list[tuple[LocalProvider, Identity]] = []
@@ -114,8 +121,11 @@ except ComputeError as exc:
         assert "already running or starting" in next(r["error"] for r in results if "error" in r)
         owner, identity = identities[0]
         _ready(owner, identity)
-        with pytest.raises(ComputeError, match="already running"):
+        with pytest.raises(ComputeError, match="already running") as conflict:
             _launch(other)
+        assert identity.encode() in str(conflict.value)
+        assert conflict.value.cluster_id is None
+        assert str(owner.root) in str(conflict.value)
         owner.terminate(identity)
         _ended(owner, identity)
         replacement = _launch(other)
@@ -128,6 +138,51 @@ except ComputeError as exc:
                 process.wait(timeout=5)
         for item, identity in identities:
             item.terminate(identity)
+
+
+def test_allocation_lock_preserves_errors_from_the_launch_body() -> None:
+    error = OSError("allocation storage is full")
+    with pytest.raises(OSError) as raised, local._allocation_lock():
+        raise error
+    assert raised.value is error
+    with local._allocation_lock():
+        pass
+
+
+@pytest.mark.parametrize("closed", [(0,), (1,), (2,), (0, 1, 2)])
+def test_singleton_lock_survives_launch_with_closed_standard_descriptors(
+    provider: LocalProvider, tmp_path: Path, closed: tuple[int, ...],
+) -> None:
+    result_path = tmp_path / "launched.json"
+    script = """
+import json, os, sys
+from pathlib import Path
+from lightcone.engine.compute import local
+from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+local._LOCK_ROOT = Path(sys.argv[2])
+p = local.LocalProvider(Connection.model_validate_json(sys.argv[1]))
+offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
+              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+plan = p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))
+for descriptor in json.loads(sys.argv[4]):
+    os.close(descriptor)
+identity = p.launch(plan)
+Path(sys.argv[3]).write_text(identity.encode())
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script, provider.connection.model_dump_json(),
+             str(local._LOCK_ROOT), str(result_path), json.dumps(closed)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        identity = Identity.decode(result_path.read_text())
+        _ready(provider, identity)
+        with pytest.raises(ComputeError, match="already running"):
+            _launch(provider)
+    finally:
+        for snapshot in provider.discover():
+            provider.terminate(snapshot.identity)
 
 
 def _ready(provider: LocalProvider, identity: Identity) -> dict[str, object]:
@@ -176,8 +231,11 @@ def _ignoring_recipe(provider: LocalProvider, identity: Identity) -> psutil.Proc
 def test_allocation_survives_launcher_and_borrowed_client_exit(provider: LocalProvider) -> None:
     script = """
 import json, sys
+from pathlib import Path
+from lightcone.engine.compute import local
 from lightcone.engine.compute.local import LocalProvider
 from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+local._LOCK_ROOT = Path(sys.argv[2])
 p = LocalProvider(Connection(**json.loads(sys.argv[1])))
 offer = Offer(
     name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
@@ -186,7 +244,8 @@ offer = Offer(
 print(p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))).encode())
 """
     launched = subprocess.run(
-        [sys.executable, "-c", script, json.dumps(provider.connection.model_dump())],
+        [sys.executable, "-c", script, json.dumps(provider.connection.model_dump()),
+         str(local._LOCK_ROOT)],
         check=True,
         capture_output=True,
         text=True,
@@ -248,51 +307,44 @@ def test_builtin_allocation_can_be_reopened_in_another_process_without_a_catalog
     from lightcone.engine.compute import Compute
     from lightcone.engine.compute.model import GIB
 
-    expanduser = Path.expanduser
-
-    def expand(path: Path) -> Path:
-        if str(path) == "~":
-            return tmp_path
-        if str(path).startswith("~/"):
-            return tmp_path / str(path)[2:]
-        return expanduser(path)
-
-    monkeypatch.setattr(Path, "expanduser", expand)
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
     monkeypatch.setattr("dask.system.CPU_COUNT", 1)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
-    result = CliRunner().invoke(main, [
-        "compute", "launch", "--wait", "--time", "1m", "--timeout", "20", "--json",
-    ])
-    data = json.loads(result.stdout)
-    identity = Identity.decode(data["id"])
     try:
+        result = CliRunner().invoke(main, [
+            "compute", "launch", "--wait", "--time", "1m", "--timeout", "20", "--json",
+        ])
         assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        identity = Identity.decode(data["id"])
         assert data["ready"] and data["name"] == "local"
         script = """
 import sys
-from pathlib import Path
-expanduser = Path.expanduser
-def expand(path):
-    if str(path) == '~':
-        return Path(sys.argv[1])
-    if str(path).startswith('~/'):
-        return Path(sys.argv[1]) / str(path)[2:]
-    return expanduser(path)
-Path.expanduser = expand
 from lightcone.engine.compute import Compute, connect
-assert Compute().status(sys.argv[2], wait=True, timeout=20).ready
-with connect(sys.argv[2]) as client:
+assert Compute().status(sys.argv[1], wait=True, timeout=20).ready
+with connect(sys.argv[1]) as client:
     print(client.submit(sum, [4, 5]).result(timeout=5))
 """
         result = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path), identity.encode()],
+            [sys.executable, "-c", script, identity.encode()],
             capture_output=True, text=True, timeout=30, check=True,
         )
         assert result.stdout.strip() == "9"
         assert not (tmp_path / ".lightcone" / "compute.yaml").exists()
+        builtin = LocalProvider(Compute().catalog.connections["local"])
+        with monkeypatch.context() as other_catalog:
+            other_catalog.setenv("LC_COMPUTE_CONFIG", str(tmp_path / "other.yaml"))
+            with pytest.raises(ComputeError, match="already running") as conflict:
+                _launch(builtin)
+            command = ["env", "-u", "LC_COMPUTE_CONFIG", "lc", "compute", "down", identity.encode()]
+            assert " ".join(command) in str(conflict.value)
+            stopped = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            assert stopped.returncode == 0, stopped.stderr
     finally:
-        Compute().down(identity.encode())
+        # Discovery also covers a successful launch whose CLI output is malformed.
+        for snapshot in Compute().discover()[0]:
+            Compute().down(snapshot.identity.encode())
     assert Compute().status(identity.encode()).phase == "ended"
     assert Compute().discover() == ([], {})
 
@@ -377,6 +429,13 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
         # A new adapter reconstructs the name from the existing native locator.
         assert [item.identity for item in LocalProvider(provider.connection).discover()] == [first]
         assert Compute().status("analysis", wait=True, timeout=20).identity == first
+        with monkeypatch.context() as other_catalog:
+            other_catalog.setenv("LC_COMPUTE_CONFIG", str(tmp_path / "other.yaml"))
+            with pytest.raises(ComputeError, match="already running") as conflict:
+                _launch(provider)
+        assert str(catalog) in str(conflict.value)
+        assert first.encode() in str(conflict.value)
+        assert conflict.value.cluster_id is None
         with connect("analysis") as client:
             assert client.submit(sum, [7, 8]).result(timeout=5) == 15
         Compute().down("analysis")
@@ -394,10 +453,14 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
 
 def test_walltime_expires_without_a_connected_client(provider: LocalProvider) -> None:
     identity = _launch(provider, seconds=2)
+    identities = [identity]
     try:
         _ended(provider, identity, timeout=6)
+        # Native exit and release of the owner's last kernel descriptor can differ.
+        identities.append(_launch(provider))
     finally:
-        provider.terminate(identity)
+        for allocation in identities:
+            provider.terminate(allocation)
 
 
 @pytest.mark.parametrize("ending", ["down", "walltime"])
@@ -581,6 +644,8 @@ def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
         patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
         with pytest.raises(ComputeError, match="cannot execute"):
             _launch(provider)
+    assert list(provider.root.iterdir()) == []
+    assert list(Path(provider.connection.launch["scratch_root"]).iterdir()) == []
     # A failed spawn must release the singleton lock as well as its private files.
     identity = _launch(provider)
     try:
@@ -592,6 +657,120 @@ def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
         assert [snapshot.identity for snapshot in provider.discover()] == [identity]
     finally:
         provider.terminate(identity)
+
+
+def test_failed_initial_launch_write_removes_unpublished_files_and_releases_lock(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(path: Path, value: dict[str, Any]) -> None:
+        if path.name == "launch.json":
+            raise OSError("allocation storage is full")
+        write_private_json(path, value)
+
+    monkeypatch.setattr(local, "write_private_json", fail)
+    with pytest.raises(ComputeError, match="cannot start.*storage is full"):
+        _launch(provider)
+    assert list(provider.root.iterdir()) == []
+    assert list(Path(provider.connection.launch["scratch_root"]).iterdir()) == []
+    with local._allocation_lock():
+        pass
+
+
+def test_interrupted_launch_kills_the_unreturned_owner_and_releases_lock(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    children: list[subprocess.Popen[bytes]] = []
+    popen = subprocess.Popen
+
+    def capture(argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        process = popen(argv, **kwargs)
+        if "lightcone.engine.compute.local_runtime" in argv:
+            children.append(process)
+        return process
+
+    def interrupt(path: Path, value: dict[str, Any]) -> None:
+        if path.name == "launch.json" and value["identity"]:
+            raise KeyboardInterrupt
+        write_private_json(path, value)
+
+    monkeypatch.setattr(local.subprocess, "Popen", capture)
+    monkeypatch.setattr(local, "write_private_json", interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _launch(provider)
+        assert len(children) == 1
+        assert children[0].poll() is not None
+        assert provider.discover() == []
+        with local._allocation_lock():
+            pass
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("publication", ["identity.json", "launch.json"])
+def test_owner_exits_when_launcher_is_killed_before_startup_commit(
+    provider: LocalProvider, tmp_path: Path, publication: str,
+) -> None:
+    marker = tmp_path / "paused.json"
+    script = """
+import json, sys, time
+from pathlib import Path
+from lightcone.engine.compute import local
+from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+local._LOCK_ROOT = Path(sys.argv[2])
+write = local.write_private_json
+def pause(path, value):
+    if path.name == sys.argv[4] and (path.name != 'launch.json' or value['identity']):
+        record = value if path.name == 'identity.json' else local.read_private_json(
+            path.parent / 'identity.json')
+        checkpoint = {'pid': record['pid'], 'directory': str(path.parent)}
+        marker = Path(sys.argv[3])
+        pending = marker.with_suffix('.pending')
+        pending.write_text(json.dumps(checkpoint))
+        pending.replace(marker)
+        time.sleep(60)
+    write(path, value)
+local.write_private_json = pause
+p = local.LocalProvider(Connection.model_validate_json(sys.argv[1]))
+offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
+              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)))
+"""
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", script, provider.connection.model_dump_json(),
+         str(local._LOCK_ROOT), str(marker), publication],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    owner: psutil.Process | None = None
+    try:
+        deadline = time.monotonic() + 15
+        while not marker.exists():
+            if launcher.poll() is not None:
+                pytest.fail(launcher.communicate()[1].decode(errors="replace"))
+            assert time.monotonic() < deadline, "launcher did not reach the publication checkpoint"
+            time.sleep(0.05)
+        checkpoint = json.loads(marker.read_text())
+        owner = psutil.Process(checkpoint["pid"])
+        launcher.kill()
+        launcher.communicate(timeout=5)
+        deadline = time.monotonic() + 5
+        while owner.is_running() and owner.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "unpublished owner retained the singleton lock"
+            time.sleep(0.05)
+        assert not (Path(checkpoint["directory"]) / "connection.json").exists()
+        with local._allocation_lock():
+            pass
+    finally:
+        if launcher.poll() is None:
+            launcher.kill()
+        launcher.communicate(timeout=5)
+        if owner is not None and owner.is_running():
+            owner.kill()
+        for snapshot in provider.discover():
+            provider.terminate(snapshot.identity)
 
 
 def test_reused_pid_and_boot_identity_are_never_signalled(
@@ -911,18 +1090,23 @@ def test_configured_roots_reject_relative_parent_and_unresolvable_paths(tmp_path
         private_directory(configured_directory(loop), create=True)
 
 
-def test_local_plan_does_not_infer_policy_from_login_hostname_or_slurm_environment(
+def test_local_provider_allows_interactive_nodes_but_refuses_login_nodes_before_allocation(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setenv("SLURM_JOB_ID", "123")
-    monkeypatch.setattr(socket, "gethostname", lambda: "login01")
+    monkeypatch.setattr(socket, "gethostname", lambda: "nid200021")
     offer = Offer(
         name="small", connection="workstation", resources=Resources(cpus=1, memory_gib=0.5),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
     plan = provider.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))
     assert plan.resources == offer.resources
+    monkeypatch.setattr(socket, "gethostname", lambda: "login01")
+    with pytest.raises(UnavailableOfferError, match="NERSC login nodes"):
+        provider.plan(offer, plan.request)
+    with pytest.raises(ComputeError, match="NERSC login nodes"):
+        provider.launch(plan)
     assert not provider.root.exists()
 
 
@@ -953,13 +1137,26 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
     assert plan.details["cuda_visible_devices"] == (mask if gpus else "")
     assert plan.details["cuda_device_order"] == order
     assert not provider.root.exists()
-    monkeypatch.setattr(local, "_boot_identity", lambda: str(uuid4()))
-    popen = MagicMock(return_value=SimpleNamespace(pid=12345))
+    boot = str(uuid4())
+    monkeypatch.setattr(local, "_boot_identity", lambda: boot)
+    startup_readers: list[int] = []
+
+    def spawned(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        launch = read_private_json(Path(argv[-1]) / "launch.json")
+        startup_readers.append(os.dup(int(launch["startup_fd"])))
+        return SimpleNamespace(pid=12345)
+
+    popen = MagicMock(side_effect=spawned)
     monkeypatch.setattr(local.subprocess, "Popen", popen)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "an-ambient-mask")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "changed-after-planning")
 
-    identity = provider.launch(plan)
+    try:
+        identity = provider.launch(plan)
+        assert os.read(startup_readers[0], 1) == b"1"
+    finally:
+        for descriptor in startup_readers:
+            os.close(descriptor)
 
     assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == (mask if gpus else "")
     assert popen.call_args.kwargs["env"].get("CUDA_DEVICE_ORDER") == order
@@ -1042,10 +1239,6 @@ def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_
 
     directory = private_directory(tmp_path / "allocation", create=True)
     scratch = private_directory(tmp_path / "scratch", create=True)
-    write_private_json(directory / "launch.json", {
-        "identity": "allocation", "deadline": time.monotonic() + 60,
-        "task_slots": 1, "scratch": str(scratch),
-    })
     record = {"cpus": 1, "memory": 1024**3}
     if gpus is not None:
         record["gpus"] = gpus
@@ -1066,6 +1259,21 @@ def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_
     cluster.return_value.__enter__.return_value.scheduler.id = "Scheduler-gpu"
     monkeypatch.setattr(distributed, "LocalCluster", cluster)
 
-    local_runtime.main()
+    with local._allocation_lock() as lock_fd:
+        startup_read, startup_write = os.pipe()
+        try:
+            os.write(startup_write, b"1")
+            write_private_json(directory / "launch.json", {
+                "identity": "allocation", "deadline": time.monotonic() + 60,
+                "task_slots": 1, "scratch": str(scratch),
+                "lock_fd": lock_fd, "startup_fd": startup_read,
+            })
+            local_runtime.main()
+        finally:
+            os.close(startup_write)
+            try:
+                os.close(startup_read)
+            except OSError:
+                pass  # The runtime owns and closes its inherited startup reader.
     assert cluster.call_args.kwargs["resources"] == {"CPU": 1, "MEMORY": 1024**3, "GPU": gpus or 0}
     assert os.environ["CUDA_VISIBLE_DEVICES"] == ("3,1" if gpus else "")

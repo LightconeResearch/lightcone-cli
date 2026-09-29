@@ -28,6 +28,12 @@ the shortcut chooses the first eligible local offer. See
 Missing explicit paths and invalid catalogs are errors. Loading a catalog or
 planning with `--dry-run` creates no files or compute.
 
+Local launch and execution are automatically disabled on recognized NERSC login
+nodes, including the first run without a catalog. Interactive compute nodes remain
+eligible. This runtime guard creates no configuration file and cannot be overridden
+by `local.enabled: true`; Slurm, status, and termination remain available.
+See [local allocations](../user/cluster.md#local-allocations) for detection details.
+
 | Command | Behavior |
 |---|---|
 | `resources` | Ordered available offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |

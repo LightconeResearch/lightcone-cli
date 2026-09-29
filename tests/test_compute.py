@@ -53,6 +53,7 @@ def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(Path, "expanduser", expand)
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
+    monkeypatch.delenv("NERSC_HOST", raising=False)
     return tmp_path
 
 
@@ -493,6 +494,87 @@ def test_local_shortcut_uses_detected_capacity_without_writing_files(
     assert not list(default_home.iterdir())
 
 
+def test_nersc_login_nodes_block_first_launch_without_writing_a_catalog(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NERSC_HOST", raising=False)
+    monkeypatch.setattr("dask.system.CPU_COUNT", 1)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
+    before = compute.Compute()
+    plan = before.plan_local()
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setattr("socket.gethostname", lambda: "login07.nersc.gov")
+    service = compute.Compute()
+    assert not service.catalog.local.enabled
+    assert service.catalog.connections["local"] == plan.connection
+    assert service.resources()["offers"] == []
+    for flags in ([], ["--dry-run"]):
+        result = CliRunner().invoke(main, ["compute", "launch", *flags, "--json"])
+        assert result.exit_code == 1, result.output
+        assert "disabled on NERSC login nodes" in json.loads(result.stdout)["error"]
+    with pytest.raises(ComputeError, match="disabled on NERSC login nodes"):
+        before.launch(plan)
+    assert not list(default_home.iterdir())
+
+
+@pytest.mark.parametrize("site, hostname", [
+    ("perlmutter", "nid005678"), ("perlmutter", "workstation"), ("", "login07"),
+])
+def test_local_compute_remains_available_outside_identified_nersc_login_nodes(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch, site: str, hostname: str,
+) -> None:
+    monkeypatch.setenv("NERSC_HOST", site)
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setattr("socket.gethostname", lambda: hostname)
+    monkeypatch.setattr("dask.system.CPU_COUNT", 1)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
+    result = CliRunner().invoke(main, ["compute", "launch", "--dry-run", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["plan"]["offer"] == "local"
+    assert not list(default_home.iterdir())
+
+
+def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = compute.Compute().catalog.connections["local"]
+    identity = IDENTITY.replace(namespace=connection.namespace, native_id="5678")
+    data = yaml.safe_load(catalog.read_text())
+    data["local"] = {"enabled": True}
+    data["connections"]["workstation"] = connection.model_dump()
+    data["offers"].insert(0, {
+        **data["offers"][0], "name": "workstation", "connection": "workstation",
+    })
+    catalog.write_text(yaml.safe_dump(data))
+    local = MagicMock()
+    local.discover.return_value = []
+    local.inspect.return_value = Snapshot(identity=identity, phase="active", num_nodes=1)
+    local.connect.return_value.__enter__.return_value.scheduler_info.return_value = {
+        "workers": {"one": {}},
+    }
+    monkeypatch.setitem(compute.PROVIDERS, "local", lambda connection: local)
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+    monkeypatch.setattr("socket.gethostname", lambda: "login07")
+    service = compute.Compute()
+    assert not service.catalog.local.enabled
+    assert [offer.name for offer in service.catalog.offers] == ["quick", "large"]
+    plan = service.plan(Request.parse("4", "8"))
+    assert service.launch(plan) == IDENTITY
+    assert service.status(IDENTITY.encode()).ready
+    with compute.connect(IDENTITY.encode()) as client:
+        assert client is provider.connect.return_value.__enter__.return_value
+    with pytest.raises(ComputeError, match="disabled on NERSC login nodes"):
+        with compute.connect(identity.encode()):
+            pytest.fail("borrowed local compute on a login node")
+    local.connect.assert_not_called()
+    assert service.status(identity.encode()).ready
+    assert service.down(identity.encode()) == identity
+    local.terminate.assert_called_once_with(identity)
+    local.plan.assert_not_called()
+    local.launch.assert_not_called()
+
+
 def test_local_config_overrides_default_and_survives_disabling(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -533,6 +615,37 @@ def test_catalog_adds_local_after_remote_offers_and_shortcut_never_selects_remot
     with pytest.raises(ComputeError, match="no local offer"):
         service.plan_local(num_nodes=2)
     provider.launch.assert_not_called()
+
+
+@pytest.mark.parametrize("kind, enabled", [
+    ("connection", True), ("connection", False), ("offer", True),
+])
+def test_builtin_name_conflicts_identify_the_catalog_and_remedy(
+    catalog: Path, kind: str, enabled: bool,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["local"] = {"enabled": enabled}
+    if kind == "connection":
+        data["connections"]["local"] = data["connections"].pop("test")
+        for offer in data["offers"]:
+            offer["connection"] = "local"
+    else:
+        data["offers"][0]["name"] = "local"
+    catalog.write_text(yaml.safe_dump(data))
+    with pytest.raises(ComputeError) as error:
+        Catalog.load()
+    assert f"invalid compute catalog {catalog}" in str(error.value)
+    assert f"{kind} name 'local' is reserved for the built-in local backend" in str(error.value)
+    assert f"rename the configured {kind}" in str(error.value)
+
+
+def test_disabled_builtin_does_not_reserve_remote_offer_names(catalog: Path) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["offers"][0]["name"] = "local"
+    catalog.write_text(yaml.safe_dump(data))
+    loaded = Catalog.load()
+    assert [offer.name for offer in loaded.offers] == ["local", "large"]
+    assert loaded.connections[loaded.offers[0].connection].provider == "fake"
 
 
 def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
@@ -581,7 +694,7 @@ def test_local_policy_validation(catalog: Path, settings: object, message: str) 
         Catalog.load()
 
 
-def test_disabled_policy_blocks_explicit_local_offers_and_execution_but_allows_down(
+def test_disabled_policy_blocks_local_execution_but_allows_status_and_down(
     catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
@@ -594,6 +707,7 @@ def test_disabled_policy_blocks_explicit_local_offers_and_execution_but_allows_d
         with compute.connect(IDENTITY.encode()):
             pytest.fail("borrowed disabled local compute")
     provider.connect.assert_not_called()
+    assert service.status(IDENTITY.encode()).ready
     service.down(IDENTITY.encode())
     provider.terminate.assert_called_once_with(IDENTITY)
 

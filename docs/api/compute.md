@@ -24,6 +24,11 @@ for inspection and termination. Remote catalogs retain the implicit local offer
 unless disabled. Explicit local connections supply their own offers instead and
 cannot be combined with `local.resources`. GPU offers require explicit configuration.
 Loading creates no configuration file or allocation.
+The effective local policy also disables local offers on recognized NERSC login
+nodes: nonempty `NERSC_HOST` and a short hostname matching `login[0-9]+`.
+Explicit enablement and Slurm job environment variables do not override this
+guard; interactive compute nodes remain eligible. Local planning, launch, and
+execution check the same policy, while status and termination remain available.
 Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
 files, and invalid catalogs remain errors. Stable connection namespaces let
 separate invocations discover and attach to the same local allocations.
@@ -143,7 +148,8 @@ See [Slurm's accounting field documentation](https://slurm.schedmd.com/sacct.htm
 Execution submits ordinary tasks through the borrowed client's `submit` method.
 Dask chooses the workers and handles dependencies; invocation-specific keys prevent
 unintended reuse across commands. There is no worker-selection layer, per-worker
-preflight orchestration, source fingerprinting, or login-node guard. Driver-side
+preflight orchestration, or source fingerprinting. The local login-node guard
+does not restrict remote Slurm execution from a login node. Driver-side
 preparation and the existing task runtime/sandbox checks remain in their owners.
 
 Workers advertise standard Dask `CPU`, `MEMORY`, and `GPU` resources; memory is measured
@@ -218,7 +224,20 @@ materialization sends recipe output to stderr to leave stdout for its report.
 A host-local OS file lock limits local allocations to one per user, independent of
 connection roots and namespaces. The launcher acquires it before spawning and passes
 the descriptor to the detached owner, which retains it for its lifetime. The lock
-file is never unlinked; OS process exit releases the lock without stale-lock cleanup.
+resides under the account's home directory at
+`.lightcone/local-locks/<boot-uuid>/allocation.lock`, independently of `HOME`,
+`TMPDIR`, and catalog paths. Its boot UUID keeps hosts with a shared home separate.
+The file is never unlinked; OS process exit releases the lock without stale-lock
+cleanup. Advisory metadata identifies the owning cluster, catalog, and connection
+root when a competing launch is refused.
+The account-home filesystem must support `flock`; the login-node guard alone
+does not establish filesystem support on an interactive compute node.
+
+A startup pipe lets the owner proceed only after the launcher publishes its
+identity and launch records. If the launcher dies before completing publication,
+the pipe closes and the owner exits, releasing the lock. Failures before identity
+publication remove the launcher's private files; a published identity remains
+inspectable after a startup failure.
 
 Local teardown drains the allocation's validated process group rather than
 assuming the owner's exit proves every child stopped. Boot UUID, UID, process

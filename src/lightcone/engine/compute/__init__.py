@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import Any
 from uuid import uuid4
 
-from .catalog import Catalog
+from .catalog import Catalog, local_disabled_reason
 from .model import (
     ComputeError,
     Connection,
@@ -144,8 +144,6 @@ class Compute:
     ) -> LaunchPlan | None:
         """Match one shape and validate its provider without allocating anything."""
         connection = self.catalog.connections[offer.connection]
-        if connection.provider == "local" and not self.catalog.local.enabled:
-            return None
         if request.num_nodes > offer.max_nodes:
             return None
         if request.startup is not None and request.startup != offer.startup.class_:
@@ -175,8 +173,8 @@ class Compute:
         gpus: str = "0", num_nodes: int = 1, startup: str | None = None,
     ) -> LaunchPlan:
         """Plan the first usable local offer, without considering remote backends."""
-        if not self.catalog.local.enabled:
-            raise ComputeError("local compute is disabled by the compute configuration")
+        if reason := local_disabled_reason(self.catalog.local.enabled):
+            raise ComputeError(reason)
         name = "local" if name is None else name
         validate_name(name)
         unavailable: list[str] = []
@@ -201,8 +199,10 @@ class Compute:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Choose an unused name from native observations, then submit exactly once."""
-        if plan.connection.provider == "local" and not self.catalog.local.enabled:
-            raise ComputeError("local compute is disabled by the compute configuration")
+        if plan.connection.provider == "local" and (
+            reason := local_disabled_reason(self.catalog.local.enabled)
+        ):
+            raise ComputeError(reason)
         if plan.name is not None:
             validate_name(plan.name)
         snapshots, errors = self.discover()
@@ -294,10 +294,10 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
     service = Compute()
     provider, identity = service.resolve(cluster_id)
     connection = service.catalog.connection_for(identity.namespace)
-    if connection.provider == "local" and not service.catalog.local.enabled:
-        raise ComputeError(
-            "local compute is disabled by the compute configuration", cluster_id=identity.encode(),
-        )
+    if connection.provider == "local" and (
+        reason := local_disabled_reason(service.catalog.local.enabled)
+    ):
+        raise ComputeError(reason, cluster_id=identity.encode())
     snapshot = provider.inspect(identity)
     if snapshot.phase != "active":
         raise ComputeError(

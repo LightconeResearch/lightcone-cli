@@ -182,7 +182,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
     │   ├── model.py        # the shared Pydantic models and the Provider protocol
-    │   ├── catalog.py      # compute.yaml, or the built-in local offer
+    │   ├── catalog.py      # compute.yaml with local defaults and policy
     │   ├── runtime.py      # private files, TLS material, the scheduler config
     │   ├── local.py        # local provider: validated OS process identities
     │   ├── local_runtime.py  # the detached LocalCluster owner
@@ -1710,7 +1710,8 @@ identities are the allocation authority; standard Dask supplies execution state.
 No Lightcone server, lifecycle database, custom Dask worker, or implicit allocation.
 
 **Names are native labels, not a registry.** `launch --name analysis` chooses a name;
-otherwise launch generates `lc-` plus 12 random hexadecimal characters. Plain stdout
+otherwise the local shortcut uses `local`, and explicit resource requests generate
+`lc-` plus 12 random hexadecimal characters. Plain stdout
 contains only the name for shell capture; JSON retains the full immutable ID too.
 Resolve names through fresh discovery and refuse missing, ambiguous, or incomplete
 observations. Check existing names before submission, but do not claim atomic global
@@ -1724,15 +1725,25 @@ comment retention requires Slurm's `AccountingStoreFlags` to include `job_commen
 Resolve the Slurm command user's UID through `id -u` on the same command runner,
 and use it for every native ownership check and filter.
 
-**Local compute needs no setup.** An absent implicit `~/.lightcone/compute.yaml`
-selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
-default and two-hour maximum lifetime. It writes no catalog and starts no cluster.
+**Local compute needs no setup.** The built-in local offer provides detected usable
+logical CPUs and RAM, one node, fast startup, a 30-minute default and two-hour
+maximum lifetime. Loading the catalog writes no catalog and starts no cluster.
+`lc compute launch` without CPU/memory flags selects only local offers and defaults
+the name to `local`. `--wait` returns when the accepted allocation is ready; timeout
+or startup failure retains its ID without resubmitting or terminating it.
+Configured remote offers precede the built-in local offer in selection order.
+Explicit local connections supply their own offers instead. `local.resources`
+overrides the built-in CPU/RAM budget and cannot accompany explicit local connections.
+`local.enabled: false` blocks local launch and execution while preserving inspection
+and termination. Recognized NERSC login nodes disable local compute automatically;
+other sites can disable it in their catalogs. Native permissions remain the
+enforcement boundary.
 GPU offers require an explicit catalog and, for local launches, a nonempty
 `CUDA_VISIBLE_DEVICES` mask on Linux. No GPU auto-discovery. Local GPU capacity and
 model labels are configured, not hardware-verified; allocations do not reserve
 devices exclusively against other host programs or allocations.
-Configured catalogs replace it completely; missing explicit paths and invalid
-files are errors. Execution still requires an explicitly launched cluster's name or ID.
+Missing explicit paths and invalid files are errors. Execution still requires an
+explicitly launched cluster's name or ID.
 
 **A Slurm connection needs no launch settings (2026-09).** Every `launch` key
 defaults, and the defaults assume a home directory shared by login and compute
@@ -1869,9 +1880,12 @@ ended. Every scheduler lc launches runs under `runtime.SCHEDULER_CONFIG`, whose
 zero `events-cleanup-delay` drops a departed client's forwarded recipe output
 instead of holding it for Dask's default hour.
 
-**No login-node guard or venue module (PR #226 review).** Explicit catalog
-selection and native backend permissions determine allocation. Do not infer
-permission from hostnames, NERSC_HOST, or inherited Slurm job variables. Both
+**Block local compute on recognized NERSC login nodes (2026-09).** A nonempty
+`NERSC_HOST` plus a short hostname matching `login[0-9]+` disables local launch
+and execution, including explicit local offers and `local.enabled: true`.
+Interactive compute nodes remain eligible; inherited `SLURM_JOB_ID` never exempts
+a login node. Apply this policy at runtime without writing a configuration file.
+Keep inspection, termination, and Slurm execution available. Both execution
 commands submit ordinary tasks to the Dask scheduler without worker restrictions;
 existing task runtime gates and sandbox checks remain. Do not add a per-worker
 validation framework around ordinary Dask task submission. Shared project storage
@@ -2111,6 +2125,23 @@ recorded thin hazard demonstrating itself. `test_materialize._forge`
 unlinks before writing; a new tampering test should too.
 
 ### Recorded decisions
+
+- **Guard NERSC login nodes by default (2026-09).** This reverses the earlier
+  no-login-node-guard decision: an unconfigured first launch must not allocate a
+  whole shared login node. Detect the documented NERSC environment marker and
+  login hostname together, without DNS queries or scheduler probes. A runtime
+  restriction also covers copied or incomplete catalogs; no generated file or
+  override flag is needed. Local compute in interactive compute-node sessions
+  remains available, subject to the configured local policy.
+
+- **Local compute accompanies remote catalogs (2026-09).** The built-in offer
+  uses the host's usable CPU/RAM capacity and follows configured offers, replacing
+  the previous one-CPU/1-GiB fallback that disappeared when a catalog existed.
+  `local.resources` sets a smaller budget; explicit local connections use their
+  own offers. Login-node catalogs disable local launch and execution through
+  `local.enabled: false`. Inspection and termination stay available. One local
+  allocation per user per machine is enforced across catalogs and connection
+  roots by an OS lock held throughout the detached owner's lifetime.
 
 - **The engine is the host's uv tool, never a project dependency**
   (2026-08, reversing spec §2's engine-in-lock rule and deleting layer 3).

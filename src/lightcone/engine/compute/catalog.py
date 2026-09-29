@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 from pathlib import Path
 from typing import Annotated, Any, Self
 
@@ -23,6 +25,20 @@ from .model import (
 
 # Native boot/session evidence identifies the host, independently of its hostname.
 _LOCAL_NAMESPACE = "22c84e48-2f0a-4cd2-90a2-30ce2e909bd1"
+
+
+def local_disabled_reason(enabled: bool = True) -> str | None:
+    """Explain a local-compute refusal while retaining inspection and termination."""
+    if os.environ.get("NERSC_HOST") and re.fullmatch(
+        r"login[0-9]+", socket.gethostname().split(".", 1)[0].lower(),
+    ):
+        return (
+            "local compute is disabled on NERSC login nodes; use an interactive compute node "
+            "or configure a Slurm offer and launch with --cpus and --memory"
+        )
+    if not enabled:
+        return "local compute is disabled by the compute configuration"
+    return None
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -109,17 +125,21 @@ class Catalog(ComputeModel):
         try:
             catalog = cls.model_validate(raw)
             return catalog._with_local()
-        except ValidationError as exc:
+        except (ValidationError, ComputeError) as exc:
+            detail = validation_message(exc) if isinstance(exc, ValidationError) else str(exc)
             raise ComputeError(
-                f"invalid compute catalog {path}:\n{validation_message(exc)}"
+                f"invalid compute catalog {path}:\n{detail}"
             ) from exc
 
     def _with_local(self) -> Catalog:
         """Keep explicit local connections, or add the stable built-in connection."""
         connections = dict(self.connections)
         offers = list(self.offers)
+        local = self.local
+        if local_disabled_reason(local.enabled) is not None:
+            local = local.replace(enabled=False)
         explicit = any(connection.provider == "local" for connection in connections.values())
-        if explicit and self.local.resources is not None:
+        if explicit and local.resources is not None:
             raise ComputeError(
                 "local.resources cannot be combined with explicit local connections; "
                 "set their offer resources instead"
@@ -127,15 +147,21 @@ class Catalog(ComputeModel):
         if not explicit:
             if "local" in connections:
                 raise ComputeError(
-                    "connection name 'local' is reserved for the built-in local backend"
+                    "connection name 'local' is reserved for the built-in local backend; "
+                    "rename the configured connection and its offer references"
                 )
             # Retain this authority even when disabled so existing allocations can be stopped.
             connections["local"] = Connection(namespace=_LOCAL_NAMESPACE, provider="local")
-            if self.local.enabled:
+            if local.enabled:
+                if any(offer.name == "local" for offer in offers):
+                    raise ComputeError(
+                        "offer name 'local' is reserved for the built-in local backend; "
+                        "rename the configured offer"
+                    )
                 from dask.system import CPU_COUNT
                 from distributed.system import MEMORY_LIMIT
 
-                resources = self.local.resources or Resources.from_bytes(
+                resources = local.resources or Resources.from_bytes(
                     cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
                 )
                 offers.append(Offer(
@@ -143,11 +169,11 @@ class Catalog(ComputeModel):
                     max_nodes=1, time=TimeLimits(default="30m", max="2h"),
                     startup=Startup(class_="fast"),
                 ))
-        if not self.local.enabled:
+        if not local.enabled:
             offers = [
                 offer for offer in offers if connections[offer.connection].provider != "local"
             ]
-        return self.replace(connections=connections, offers=offers)
+        return self.replace(connections=connections, offers=offers, local=local)
 
     def connection_for(self, namespace: str) -> Connection:
         """Find the configured authority without relying on current offers."""

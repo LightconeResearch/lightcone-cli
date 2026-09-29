@@ -28,6 +28,23 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(scope="session")
+def local_allocation_lock_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Give each test session a lock root shared with its independent launchers."""
+    return tmp_path_factory.mktemp("local-allocation-locks")
+
+
+@pytest.fixture
+def local_allocation_lock(
+    local_allocation_lock_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the lifetime lock without contending with other test sessions."""
+    from lightcone.engine.compute import local
+
+    monkeypatch.setattr(local, "_LOCK_ROOT", local_allocation_lock_root)
+    monkeypatch.delenv("NERSC_HOST", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip scrubbable ``UV_*`` out of the suite's environment.

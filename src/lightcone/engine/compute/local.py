@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
+import pwd
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -20,6 +24,7 @@ from uuid import UUID, uuid4
 
 import psutil
 
+from lightcone.engine.compute.catalog import local_disabled_reason
 from lightcone.engine.compute.model import (
     ComputeError,
     Connection,
@@ -46,35 +51,85 @@ from lightcone.engine.compute.runtime import (
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
 _RETIRED = "ended.json"
+# The account home is stable even when a command overrides HOME. A boot UUID
+# separates machines sharing that home without depending on a mutable hostname.
+_LOCK_ROOT = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".lightcone" / "local-locks"
+
+
+def _above_stdio(descriptor: int) -> int:
+    """Keep inherited control descriptors clear of Popen's stdio redirections."""
+    if descriptor < 3:
+        duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        os.close(descriptor)
+        return duplicate
+    return descriptor
 
 
 @contextmanager
 def _allocation_lock() -> Iterator[int]:
-    """Hold a per-user, host-local lock across catalogs and detached owner lifetime."""
-    import fcntl
-
-    # Deliberately independent of TMPDIR, connection namespaces and configured roots.
-    # Resolve /tmp for macOS, where it is an alias of /private/tmp.
-    root = private_directory(Path("/tmp").resolve() / f"lightcone-local-{os.getuid()}", create=True)
+    """Hold a per-user, per-boot lock across catalogs and detached owner lifetime."""
+    root = private_directory(configured_directory(_LOCK_ROOT) / _boot_identity(), create=True)
+    path = root / "allocation.lock"
     descriptor: int | None = None
     try:
-        descriptor = os.open(
-            root / "allocation.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600,
-        )
-        info = os.fstat(descriptor)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-            raise ComputeError("local allocation lock must be a private file owned by you")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ComputeError(
-                "a local cluster is already running or starting for this user on this machine; "
-                "stop it with lc compute down before launching another"
-            ) from exc
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            descriptor = _above_stdio(descriptor)
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                raise ComputeError("local allocation lock must be a private file owned by you")
+            deadline = time.monotonic() + 0.1
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    # A zombie owner can still have exiting threads whose
+                    # descriptor references the kernel has not released yet.
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(0.01, remaining))
+                        continue
+                    message = (
+                        "a local cluster is already running or starting "
+                        "for this user on this machine"
+                    )
+                    try:
+                        owner = json.loads(os.pread(descriptor, 65536, 0))
+                    except (OSError, ValueError):
+                        owner = {}
+                    cluster_id = owner.get("identity") if isinstance(owner, dict) else None
+                    if isinstance(cluster_id, str) and cluster_id:
+                        command = "lc compute down " + shlex.quote(cluster_id)
+                        if owner.get("explicit_catalog") is True and isinstance(
+                            owner.get("catalog"), str,
+                        ):
+                            command = (
+                                "LC_COMPUTE_CONFIG=" + shlex.quote(owner["catalog"]) + " " + command
+                            )
+                        else:
+                            command = "env -u LC_COMPUTE_CONFIG " + command
+                        message += (
+                            f"; allocation {cluster_id} uses local namespace "
+                            f"{owner.get('namespace')!r} with connection_root "
+                            f"{owner.get('connection_root')!r} (locator {owner.get('locator')!r}); "
+                            "using that launch catalog, "
+                            f"stop it with `{command}`"
+                        )
+                    else:
+                        message += (
+                            "; its launcher is publishing the allocation identity; retry shortly"
+                        )
+                    raise ComputeError(message) from exc
+            current = path.stat(follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise ComputeError("the local allocation lock changed while it was being acquired")
+            # Stale diagnostics have no authority once the kernel grants a new lock.
+            os.ftruncate(descriptor, 0)
+        except OSError as exc:
+            raise ComputeError(f"cannot acquire the local allocation lock: {exc}") from exc
         yield descriptor
-    except OSError as exc:
-        raise ComputeError(f"cannot acquire the local allocation lock: {exc}") from exc
     finally:
         if descriptor is not None:
             # Do not unlock: the detached owner inherits this same open file description.
@@ -109,6 +164,8 @@ class LocalProvider:
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Validate a one-node local offer without creating allocation files."""
+        if reason := local_disabled_reason():
+            raise UnavailableOfferError(reason)
         if os.name != "posix":
             raise ComputeError("local allocations require POSIX process sessions and signals")
         if request.num_nodes != 1:
@@ -175,43 +232,49 @@ class LocalProvider:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Start a detached allocation owner and retain its immutable OS identity."""
+        if reason := local_disabled_reason():
+            raise ComputeError(reason)
         if plan.connection != self.connection or plan.num_nodes != 1:
             raise ComputeError("local launch plan belongs to a different connection or node count")
         if plan.name is not None:
             validate_name(plan.name)
         with _allocation_lock() as lock_fd:
-            # Also recognize allocations launched before the lifetime lock existed.
-            if self.discover():
-                raise ComputeError(
-                    "a local cluster is already running; stop it before launching another"
-                )
             return self._launch_locked(plan, lock_fd)
 
     def _launch_locked(self, plan: LaunchPlan, lock_fd: int) -> Identity:
         """Transfer the singleton lock to the allocation owner before releasing our copy."""
         boot = _boot_identity()
         token = uuid4().hex
-        directory = private_directory(self.root / token, create=True)
-        scratch = private_directory(Path(plan.details["scratch_root"]) / f"lc-{token}", create=True)
+        directory: Path | None = None
+        scratch: Path | None = None
         started = time.monotonic()
-        write_private_json(
-            directory / "launch.json",
-            {
-                "deadline": started + plan.seconds,
-                "task_slots": plan.details["task_slots_per_node"],
-                "scratch": str(scratch),
-                "identity": "",
-                "lock_fd": lock_fd,
-            },
-        )
         process: subprocess.Popen[bytes] | None = None
         identity: Identity | None = None
+        published = False
+        startup_read: int | None = None
+        startup_write: int | None = None
         environment = {**os.environ, "CUDA_VISIBLE_DEVICES": plan.details["cuda_visible_devices"]}
         if plan.details["cuda_device_order"] is None:
             environment.pop("CUDA_DEVICE_ORDER", None)
         else:
             environment["CUDA_DEVICE_ORDER"] = plan.details["cuda_device_order"]
         try:
+            directory = private_directory(self.root / token, create=True)
+            scratch = private_directory(
+                Path(plan.details["scratch_root"]) / f"lc-{token}", create=True,
+            )
+            startup_read, startup_write = os.pipe()
+            startup_read = _above_stdio(startup_read)
+            startup_write = _above_stdio(startup_write)
+            launch = {
+                "deadline": started + plan.seconds,
+                "task_slots": plan.details["task_slots_per_node"],
+                "scratch": str(scratch),
+                "identity": "",
+                "lock_fd": lock_fd,
+                "startup_fd": startup_read,
+            }
+            write_private_json(directory / "launch.json", launch)
             # This allocation outlives a command; the ordinary run-to-completion
             # subprocess seam cannot own it. Logs are discarded rather than grow.
             process = subprocess.Popen(
@@ -221,9 +284,11 @@ class LocalProvider:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
-                pass_fds=(lock_fd,),
+                pass_fds=(lock_fd, startup_read),
                 env=environment,
             )
+            os.close(startup_read)
+            startup_read = None
             identity = Identity(
                 namespace=self.connection.namespace, native_id=str(process.pid), token=token,
                 host=socket.gethostname(),
@@ -241,19 +306,26 @@ class LocalProvider:
                 "accelerator_name": plan.resources.accelerator_name or "GPU",
             }
             write_private_json(directory / "identity.json", record)
-            # The child waits for this file before publishing its TLS connection.
-            write_private_json(
-                directory / "launch.json",
-                {
-                    "deadline": started + plan.seconds,
-                    "task_slots": plan.details["task_slots_per_node"],
-                    "scratch": str(scratch),
-                    "identity": identity.encode(),
-                    "lock_fd": lock_fd,
-                },
-            )
+            published = True
+            launch["identity"] = identity.encode()
+            write_private_json(directory / "launch.json", launch)
+            owner = json.dumps({
+                "identity": identity.encode(),
+                "namespace": self.connection.namespace,
+                "connection_root": str(self.root.parent),
+                "locator": str(self.root),
+                "explicit_catalog": "LC_COMPUTE_CONFIG" in os.environ,
+                "catalog": str(Path(os.environ.get(
+                    "LC_COMPUTE_CONFIG", "~/.lightcone/compute.yaml",
+                )).expanduser().absolute()),
+            }).encode()
+            if os.pwrite(lock_fd, owner, 0) != len(owner):
+                raise OSError("cannot publish the local allocation lock owner")
+            # EOF without this byte means the launcher died before publication,
+            # including SIGKILL, which no Python exception handler can clean up.
+            os.write(startup_write, b"1")
             return identity
-        except Exception as exc:
+        except BaseException as exc:
             if process is not None:
                 # The unreturned child is still our direct Popen child; no file
                 # lookup or stale PID is needed to identify this failed launch.
@@ -262,21 +334,24 @@ class LocalProvider:
                 except ProcessLookupError:
                     pass
                 process.wait(timeout=_STOP_GRACE)
-            if identity is None:
-                # Publication is the discovery boundary. A failed spawn has no
-                # allocation to retain, and these are the only files we wrote.
-                try:
-                    (directory / "launch.json").unlink(missing_ok=True)
-                    directory.rmdir()
-                    scratch.rmdir()
-                except OSError:
-                    # Discovery ignores unpublished directories even if cleanup
-                    # is interrupted or the filesystem becomes unavailable.
-                    pass
+            if published and directory is not None:
+                self._retire(directory)
+            else:
+                # No published identity exists to retain or inspect.
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
+                if scratch is not None:
+                    shutil.rmtree(scratch, ignore_errors=True)
+            if not isinstance(exc, Exception):
+                raise
             raise ComputeError(
                 f"cannot start the local allocation: {exc}",
-                cluster_id=identity.encode() if identity is not None else None,
+                cluster_id=identity.encode() if published and identity is not None else None,
             ) from exc
+        finally:
+            for descriptor in (startup_read, startup_write):
+                if descriptor is not None:
+                    os.close(descriptor)
 
     def _directory(self, identity: Identity) -> Path:
         if (

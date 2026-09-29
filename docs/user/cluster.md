@@ -45,7 +45,9 @@ Only one local cluster can run per user on each machine. An OS lock held by the
 detached owner prevents concurrent launches, including through different names,
 catalogs, namespaces, or connection roots. End the existing cluster before
 launching another. The lock releases when its owner exits, including on failure
-or walltime expiry.
+or walltime expiry. A refusal identifies the owning cluster and its original
+catalog and connection root. Use that catalog to inspect or stop the cluster if
+the current catalog no longer includes its connection.
 An allocation owns a detached process session and standard `LocalCluster`: one
 worker process with `task_slots_per_node` threads, and a scheduler that listens
 on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
@@ -60,9 +62,19 @@ launched it. Other boot sessions are excluded from discovery, and an explicit
 ID from one is refused rather than reported as stopped. Once an allocation has
 ended, its credentials and scratch directory are removed; its full ID still
 reports `ended`.
-Local compute is available when `local.enabled` is true and the catalog exposes a valid local offer;
-Lightcone does not infer permission from login-node names or site environment
-variables. Allocation choices are explicit and native permissions still apply.
+Local compute requires an enabled local policy and a valid local offer.
+On NERSC login nodes it is disabled automatically, even with no catalog or with
+`local.enabled: true`. The guard recognizes a nonempty `NERSC_HOST` and a short
+hostname matching `login[0-9]+`; it does not perform DNS or scheduler queries.
+The guard permits compute nodes such as `nid200021`, including interactive
+sessions. A `SLURM_JOB_ID` variable does not exempt a login node.
+See NERSC's [environment conventions](https://docs.nersc.gov/environment/) and
+[interactive sessions](https://docs.nersc.gov/connect/vscode/).
+
+Local startup also requires `flock` support in the account home, where the
+singleton lock lives. NERSC documents that its compute-node home mounts do not
+support `flock`, so this separate requirement can prevent local startup there;
+the Slurm provider does not use that lock.
 
 A local connection's optional `launch` settings are `connection_root` (default
 `~/.lightcone/compute`), `scratch_root` (default: the temporary directory),
@@ -92,6 +104,10 @@ succeeding. Concurrent launches can still choose the same name, so lookup also
 refuses ambiguous names or incomplete discovery. Use a full ID to select a known
 allocation directly when another connection cannot be queried.
 
+This includes local connections when `local.enabled: false`: existing local
+allocations remain visible and can still have conflicting names. Repair a
+connection's discovery error before launching another cluster or resolving names.
+
 A name may be reused once its allocation has ended. Keep the full ID when you
 need a durable reference to one allocation; a later cluster with the same name
 has a different ID. Names are discovered from allocation metadata, without a
@@ -112,7 +128,8 @@ Both CPU and memory are required in `local.resources`; omit that block to use
 detected capacity. The same capacity validation applies to configured budgets.
 This controls the default offer, not hard OS resource limits.
 
-On a login node, disable local compute and configure Slurm offers:
+NERSC login nodes are guarded without setup. For other sites, or to disable local
+compute on every node using the catalog, set:
 
 ```yaml
 version: 1
@@ -127,12 +144,20 @@ stoppable; disabling does not kill them. Bare launch reports that local compute 
 disabled; supply CPU/memory requirements to select a Slurm allocation. Select this
 catalog on login nodes through `LC_COMPUTE_CONFIG`. This is Lightcone configuration
 policy; native site permissions enforce machine-wide restrictions.
+Leave `local.enabled` at its default to use local compute inside a NERSC
+interactive compute-node session. The login-node guard still applies, and it
+creates no configuration file.
 
 By default, a built-in `local` connection and offer accompany remote offers, with
 configured offers taking selection priority. If the catalog already defines local
 connections, those offers replace the implicit local offer; omit `local.resources`
 and size those offers directly. The no-resource shortcut selects the first eligible
 local offer and defaults its cluster name to `local`.
+
+Resource requests can select the built-in local offer when no earlier remote
+offer is eligible. Set `local.enabled: false` for catalogs that must use only remote
+compute. Without an explicit local connection, the connection name `local` is
+reserved for the built-in backend; its offer name is also reserved while enabled.
 
 The namespace is a stable UUID identifying a connection; keep it unchanged while
 that connection's clusters exist.

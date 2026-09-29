@@ -171,8 +171,9 @@ A YAML catalog supplies ordered resource offers and stable native service
 namespaces. When the implicit default file is absent, a built-in local catalog
 provides all detected usable CPUs and RAM without setup. The `local` policy can
 override that budget or disable local compute. Remote catalogs retain the default
-local offer; explicit local connections supply their own offers. GPU offers need
-an explicit catalog. Missing explicit paths and invalid files
+local offer; explicit local connections supply their own offers. A runtime guard
+disables local compute on recognized NERSC login nodes while permitting interactive
+compute nodes. GPU offers need an explicit catalog. Missing explicit paths and invalid files
 remain errors. No catalog is written and
 no allocation starts until `compute launch` resolves resources and submits once. Slurm queries
 and validated local OS identities are authoritative for allocations; Dask is the

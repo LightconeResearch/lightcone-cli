@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import select
 import signal
 import sys
 import threading
@@ -25,9 +26,10 @@ def main() -> None:
     os.umask(0o077)
     directory = private_directory(Path(sys.argv[1]))
     launch = read_private_json(directory / "launch.json")
-    if "lock_fd" in launch:
-        # Keep the inherited lock until process exit, but exclude worker execs.
-        os.set_inheritable(int(launch["lock_fd"]), False)
+    # Keep the inherited lock until process exit, but exclude worker execs.
+    os.set_inheritable(int(launch["lock_fd"]), False)
+    startup_fd = int(launch["startup_fd"])
+    os.set_inheritable(startup_fd, False)
     if os.getsid(0) != os.getpid() or os.getpgrp() != os.getpid():
         raise RuntimeError("the local allocation owner must lead its own process session")
     stopped = threading.Event()
@@ -49,10 +51,17 @@ def main() -> None:
     remaining = float(launch["deadline"]) - time.monotonic()
     signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
     try:
-        while not launch["identity"]:
-            if stopped.wait(0.01):
+        try:
+            startup = select.poll()
+            startup.register(startup_fd, select.POLLIN)
+            while not startup.poll(100):
+                if stopped.is_set():
+                    return
+            if os.read(startup_fd, 1) != b"1":
                 return
-            launch = read_private_json(directory / "launch.json")
+        finally:
+            os.close(startup_fd)
+        launch = read_private_json(directory / "launch.json")
         import dask
         from distributed import LocalCluster
 

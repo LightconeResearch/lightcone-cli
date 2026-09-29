@@ -19,6 +19,8 @@ from lightcone.engine.compute import Compute
 from lightcone.engine.compute.model import GIB, Request
 from lightcone.engine.sandbox.boundary import _STDERR_TAIL_BYTES, _Tail, write_output
 
+pytestmark = pytest.mark.usefixtures("local_allocation_lock")
+
 
 @pytest.fixture
 def detached_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:

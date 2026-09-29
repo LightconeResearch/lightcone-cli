@@ -59,8 +59,10 @@ def _duration(seconds: int) -> str:
 def compute() -> None:
     """Allocate resources, inspect clusters, and end allocations.
 
-    The catalog is LC_COMPUTE_CONFIG, else ~/.lightcone/compute.yaml, else a
-    built-in local offer.
+    Read LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml. A built-in local
+    offer follows configured offers unless local compute is disabled or
+    explicit local connections supply their own offers. Local compute is
+    automatically disabled on recognized NERSC login nodes.
     """
 
 

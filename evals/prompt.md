@@ -47,8 +47,9 @@ another name. Replace `<cluster_id>` in these commands with the returned name
 Reuse the cluster with `run` and `materialize`; neither creates compute automatically.
 
 Only one local cluster can run per user on this machine, even with different names
-or catalogs. If one already exists, inspect `lc compute status` and reuse it rather
-than launching another. `lc compute status <cluster_id> --wait` waits for an
+or catalogs. If one already exists, use the catalog identified in the refusal to
+inspect `lc compute status` and reuse it rather than launching another.
+`lc compute status <cluster_id> --wait` waits for an
 existing cluster. Launch's `--wait` defaults to a 300-second readiness timeout;
 `--timeout SECONDS` overrides it. A waiting launch that fails reports the accepted
 cluster ID and leaves the allocation unchanged: inspect it before retrying.
@@ -64,6 +65,9 @@ offer. If `local.enabled: false` is configured, respect that policy: local launc
 and execution are disabled. Inspect `lc compute resources` and supply both
 `--cpus` and `--memory` to select a configured remote allocation; `--wait` works
 there too. The no-resource shortcut never selects remote compute automatically.
+Recognized NERSC login nodes refuse local compute automatically, even without a
+catalog. Use Slurm or an interactive compute-node session; local compute remains
+eligible on those compute nodes. Do not try to override the login-node guard.
 
 ## Recipe template grammar
 
