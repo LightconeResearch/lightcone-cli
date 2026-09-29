@@ -224,7 +224,6 @@ class LocalProvider:
             offer=offer,
             request=request,
             seconds=seconds,
-            idle_seconds=offer.time.idle_seconds,
             details={
                 "python": str(python),
                 "connection_root": str(self.root),

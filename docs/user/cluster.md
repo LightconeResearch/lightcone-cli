@@ -59,11 +59,13 @@ visible where `lc` runs: a launch inside a container does not see a cluster
 started outside it.
 An allocation owns a detached process session and standard `LocalCluster`: one
 worker process with `task_slots_per_node` threads, and a scheduler that listens
-on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
-and shown as the reason by `lc compute status`. At its walltime the whole
-process session is killed with SIGKILL, so a recipe still running stops mid-write.
-When the idle timeout closes the scheduler, no task is running, and the session
-ends the same way.
+on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure, or the
+scheduler closing after its idle timeout, is kept and shown as the reason by
+`lc compute status`. At its walltime the whole process session is killed with
+SIGKILL, so a recipe still running stops mid-write. The idle timeout ends the
+session the same way. Dask tracks tasks, not processes: after an interrupted
+`lc run` or `lc materialize`, a recipe can keep running once its task is gone,
+and the idle timeout stops it too.
 `down` sends SIGTERM, waits three seconds, then sends SIGKILL.
 Private process locators are checked against the native boot UUID, UID, process
 session, and exact command containing the allocation's random token before

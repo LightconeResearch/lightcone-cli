@@ -63,9 +63,9 @@ def compute() -> None:
 
     Read LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml. A built-in local
     offer follows configured offers unless local compute is disabled or
-    explicit local connections supply their own offers; it ends after 30
-    minutes without task activity rather than at a fixed age. Local compute
-    is automatically disabled on recognized NERSC login nodes.
+    explicit local connections supply their own offers; by default it ends
+    after 30 minutes without task activity rather than at a fixed age. Local
+    compute is automatically disabled on recognized NERSC login nodes.
     """
 
 

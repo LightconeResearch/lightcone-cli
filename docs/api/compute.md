@@ -13,7 +13,7 @@ It owns no service, registry, or saved current-cluster selection.
 | `Compute.discover()` | Snapshots and per-connection errors, querying each authority once. |
 | `Compute.status(cluster_id, wait=False, timeout=300)` | Resolve a name or full ID; return native allocation state plus authenticated Dask readiness. Waiting backs off from one to 30 seconds between native queries. |
 | `Compute.down(cluster_id)` | Resolve a name or full ID, request native termination independent of scheduler health, and return the canonical `Identity`. |
-| `connect(cluster_id, timeout=10)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. |
+| `connect(cluster_id, timeout=10)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. Submits one no-op task, so a caller's preparation restarts the idle countdown. |
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
 
 `Catalog.load()` defaults to `~/.lightcone/compute.yaml`. The built-in `local`
@@ -52,8 +52,8 @@ is `memory`), and `memory_bytes` derives an exact integer. Native observations u
 keeps the configured `default`, `max`, and `idle` duration strings, each optional
 but requiring a `default` or an `idle`, and exposes `default_seconds`,
 `max_seconds`, and `idle_seconds` (`None` when unset). A `LaunchPlan` carries the
-resolved hard walltime as `seconds` and the idle timeout as `idle_seconds`, either
-of which may be `None` for a local plan; Slurm plans always have `seconds` and
+resolved hard walltime as `seconds` and derives `idle_seconds` from its offer;
+either may be `None` for a local plan, while Slurm plans always have `seconds` and
 never `idle_seconds`. `Startup.class_` corresponds to YAML `class`.
 Connection names exist only as catalog mapping keys, referenced by `Offer.connection`.
 

@@ -334,9 +334,8 @@ class TimeLimits(ComputeModel):
     def ordered_limits(self) -> Self:
         if self.default is None and self.idle is None:
             raise ValueError("time needs a default walltime or an idle timeout")
-        if self.default is not None and self.max is not None and (
-            duration(self.default) > duration(self.max)
-        ):
+        default, limit = self.default_seconds, self.max_seconds
+        if default is not None and limit is not None and default > limit:
             raise ValueError("default time exceeds its maximum")
         return self
 
@@ -427,13 +426,16 @@ class LaunchPlan(ComputeModel):
     offer: Offer
     request: Request
     seconds: PositiveInt | None
-    idle_seconds: PositiveInt | None = None
     details: dict[str, Any] = Field(default_factory=dict)
     name: str | None = None
 
     @property
     def resources(self) -> Resources:
         return self.offer.resources
+
+    @property
+    def idle_seconds(self) -> int | None:
+        return self.offer.time.idle_seconds
 
     @property
     def num_nodes(self) -> int:

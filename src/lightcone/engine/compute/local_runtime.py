@@ -46,10 +46,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGALRM, expire)
-    if launch["deadline"] is not None:
-        remaining = float(launch["deadline"]) - time.monotonic()
-        signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
     try:
+        if launch["deadline"] is not None:
+            remaining = float(launch["deadline"]) - time.monotonic()
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
         try:
             startup = select.poll()
             startup.register(startup_fd, select.POLLIN)
@@ -63,14 +63,23 @@ def main() -> None:
         launch = read_private_json(directory / "launch.json")
         import dask
         from distributed import LocalCluster
-        from distributed.core import Status
         from distributed.diagnostics.plugin import SchedulerPlugin
 
         class Closed(SchedulerPlugin):
-            """Wake the owner whenever the scheduler closes, including on its own."""
+            """End the session when the scheduler closes without the owner asking."""
 
             async def close(self) -> None:
-                stopped.set()
+                """Record why, then kill the session as the walltime does.
+
+                ``LocalCluster``'s own close would wait on the departed
+                scheduler, and the owner may not have finished starting it.
+                """
+                if not stopped.is_set():
+                    write_private_json(directory / "error.json", {
+                        "error": "the scheduler closed itself, after its idle timeout "
+                        "or at a client's request",
+                    })
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
 
         security = create_security(directory)
         allocation = read_private_json(directory / "identity.json")
@@ -91,8 +100,8 @@ def main() -> None:
                 "scheduler_file": str(directory / "scheduler.json"),
                 "dashboard": False,
                 "dashboard_address": "127.0.0.1:0",
-                # Dask's own activity test: running, queued, or new tasks reset
-                # the timer; connected clients and status queries do not.
+                # Dask's own activity test: tasks reset the timer; connected
+                # clients and status queries do not.
                 "idle_timeout": launch["idle_timeout"],
                 "plugins": [Closed()],
             },
@@ -110,11 +119,6 @@ def main() -> None:
                 {"identity": launch["identity"], "scheduler_id": cluster.scheduler.id},
             )
             stopped.wait()
-            if cluster.scheduler.status in (Status.closing, Status.closed):
-                # An idle scheduler closed itself and told its workers to close.
-                # The cluster's own close would wait on the departed scheduler,
-                # so end the session now, as the walltime does.
-                os.killpg(os.getpgrp(), signal.SIGKILL)
     except Exception as exc:
         write_private_json(directory / "error.json", {"error": str(exc)[:4096]})
         raise

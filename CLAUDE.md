@@ -2144,16 +2144,24 @@ unlinks before writing; a new tampering test should too.
   polls do not, measured) rather than a tracker of ours. `--time` stays a hard
   walltime (SIGALRM, unconditional on activity); with both, the first to fire
   ends the allocation, and the built-in offer has no `max` because a ceiling on
-  `--time` is meaningless when omitting it means unbounded. The owner learns of
-  the scheduler closing through a `SchedulerPlugin.close` hook and then
-  SIGKILLs its session like the walltime path, never through `LocalCluster`'s
-  own close: measured, that waits ~34 s on the departed scheduler, holding the
-  one-per-machine slot and the name the whole time. Slurm refuses `time.idle`
-  and still needs `time.default`: its allocations end at the native walltime,
-  and an ignored idle timeout would be a lie. Accepted residue: the idle clock
-  starts with the scheduler, so a worker slower to start than the timeout never
-  gets work; and a driver pausing between tasks (a long annex commit) counts as
-  idle.
+  `--time` is meaningless when omitting it means unbounded. When the scheduler
+  closes without the owner asking (no SIGTERM yet), a `SchedulerPlugin.close`
+  hook records the reason in `error.json` and SIGKILLs the session itself, like
+  the walltime path — from the hook, so a scheduler that idles out before
+  `LocalCluster(...)` returns still ends the owner, and never through
+  `LocalCluster`'s own close, which waits ~34 s on the departed scheduler
+  (measured), holding the one-per-machine slot and the name. `SCHEDULER_CONFIG`
+  pins `idle-timeout: None`, so only an offer sets one — ambient Dask config
+  reaches neither local nor Slurm schedulers. `compute.connect` (execution only;
+  `status` connects through the provider) submits one no-op task, so a
+  driver's preparation — annex fetch, image build, sync — starts with a full
+  countdown. Slurm refuses `time.idle` and still needs `time.default`: its
+  allocations end at the native walltime, and an ignored idle timeout would be
+  a lie. Accepted residue: a preparation longer than the timeout still loses
+  the cluster; a driver pausing between tasks (a long annex commit) counts as
+  idle; and without `--time` nothing bounds an owner whose scheduler loop
+  wedges — the walltime's SIGALRM was that bound, and a second timer only for
+  it was judged not worth its code.
 
 - **Local compute accompanies remote catalogs (2026-09).** The built-in offer
   uses the host's usable CPU/RAM capacity and follows configured offers, replacing

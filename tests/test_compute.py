@@ -657,7 +657,7 @@ def test_local_time_replaces_the_builtin_idle_timeout(
     assert (plan.seconds, plan.idle_seconds) == (None, 3600)
     assert plan.as_dict()["idle_seconds"] == 3600
     assert service.plan_local(time="8h").seconds == 8 * 3600
-    with pytest.raises(ComputeError, match="no local offer matches"):
+    with pytest.raises(ComputeError, match="local shapes and time limits"):
         service.plan_local(time="9h")
     listed = CliRunner().invoke(main, ["compute", "resources"])
     assert listed.exit_code == 0, listed.output
@@ -977,11 +977,16 @@ def test_ended_allocation_cannot_be_borrowed(catalog: Path, provider: MagicMock)
 
 
 def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> None:
-    with compute.connect(IDENTITY.encode()) as client:
-        assert client is provider.connect.return_value.__enter__.return_value
+    client = provider.connect.return_value.__enter__.return_value
+    with compute.connect(IDENTITY.encode()) as borrowed:
+        assert borrowed is client
     provider.connect.return_value.__exit__.assert_called_once()
     client.shutdown.assert_not_called()
     provider.terminate.assert_not_called()
+    # An execution connection restarts the idle countdown; status polling does not.
+    client.submit.assert_called_once_with(int, pure=False)
+    compute.Compute().status(IDENTITY.encode())
+    client.submit.assert_called_once()
 
 
 @pytest.mark.parametrize("mutation", [

@@ -195,8 +195,9 @@ class Compute:
             except UnavailableOfferError as exc:
                 unavailable.append(f"{offer.name}: {exc}")
         raise ComputeError(
-            "no local offer matches; configure local resources or supply --cpus and --memory "
-            "for a remote allocation" + ("; " + "; ".join(unavailable) if unavailable else "")
+            "no local offer matches this request; see lc compute resources for local shapes "
+            "and time limits, or supply --cpus and --memory for a remote allocation"
+            + ("; " + "; ".join(unavailable) if unavailable else "")
         )
 
     def launch(self, plan: LaunchPlan) -> Identity:
@@ -312,4 +313,7 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
                 "cluster does not have its expected workers; inspect lc compute status",
                 cluster_id=identity.encode(),
             )
+        # A caller prepares (fetch, build, sync) before its first task, and Dask's
+        # idle test counts only tasks: a no-op task restarts the countdown for it.
+        client.submit(int, pure=False)
         yield client

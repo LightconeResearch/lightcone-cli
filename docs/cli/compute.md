@@ -91,10 +91,12 @@ quotas remain with the native backend.
 A local allocation ends at its walltime, after its idle timeout, or at whichever
 comes first when it has both. The idle timeout is Dask's scheduler
 `idle-timeout`: running or queued tasks keep the allocation alive, and new work
-restarts the countdown; connected clients and `status` queries do not. When it
-expires, the allocation ends, and both its name and this machine's one local
-allocation are free again. A walltime ends the allocation even during active work.
-`down` still ends it at once.
+restarts the countdown; connected clients and `status` queries do not. `lc run`
+and `lc materialize` restart it when they connect, so their preparation (fetching
+inputs, building the image, syncing the environment) starts with the full timeout.
+When it expires, the allocation ends, `status` gives that as the reason, and both
+its name and this machine's one local allocation are free again. A walltime ends
+the allocation even during active work. `down` still ends it at once.
 
 For Slurm, time is a finite native `--time` request, so a Slurm offer needs a
 `time.default` and cannot declare `time.idle`:

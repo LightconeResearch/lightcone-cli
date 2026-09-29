@@ -25,10 +25,12 @@ NOT_STARTED = (
 #: served. A departed client's events, which carry the recipe output it
 #: forwarded, are dropped at once rather than after Dask's default hour, so
 #: a long-lived allocation does not accumulate every invocation's output.
-SCHEDULER_CONFIG = {
+#: The idle timeout is the offer's alone, never the ambient Dask config's.
+SCHEDULER_CONFIG: dict[str, Any] = {
     "distributed.scheduler.http.routes": [],
     "distributed.worker.http.routes": [],
     "distributed.scheduler.events-cleanup-delay": "0s",
+    "distributed.scheduler.idle-timeout": None,
 }
 
 
