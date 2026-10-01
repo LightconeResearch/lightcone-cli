@@ -1,4 +1,11 @@
-# Getting Started
+# Use lc without an agent
+
+Everything an agent does in a Lightcone project goes through the same
+files and the same `lc` commands you can type yourself. This page is
+the full by-hand walkthrough, for people not using an agent: you write
+`astra.yaml` and the scripts, and you run each command. If you are
+working with an agent, the [Quickstart](../get-started/quickstart.md)
+is the shorter path.
 
 Let's go from nothing on your disk to a working, reproducible analysis.
 You can read this top to bottom without running anything, or follow along —
@@ -10,7 +17,7 @@ from an initial fit are kept or clipped. The result is two universes,
 `baseline` and `robust`, each with its own fitted slope and figure, and a
 project that ends published as an [RO-Crate](https://www.researchobject.org/ro-crate/).
 
-Make sure you've finished the [install](install.md) first.
+Make sure you've finished the [install](../reference/installation.md) first.
 
 ## 1. Create a project
 
@@ -62,7 +69,7 @@ A real project starts from a dataset; ours will generate a small one —
 200 points on a line, with a few outliers thrown far off it:
 
 ```bash
-python3 - <<'EOF'
+uv run python - <<'EOF'
 import random
 random.seed(0)
 rows = ["x,y"]
@@ -86,7 +93,7 @@ your tree, and the repository stays light.
 Open `astra.yaml` and replace the boilerplate with our analysis:
 
 ```yaml
-version: "0.0.13"   # ASTRA schema version — keep what the scaffold wrote
+version: "0.0.14"   # ASTRA schema version — keep what the scaffold wrote
 name: "line_fit"
 description: |
   Fit a straight line to a small synthetic dataset and sweep one
@@ -163,11 +170,11 @@ materialize to `results/<universe>/<output_id>.<format>`.
 Check the spec is well-formed:
 
 ```bash
-astra validate astra.yaml
+uvx --from astra-tools astra validate astra.yaml
 ```
 
-(`astra` is the spec-side CLI; it ships with `astra-tools`, a dependency
-of lightcone-cli.)
+(`astra` is the spec-side CLI from `astra-tools`; `uvx` runs it without
+installing anything.)
 
 ## 4. Write the scripts
 
@@ -384,11 +391,11 @@ themselves follow with `git annex get` whenever you actually need them.
 
 ## Where to next
 
-- [Core Concepts](concepts.md) — the model behind what you just did:
+- [Outputs and provenance](../concepts/provenance.md) — the model behind what you just did:
   the three states, the commit discipline, the two execution modes.
-- [Running on a Cluster](cluster.md) — take the same project to SLURM.
-- [Troubleshooting](troubleshooting.md) — when something goes sideways.
-- [Glossary](glossary.md) — terms like universe, decision, and manifest
+- [Run on a cluster](cluster.md) — take the same project to SLURM.
+- [Troubleshooting](../reference/troubleshooting.md) — when something goes sideways.
+- [Glossary](../reference/glossary.md) — terms like universe, decision, and manifest
   in plain language.
 - The [ASTRA docs](https://astra-spec.org/latest/) — the full spec:
   sub-analyses, prior insights, findings, and evidence.

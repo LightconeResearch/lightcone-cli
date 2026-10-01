@@ -1,8 +1,9 @@
 # Architecture
 
 How lightcone-cli is put together, for someone about to change it. The
-[user-guide concepts page](user/concepts.md) covers what the tool
-promises; this page covers how the promises are kept.
+[Outputs and provenance](../concepts/provenance.md) concepts page
+covers what the tool promises; this page covers how the promises are
+kept.
 
 ## The split that everything else follows
 
@@ -195,5 +196,5 @@ src/lightcone/              # namespace — NO __init__.py
     └── templates/          # the scaffold's file content, as real files
 ```
 
-Each module's page in [Engine Internals](api/index.md) carries its
+Each module's page in [Engine internals](internals/index.md) carries its
 public surface and the invariants that bind it.

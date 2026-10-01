@@ -1,4 +1,4 @@
-# Running on a Cluster
+# Run on a cluster
 
 When local laptop time isn't enough, the same project runs on a SLURM
 HPC system. There is no separate configuration to learn and no flag to
@@ -122,6 +122,6 @@ project is a git repository, so `git push` to a remote (and
 
 ## Where to next
 
-- [Core Concepts](concepts.md) — the model all of this rests on.
-- [Troubleshooting](troubleshooting.md) — the refusals, quoted, with
+- [Outputs and provenance](../concepts/provenance.md) — the model all of this rests on.
+- [Troubleshooting](../reference/troubleshooting.md) — the refusals, quoted, with
   remedies.

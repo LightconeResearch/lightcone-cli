@@ -1,61 +1,54 @@
-# lightcone-cli
+# Rigorous research, without the bookkeeping
 
-**lightcone-cli** is [Lightcone Research][lr]'s execution layer for
-[**ASTRA**][astra] (Agentic Schema for Transparent Research Analysis).  
-It serves as the machinery that ties an analysis `astra.yaml` specification to a tree
-of materialized outputs.
+Lightcone is a sidecar for your research: it attaches to the project
+you're working on and to the agent you already use, stays out of the way
+of how you work, and makes sure your work is rigorous and reproducible by
+default.
 
-!!! warning "Alpha development"
-    lightcone-cli is in **early alpha**. The CLI and the execution layer are
-    still moving — expect breaking changes between minor versions. Bug reports, design
-    challenges, and use cases the tooling doesn't yet cover are exactly what we want to
-    hear at this stage; please open an issue on the
-    [GitHub repo](https://github.com/LightconeResearch/lightcone-cli/issues).
+- **Every decision, and why.** The methodological choices you make are
+  written down with the options you considered, the reasons for the
+  choice, and the papers that informed it.
+- **Every result, and what made it.** Each result carries a record of the
+  code, data, and environment that produced it, and anything made outside
+  that record is flagged.
+- **What a change affects.** When a decision or the data changes, you can
+  see which results are out of date, and why.
 
-## Choose your path to the documentation
+We're not prescriptive about how much you use AI in your research: use an
+agent for everything, for some things, or not at all. Our goal is to make
+sure that the science you do, however you do it, is rigorous and
+reproducible.
 
-<div class="grid cards" markdown>
+!!! warning "Beta development"
+    Lightcone is in a **public beta**: expect some breaking changes between
+    minor versions. Bug reports, design challenges, and use cases we don't
+    cover yet are exactly what we want to hear. Please
+    [open an issue](https://github.com/LightconeResearch/lightcone-cli/issues).
 
--   __I want to try it out__ – :lucide-rocket:
+## Where to next
 
-    ---
+**New to Lightcone?** Follow the [Quickstart](get-started/quickstart.md)
+to install Lightcone, set it up with your agent, and run your first
+analysis.
 
-    Installation instructions, step-by-step tutorial, and fast tour of the lightcone framework and its workflow capabilities.
+Then, depending on how you work:
 
-    [User Guide](user/index.md){ .md-button .md-button--primary }
+- [Work through a full analysis](tutorial/index.md), from question to
+  published result.
+- [Use Lightcone interactively in JupyterLab](guides/lab.md).
+- [Set Lightcone up on a compute cluster](guides/cluster.md).
+- [Write up your analysis with MyST](guides/publish.md).
+- [Use Lightcone without an agent](guides/without-agent.md).
 
--   __I want to contribute__ – :lucide-cog:
+## Developer corner
 
-    ---
+Lightcone Research is committed to open source. The `lc` engine, the
+agent plugins, and the ASTRA specification are developed in the open on
+[GitHub](https://github.com/LightconeResearch), and the
+[developer docs](developers/index.md) cover the architecture, the
+engine's internals, and how to contribute.
 
-    In depth tour of the software architecture and API docs, as well as contribution instructions, aimed for
-    contributors and maintainers.
-
-    [Developer corner](maintainer.md){ .md-button .md-button--primary }
-
-</div>
-
----
-
-## Two libraries, one toolchain
-
-<div class="grid cards" markdown>
-
--   __lightcone-cli__
-
-    The library that ships the `lc` CLI: project scaffolding, locked environments, sandboxed execution, and the provenance layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
-
-    [:fontawesome-brands-github: Repository][cli]{ .md-button }
-
--   __astra-tools__
-
-    The SDK for working with [**ASTRA**][astra] analysis specifications. This library provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and validation process (schema, prior insights & findings, evidence verification helpers).
-
-    [:fontawesome-brands-github: Repository][astra-tools]{ .md-button }
-
-</div>
-
-[lr]: https://lightconeresearch.org/
-[astra]: https://astra-spec.org/latest/
-[astra-tools]: https://github.com/LightconeResearch/astra-tools
-[cli]: https://github.com/LightconeResearch/lightcone-cli
+Lightcone is built on [ASTRA](https://astra-spec.org), an open
+specification for describing scientific analyses. Visit
+[astra-spec.org](https://astra-spec.org) for the full specification, or
+to contribute to it.

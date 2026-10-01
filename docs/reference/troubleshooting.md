@@ -85,7 +85,7 @@ remade under the current environment:
 lc materialize --refresh
 ```
 
-See [Core Concepts](concepts.md) for the `stale` / `behind`
+See [Outputs and provenance](../concepts/provenance.md) for the `stale` / `behind`
 distinction.
 
 ## Everything shows `stale` after a spec edit
@@ -164,7 +164,7 @@ refuses to do that on a shared login node. The refusal prints the
 center's own `salloc` and `sbatch` spellings — copy one, run the same
 command inside the allocation. `lc status`, `lc materialize --check`,
 `lc build` and `lc run` work anywhere. See
-[Running on a Cluster](cluster.md).
+[Run on a cluster](../guides/cluster.md).
 
 ## git doesn't know who you are
 

@@ -1,7 +1,7 @@
-# Core Concepts
+# Outputs and provenance
 
 The mental model behind `lc`, in one page. Nothing here is required to
-follow [Getting Started](getting-started.md) — come back when you want
+follow the [Quickstart](../get-started/quickstart.md) — come back when you want
 to know *why* the tool behaves the way it does.
 
 ## A project is three files
@@ -145,7 +145,7 @@ have.
 
 ## Where to next
 
-- [Running on a Cluster](cluster.md) — the same model on SLURM.
-- [Troubleshooting](troubleshooting.md) — the refusals quoted, with
+- [Run on a cluster](../guides/cluster.md) — the same model on SLURM.
+- [Troubleshooting](../reference/troubleshooting.md) — the refusals quoted, with
   their remedies.
-- [Glossary](glossary.md) — the terms, one at a time.
+- [Glossary](../reference/glossary.md) — the terms, one at a time.

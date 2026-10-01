@@ -55,3 +55,16 @@ body,
   background-color: rgba(76, 63, 70, 0.15);
   color: #c8dde5;
 }
+
+/* ── Options that are not available yet ────────────────────────────────── */
+
+/* Wrapping a tab set in <div class="soon-1" markdown> (or soon-2) greys
+   out its last one (or two) tabs and makes them unselectable, so an
+   upcoming option is visible in the row but never opens onto an empty
+   panel. */
+.md-typeset .soon-1 > .tabbed-set > .tabbed-labels > label:last-child,
+.md-typeset .soon-2 > .tabbed-set > .tabbed-labels > label:nth-last-child(-n + 2) {
+  pointer-events: none;
+  opacity: 0.4;
+  font-style: italic;
+}

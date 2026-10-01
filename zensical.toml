@@ -1,6 +1,6 @@
 [project]
-site_name = "lightcone-cli"
-site_description = "Execution layer for ASTRA research pipelines"
+site_name = "Lightcone"
+site_description = "Reproducible scientific analysis, with your agent"
 site_author = "Lightcone Research Team"
 repo_url = "https://github.com/LightconeResearch/lightcone-cli"
 repo_name = "LightconeResearch/lightcone-cli"
@@ -8,49 +8,80 @@ copyright = "&copy; 2026 Lightcone Research"
 docs_dir = "docs"
 extra_css = ["stylesheets/extra.css"]
 
+# Six tabs, in the order a newcomer needs them: see what it is and do it
+# once (Home), learn it properly (Tutorial), do a specific thing (Guides),
+# understand it (Concepts), look it up (Reference), build on it
+# (Developers). ASTRA is met as the astra.yaml file the agent writes;
+# the standard itself is linked from Concepts and Developers only.
 nav = [
-  {"Home" = "index.md"},
-  {"User Guide" = [
-    {"Welcome" = "user/index.md"},
-    {"Install" = "user/install.md"},
-    {"Getting Started" = "user/getting-started.md"},
-    {"Core Concepts" = "user/concepts.md"},
-    {"Running on a Cluster" = "user/cluster.md"},
-    {"Troubleshooting" = "user/troubleshooting.md"},
-    {"Glossary" = "user/glossary.md"},
+  {"Home" = [
+    {"Overview" = "index.md"},
+    {"Quickstart" = "get-started/quickstart.md"},
+    {"How Lightcone works" = "get-started/how-it-works.md"},
   ]},
-  {"Developer Corner" = [
-    {"Welcome" = "maintainer.md"},
-    {"Architecture" = "architecture.md"},
-    {"CLI Reference" = [
-      {"Overview" = "cli/index.md"},
-      {"lc init" = "cli/init.md"},
-      {"lc materialize" = "cli/materialize.md"},
-      {"lc status" = "cli/status.md"},
-      {"lc run" = "cli/run.md"},
-      {"lc build" = "cli/build.md"},
+  {"Tutorial" = [
+    {"Overview" = "tutorial/index.md"},
+    {"1. The data" = "tutorial/1-data.md"},
+    {"2. Scope the analysis" = "tutorial/2-scope.md"},
+    {"3. Make it reproducible" = "tutorial/3-reproduce.md"},
+    {"4. Check it against the paper" = "tutorial/4-evidence.md"},
+    {"5. Add a decision" = "tutorial/5-decision.md"},
+    {"6. Inspect and publish" = "tutorial/6-publish.md"},
+  ]},
+  {"Guides" = [
+    {"Overview" = "guides/index.md"},
+    {"Scope an analysis with your agent" = "guides/scope.md"},
+    {"Add a decision and compare universes" = "guides/decisions.md"},
+    {"Cite papers and verify evidence" = "guides/evidence.md"},
+    {"Run on a cluster" = "guides/cluster.md"},
+    {"Browse a project in Lightcone Lab" = "guides/lab.md"},
+    {"Publish a report" = "guides/publish.md"},
+    {"Use lc without an agent" = "guides/without-agent.md"},
+  ]},
+  {"Concepts" = [
+    {"Your analysis file" = "concepts/analysis-file.md"},
+    {"Outputs and provenance" = "concepts/provenance.md"},
+    {"Decisions and universes" = "concepts/universes.md"},
+    {"Evidence" = "concepts/evidence.md"},
+  ]},
+  {"Reference" = [
+    {"Installation" = "reference/installation.md"},
+    {"lc CLI" = [
+      {"Overview" = "reference/cli/index.md"},
+      {"lc init" = "reference/cli/init.md"},
+      {"lc materialize" = "reference/cli/materialize.md"},
+      {"lc status" = "reference/cli/status.md"},
+      {"lc run" = "reference/cli/run.md"},
+      {"lc build" = "reference/cli/build.md"},
     ]},
-    {"Engine Internals" = [
-      {"Overview" = "api/index.md"},
-      {"project" = "api/project.md"},
-      {"dataset" = "api/dataset.md"},
-      {"identity" = "api/identity.md"},
-      {"plan" = "api/plan.md"},
-      {"assets" = "api/assets.md"},
-      {"worker" = "api/worker.md"},
-      {"materialize" = "api/materialize.md"},
-      {"venue" = "api/venue.md"},
-      {"sandbox" = "api/sandbox.md"},
-      {"image & container" = "api/container.md"},
-      {"crate" = "api/crate.md"},
+    {"Agent plugin" = "reference/plugin.md"},
+    {"Glossary" = "reference/glossary.md"},
+    {"Troubleshooting" = "reference/troubleshooting.md"},
+  ]},
+  {"Developers" = [
+    {"Welcome" = "developers/index.md"},
+    {"Architecture" = "developers/architecture.md"},
+    {"Engine internals" = [
+      {"Overview" = "developers/internals/index.md"},
+      {"project" = "developers/internals/project.md"},
+      {"dataset" = "developers/internals/dataset.md"},
+      {"identity" = "developers/internals/identity.md"},
+      {"plan" = "developers/internals/plan.md"},
+      {"assets" = "developers/internals/assets.md"},
+      {"worker" = "developers/internals/worker.md"},
+      {"materialize" = "developers/internals/materialize.md"},
+      {"venue" = "developers/internals/venue.md"},
+      {"sandbox" = "developers/internals/sandbox.md"},
+      {"image & container" = "developers/internals/container.md"},
+      {"crate" = "developers/internals/crate.md"},
     ]},
     {"Contributing" = [
-      {"Development Setup" = "contributing/setup.md"},
-      {"Testing" = "contributing/testing.md"},
-      {"Extending" = "contributing/extending.md"},
+      {"Development setup" = "developers/contributing/setup.md"},
+      {"Testing" = "developers/contributing/testing.md"},
+      {"Extending" = "developers/contributing/extending.md"},
     ]},
+    {"Built on ASTRA" = "developers/astra.md"},
   ]},
-  {"ASTRA docs" = "https://astra-spec.org/latest/"},
 ]
 
 # Versioning is handled by mike (squidfunk's fork; see the docs
@@ -68,8 +99,10 @@ features = [
   "navigation.tabs",
   "navigation.sections",
   "navigation.top",
+  "navigation.footer",
   "search.highlight",
   "content.code.copy",
+  "content.tabs.link",
 ]
 
 [[project.theme.palette]]

@@ -100,7 +100,7 @@ How git finds git-annex is still ordinary `PATH` resolution, which is
 why `lc` should be installed with `uv tool install lightcone-cli` — it
 puts `git-annex` on your `PATH` alongside `lc`. If your `git add` ever
 refuses, see
-[`fatal: … clean filter 'annex' failed`](../user/troubleshooting.md#fatal-clean-filter-annex-failed)
+[`fatal: … clean filter 'annex' failed`](../troubleshooting.md#fatal-clean-filter-annex-failed)
 in the troubleshooting guide.
 
 ## Options

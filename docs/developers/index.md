@@ -1,27 +1,29 @@
-# Developer corner
+# Developers
 
 `lightcone-cli` is a small engine with strong opinions: one way to
 identify an output, one way to store it, one boundary to execute it
-behind. This guide covers everything below the user surface — how the
-engine is put together, what each module owns, and how to get a
+behind. This section covers everything below the user surface — how
+the engine is put together, what each module owns, and how to get a
 working dev loop.
 
-If you're looking for the user-facing docs, the
-[user guide](user/index.md) is the other half of this site.
+If you're looking for the user-facing docs, start from the
+[home page](../index.md).
 
 ## What this covers
 
 - [Architecture](architecture.md) — the CLI/engine/ASTRA split, the
   run pipeline, identity, storage, the exec boundary, and the
   invariants that hold them together.
-- [CLI Reference](cli/index.md) — every `lc` command: flags, JSON
-  report shapes, exit codes.
-- [Engine Internals](api/index.md) — the `lightcone.engine.*`
+- [CLI reference](../reference/cli/index.md) — every `lc` command:
+  flags, JSON report shapes, exit codes.
+- [Engine internals](internals/index.md) — the `lightcone.engine.*`
   modules: what each owns, its key symbols, and what must stay true
   of it.
 - [Contributing](contributing/setup.md) — clone, install, run the
   test suite; [how the suite is shaped](contributing/testing.md); and
   [where a change belongs](contributing/extending.md).
+- [Built on ASTRA](astra.md) — the open standard the analysis file
+  follows, and where to engage with it directly.
 
 ## Get started in three commands
 

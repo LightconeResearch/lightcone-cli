@@ -53,7 +53,7 @@ never touched, under any flag.
 On a containerized project, the run resolves the committed image first
 (building it as a preflight if the declaration is committed but the
 image never built). Inside a SLURM allocation, the run spans every
-allocated node — see [Running on a Cluster](../user/cluster.md).
+allocated node — see [Run on a cluster](../../guides/cluster.md).
 
 ## Check mode
 
