@@ -375,7 +375,7 @@ def read(manifest: Path) -> Manifest | None:
         return None
 
 
-def write(path: Path, manifest: Manifest) -> Path:
+def write(path: Path, manifest: Manifest, *, mode: int | None = None) -> Path:
     """Write *manifest* to *path*, atomically.
 
     The rename is the commit point: a reader sees the previous manifest or
@@ -386,12 +386,16 @@ def write(path: Path, manifest: Manifest) -> Path:
     Args:
         path: The sidecar's path.
         manifest: The record to write.
+        mode: The sidecar's permission bits, or ``None`` for what the
+            process's file-creation mask gives.
 
     Returns:
         The path written.
     """
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(manifest.as_dict(), indent=2, sort_keys=False) + "\n")
+    if mode is not None:
+        temporary.chmod(mode)
     temporary.replace(path)
     return path
 

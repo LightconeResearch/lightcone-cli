@@ -28,9 +28,10 @@ owning the loop.
 from __future__ import annotations
 
 import functools
+import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -109,6 +110,13 @@ class RunContext:
     runtime: container.Runtime
     #: The uv that converges environments this run. Attestation only.
     uv_version: str
+    #: The file-creation mask of whoever started the run, read where this
+    #: context is built. Everything a task creates in the project — the
+    #: recipe's files, the output directory, the manifest — takes it, never
+    #: the worker's own: a compute runtime holds its credentials under a
+    #: private mask, and outputs inheriting it would be unreadable to the
+    #: group the project is shared with.
+    umask: int = field(default_factory=lambda: current_umask())
 
 
 # =============================================================================
@@ -240,7 +248,7 @@ def execute(
     # dot straight after the whole id, and an id cannot contain one, so it
     # cannot reach a sibling, a longer id, another output's sidecar, or a
     # scope directory of the same name.
-    task.output_path.parent.mkdir(parents=True, exist_ok=True)
+    _make_directories(task.output_path.parent, context.umask)
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
         context.runtime, read_paths, write_dir=task.output_path.parent,
@@ -261,6 +269,7 @@ def execute(
             prefix=uv_prefix(root),
             env=child_env(),
             output=output,
+            umask=context.umask,
         )
     finished_at = _now()
 
@@ -316,6 +325,7 @@ def execute(
                 finished_at=finished_at,
                 image=context.runtime.manifest_image(),
             ),
+            mode=0o666 & ~context.umask,
         )
     except (OSError, ProjectError) as e:
         return TaskResult(
@@ -325,6 +335,28 @@ def execute(
             notes=outcome.notes,
         )
     return TaskResult(task.key, "ok", data_version=data_version, notes=outcome.notes)
+
+
+def current_umask() -> int:
+    """This process's file-creation mask, which can only be read by setting it."""
+    mask = os.umask(0o077)
+    os.umask(mask)
+    return mask
+
+
+def _make_directories(path: Path, umask: int) -> None:
+    """Create *path* and its missing parents with the modes *umask* gives.
+
+    Explicit modes rather than a process-wide ``os.umask``: a worker runs
+    several tasks on threads, and the mask is shared by all of them.
+    """
+    missing = []
+    while not path.exists():
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o777 & ~umask)
 
 
 def _now() -> str:

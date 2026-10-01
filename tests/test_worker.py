@@ -13,6 +13,8 @@ must *succeed*, or the test would pass without the sandbox doing anything.
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable
@@ -536,3 +538,34 @@ def test_a_declared_input_that_is_not_there_names_itself(
 
     assert worker.main(["baseline/first"]) == 2
     assert "the declared input `catalog` cannot be read" in capsys.readouterr().err
+
+
+# ---- file modes ------------------------------------------------------------
+
+
+def test_outputs_take_the_runs_umask_not_the_workers(root: Path) -> None:
+    """A compute runtime runs its workers under a private mask; what a task
+    creates in the project must still be readable by the project's group."""
+    previous = os.umask(0o077)  # the worker's own mask
+    try:
+        context = replace(_context(root), umask=0o022)  # the launcher's
+        result = worker.materialize(root, _task(root, "first"), context, False, None)
+    finally:
+        os.umask(previous)
+
+    assert result.status == "ok", result.reason
+    for path, expected in [
+        ("results/baseline", 0o755),
+        ("results/baseline/first.txt", 0o644),
+        ("results/baseline/.first.manifest.json", 0o644),
+    ]:
+        assert stat.S_IMODE((root / path).stat().st_mode) == expected, path
+
+
+def test_the_run_context_captures_its_builders_umask(root: Path) -> None:
+    previous = os.umask(0o027)
+    try:
+        context = _context(root)
+    finally:
+        os.umask(previous)
+    assert context.umask == 0o027
