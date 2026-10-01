@@ -257,6 +257,11 @@ def _predicted(
                 else assets.read(assets.manifest_path(path.parent, upstream[1]))
             )
             predicted[name] = manifest.data_version if manifest else None
+        elif plan.names_a_family(path):
+            # Its spelling is its identity, and the worker records exactly
+            # this — predicting "I cannot tell" here would report every
+            # such output stale the moment after it was made.
+            predicted[name] = plan.spelling_version(path)
         elif not path.exists():
             predicted[name] = None
         else:
@@ -1067,6 +1072,20 @@ def _graph(
             "declared inputs outside the project are recorded by content but "
             "not stored in it, so a commit cannot restore them: "
             + ", ".join(sorted(outside))
+        )
+    # One step weaker again: a source spelling a family of files has no
+    # single content to record, so nothing about it can cascade.
+    families = {
+        plan.declared_path(root, path)
+        for task in graph.tasks.values()
+        for name, path in task.inputs.items()
+        if name not in task.produced_by and plan.names_a_family(path)
+    }
+    if families:
+        report.warnings.append(
+            "declared inputs spelling a family of files are recorded by that "
+            "spelling and not by content, so an output does not go stale when the "
+            "file its recipe picks changes: " + ", ".join(sorted(families))
         )
     return graph, env_version, full
 

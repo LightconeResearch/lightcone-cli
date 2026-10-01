@@ -179,7 +179,11 @@ def _materialize(
 
     live = {key: u.data_version for key, u in reported.items()}
     inputs = {
-        name: live[key] if (key := task.produced_by.get(name)) else context.versions.of(path)
+        name: live[key]
+        if (key := task.produced_by.get(name))
+        else plan.spelling_version(path)
+        if plan.names_a_family(path)
+        else context.versions.of(path)
         for name, path in task.inputs.items()
     }
     manifest = assets.read(task.manifest_path)
@@ -241,7 +245,14 @@ def execute(
         return TaskResult(task.key, "failed", reason=moved)
 
     _make_directories(task.output_path.parent, context.umask)
-    read_paths = [p for p in task.inputs.values() if p.exists()]
+    # `readable_source`, not `exists()`: a declared source may spell a
+    # family of files rather than one, and the recipe still has to reach
+    # the member it picks.
+    read_paths = [
+        readable
+        for path in task.inputs.values()
+        if (readable := plan.readable_source(path)) is not None
+    ]
     policy = container.policy_for(
         context.runtime, read_paths, write_dir=task.output_path.parent,
         use_gpus=resources.gpus > 0, threads=resources.cpus,
@@ -502,6 +513,8 @@ def _from_disk(task: Task) -> dict[str, str]:
                     f"manifest beside {path}. Run `lc materialize <cluster>` instead."
                 )
             versions[name] = manifest.data_version
+        elif plan.names_a_family(path):
+            versions[name] = plan.spelling_version(path)
         else:
             try:
                 versions[name] = assets.data_version(path)
