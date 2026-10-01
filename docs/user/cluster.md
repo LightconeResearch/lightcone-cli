@@ -553,6 +553,12 @@ apply. Recipe output is forwarded to the invoking terminal on stderr; `run`
 preserves the command's stdout and stderr bytes separately.
 Containerized projects also require the prepared image and runtime on each
 worker; `podman-hpc` can expose its migrated image across NERSC nodes.
+Where a site offers no podman and no docker, `lc` uses `apptainer`: it converts
+the committed archive once into a SIF under the project's gitignored
+`.lightcone/images/`, on the project's own filesystem, so every node reads the
+same file. apptainer cannot build an image: run `lc build` on a host with podman
+or docker and the compute nodes' architecture, commit and push, and the archive
+arrives here through the annex.
 Direct recipes inherit the allocation workers' environment, not variables added
 to the invoking CLI after launch. Remote execution does not forward stdin.
 
