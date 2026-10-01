@@ -205,10 +205,10 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         directory.mkdir(parents=True, exist_ok=True)
 
     # `astra.scaffold` is astra's public scaffold API, the same one
-    # `astra init` delegates to: it writes the spec — astra.yaml plus
-    # universes/baseline.yaml, which converge as one item because the
-    # baseline references the boilerplate's example decision — and nothing
-    # else. It is stdlib-only and imports in milliseconds, which is why it
+    # `astra init` delegates to: it writes the spec — an empty astra.yaml
+    # plus a universes/baseline.yaml selecting nothing, which converge as
+    # one item so the baseline never lands beside a user-authored spec —
+    # and nothing else. It is stdlib-only and imports in milliseconds, which is why it
     # sits at module scope where the validation stack cannot.
     c.item(
         "astra.yaml",
@@ -312,25 +312,22 @@ def require_git_annex() -> None:
         )
 
 
-def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
+def uv_prefix(directory: Path) -> list[str]:
     """Build the ``uv run`` hop that pins a command to a project.
 
     ``--locked`` makes a stale lock uv's loud error rather than a silent
     relock, and ``--project`` is explicit because uv's walk-up discovery
-    is never trusted.
+    is never trusted. ``--no-sync`` because the driver converges the
+    environment before submitting anything; a per-task sync would have
+    concurrent workers writing the same ``.venv``.
 
     Args:
         directory: The project to pin to.
-        sync: True for a probe, which converges the environment it is
-            about to describe. False for a recipe: the environment was
-            converged before the run, and syncing per task would have
-            every concurrent worker writing the same ``.venv``.
 
     Returns:
         The argv prefix, ending in ``--``.
     """
-    selection = ["--exact"] if sync else ["--no-sync"]
-    return ["uv", "run", "--locked", *selection, "--project", str(directory), "--"]
+    return ["uv", "run", "--locked", "--no-sync", "--project", str(directory), "--"]
 
 
 def sync(directory: Path) -> list[str]:

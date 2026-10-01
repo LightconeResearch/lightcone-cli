@@ -170,14 +170,27 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 
 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+@click.argument("cluster_id", metavar="CLUSTER")
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def run(command: tuple[str, ...]) -> None:
-    """Run COMMAND in the project environment, under isolation.
+def run(cluster_id: str, command: tuple[str, ...]) -> None:
+    """Run COMMAND on CLUSTER in the project's sandboxed environment.
+
+    Use `lc run CLUSTER -- COMMAND...` with a cluster name or ID; the allocation
+    remains available after the command finishes.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
 
-    outcome = engine_run.probe(current_project(), command)
+    _require_cluster_id(cluster_id)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise click.UsageError("A command is required; no interactive shell is opened.")
+    try:
+        outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
+    except KeyboardInterrupt:
+        _interrupted(cluster_id, "the remote command may still be running")
+        raise
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
@@ -185,6 +198,35 @@ def run(command: tuple[str, ...]) -> None:
     # an OOM-killed probe comes back as the shell's conventional 128+N.
     code = outcome.returncode
     sys.exit(128 - code if code < 0 else code)
+
+
+def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
+    """Say what an interrupt leaves behind: the allocation outlives the client.
+
+    A name can be reused once its allocation ends, so the remedy asks for
+    the full ID rather than repeating a name that may point elsewhere.
+    """
+    target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
+    click.echo(
+        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`{then}.",
+        err=True,
+    )
+    if target != cluster_id:
+        click.echo(
+            "Inspect `lc compute status --json` to identify the original allocation; "
+            "cluster names can be reused.", err=True,
+        )
+
+
+def _require_cluster_id(value: str) -> None:
+    """Validate positional cluster syntax before project preparation."""
+    from lightcone.engine import compute
+    from lightcone.engine.project import ProjectError
+
+    try:
+        compute.validate_id(value)
+    except ProjectError as exc:
+        raise click.BadParameter(str(exc), param_hint="CLUSTER") from exc
 
 
 # =============================================================================
@@ -249,7 +291,7 @@ def build(as_json: bool) -> None:
 
 
 @main.command()
-@click.argument("targets", nargs=-1)
+@click.argument("targets", nargs=-1, metavar="CLUSTER [TARGETS...]")
 @click.option(
     "--check",
     "check_only",
@@ -276,7 +318,10 @@ def build(as_json: bool) -> None:
 def materialize(
     targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
 ) -> None:
-    """Make the analysis's outputs, and commit each one as it lands.
+    """Make selected outputs on CLUSTER, committing each as it lands.
+
+    Execution requires a cluster name or ID as its first positional argument.
+    With --check, all positional arguments are targets and no cluster is used.
 
     Each output is committed together with its manifest, in a commit that
     records the command that produced it. The git tree needs to be clean
@@ -296,6 +341,24 @@ def materialize(
     from lightcone.engine import materialize as engine
     from lightcone.engine.project import current_project
 
+    cluster_id = ""
+    if check_only:
+        from lightcone.engine.compute.model import ComputeError, Identity
+
+        for target in targets:
+            try:
+                Identity.decode(target)
+            except ComputeError:
+                continue
+            raise click.UsageError("--check takes output targets, not a cluster ID; omit the ID.")
+    else:
+        if not targets:
+            raise click.UsageError(
+                "Missing CLUSTER; create an allocation with lc compute launch."
+            )
+        cluster_id, *remaining = targets
+        _require_cluster_id(cluster_id)
+        targets = tuple(remaining)
     root = current_project()
     if not check_only and not as_json:
         # The engine never prints, and the build it may be about to run
@@ -312,7 +375,14 @@ def materialize(
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
-        report = engine.materialize(root, targets, refresh=refresh)
+        try:
+            report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
+        except KeyboardInterrupt:
+            _interrupted(
+                cluster_id, "remote recipes may still be writing results",
+                " and confirm they have stopped before cleaning results/",
+            )
+            raise
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
@@ -446,3 +516,9 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     if lines:
         lines.append("")
     _console().print("\n".join([*lines, verdict]))
+
+
+# Importing the command definitions does not import Dask or provider implementations.
+from lightcone.cli.compute import compute  # noqa: E402
+
+main.add_command(compute)

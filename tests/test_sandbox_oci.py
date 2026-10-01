@@ -8,11 +8,13 @@ here with nothing spawned and no runtime installed.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import boundary, exec_policy
 from lightcone.engine.sandbox.boundary import Unavailable
 from lightcone.engine.sandbox.model import Policy
@@ -185,6 +187,43 @@ def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> 
     assert p == d == h
 
 
+def test_podman_hpc_preserves_the_allocation_mask_and_enables_native_gpu_support(
+    root: Path, policy: Policy,
+) -> None:
+    devices = "2,0"
+    selected = replace(policy, env={
+        **policy.env, "CUDA_VISIBLE_DEVICES": devices, "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    })
+    backend = _backend(root, "podman-hpc")
+    argv = backend.wrap(selected, ["true"])
+    assert argv == backend.wrap(selected, ["true"])
+    assert f"--env=CUDA_VISIBLE_DEVICES={devices}" in argv
+    assert "--env=CUDA_DEVICE_ORDER=PCI_BUS_ID" in argv
+    assert "--gpu" in argv
+    assert not any(arg.startswith("--device=") for arg in argv)
+
+
+@pytest.mark.parametrize("runtime", ["podman", "docker"])
+def test_generic_gpu_containers_are_explicitly_refused(
+    root: Path, policy: Policy, runtime: str,
+) -> None:
+    selected = replace(policy, env={**policy.env, "CUDA_VISIBLE_DEVICES": "2,0"})
+    with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
+        _backend(root, runtime).wrap(selected, ["true"])
+
+
+@pytest.mark.parametrize("runtime", ["podman", "docker", "podman-hpc"])
+def test_cpu_containers_do_not_request_gpu_access(root: Path, policy: Policy, runtime: str) -> None:
+    policy = replace(policy, env={**policy.env, "NVIDIA_VISIBLE_DEVICES": "all"})
+    argv = _backend(root, runtime).wrap(policy, ["true"])
+    assert "--env=CUDA_VISIBLE_DEVICES=" in argv
+    assert "--env=NVIDIA_VISIBLE_DEVICES=void" in argv
+    assert "--env=NVIDIA_VISIBLE_DEVICES=all" not in argv
+    assert policy.env["NVIDIA_VISIBLE_DEVICES"] == "all"
+    assert "--gpu" not in argv and "--gpus" not in argv
+    assert not any(arg.startswith("--device=") for arg in argv)
+
+
 def test_the_environment_is_an_allowlist_never_ambient(
     root: Path, policy: Policy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -195,6 +234,34 @@ def test_the_environment_is_an_allowlist_never_ambient(
     for key, value in policy.env.items():
         assert f"--env={key}={value}" in argv
     assert "--env=LC_SANDBOX=podman" in argv
+
+
+@pytest.mark.parametrize("recipe", [False, True], ids=["probe", "recipe"])
+@pytest.mark.parametrize("configured", [False, True], ids=["unset", "configured"])
+def test_container_commands_preserve_worker_numerical_thread_settings(
+    root: Path, monkeypatch: pytest.MonkeyPatch, recipe: bool, configured: bool,
+) -> None:
+    values = {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "3"}
+    for key, value in values.items():
+        if configured:
+            monkeypatch.setenv(key, value)
+        else:
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-forwarded")
+    write_dir = root / "results" / "baseline" if recipe else None
+    if write_dir is not None:
+        write_dir.mkdir()
+    with boundary.scope(
+        exec_policy(
+            root, env_dir=root / ".lightcone" / "venv",
+            containerized=True, write_dir=write_dir,
+        )
+    ) as built:
+        argv = _backend(root).wrap(built, ["true"])
+    for key, value in values.items():
+        forwarded = [arg for arg in argv if arg.startswith(f"--env={key}=")]
+        assert forwarded == ([f"--env={key}={value}"] if configured else [])
+    assert not any("AWS_SECRET_ACCESS_KEY" in arg for arg in argv)
 
 
 def test_no_host_resolved_env_binary_in_the_argv(root: Path, policy: Policy) -> None:

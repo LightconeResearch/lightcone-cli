@@ -7,21 +7,29 @@ adds the context around them.
 ## "uncommitted changes in …"
 
 ```
-Error: uncommitted changes in /home/you/my-analysis — every
-materialization is committed with the code that produced it, so a run
-cannot start from a tree that does not say what that code is.
+Error: uncommitted changes in /home/you/my-analysis — every materialization is committed with the code that produced it, so a run cannot start from a tree that does not say what that code is.
 
   commit these:   git add -A . && git commit -m "…"
-      M src/fit.py
+      ?? src/
+
+  if a cluster run was interrupted, stop its allocation first:
+      lc compute down <cluster-id>
+  confirm its recipes have stopped, then discard these (lc writes results/):
+      git restore --staged --worktree results/ && git clean -fd results/
+      ?? results/baseline/
 ```
 
-Not an error in your project — just the order of operations: commit,
-then materialize. The refusal sorts the paths it found: work you own
-gets the `commit these` line, while leftover files under `results/`
-(from an interrupted run of an older `lc`, or a hand write) are listed
+Usually not an error in your project — just the order of operations:
+commit, then materialize. The refusal sorts the paths it found: work you
+own gets the `commit these` line, while files under `results/` are listed
 as wreckage to discard instead — `results/` is `lc`'s to write, and
 committing hand-placed files there defeats the provenance the tool
 exists for.
+
+Files under `results/` usually come from an interrupted run. `lc` leaves
+an interrupted run's unreported outputs in place on purpose, because the
+recipes writing them may still be running on the cluster. Stop the
+allocation first, by full ID, then discard them.
 
 ## "… is not a Lightcone project"
 
@@ -68,7 +76,7 @@ read-only apart from the directory their output lands in. The common cases:
   belongs in `{output}`; for true scratch files, use
   `tempfile.mkdtemp()`, which lands in the writable temp area.
 
-To probe interactively, `lc run <command>` runs any command under
+To probe interactively, `lc run CLUSTER_ID -- <command>` runs any command under
 exactly the isolation a recipe gets — if it works there, it works as a
 recipe.
 
@@ -82,10 +90,10 @@ each output, so nothing is lost by leaving it. When you do want them
 remade under the current environment:
 
 ```bash
-lc materialize --refresh
+lc materialize "$CLUSTER" --refresh
 ```
 
-See [Outputs and provenance](../concepts/provenance.md) for the `stale` / `behind`
+See [Core Concepts](../concepts/provenance.md) for the `stale` / `behind`
 distinction.
 
 ## Everything shows `stale` after a spec edit
@@ -157,14 +165,46 @@ committing a multi-gigabyte dataset into git proper, silently, where
 every clone carries it forever. A refused `git add` costs you one
 `lc init`; the silent version costs you the repository.
 
-## "… and this is a NERSC login node"
+## "… has not started yet" or "does not have its expected workers"
 
-`lc materialize` executes recipes, and on centers `lc` recognizes it
-refuses to do that on a shared login node. The refusal prints the
-center's own `salloc` and `sbatch` spellings — copy one, run the same
-command inside the allocation. `lc status`, `lc materialize --check`,
-`lc build` and `lc run` work anywhere. See
-[Run on a cluster](../guides/cluster.md).
+`lc run` and `lc materialize` never wait for a cluster: they refuse one
+that is not active with a worker connected for every node. Right after a
+launch, wait for readiness first:
+
+```bash
+lc compute status "$CLUSTER" --wait
+```
+
+If a Slurm allocation stays active but never becomes ready, its startup
+failed. Its submission log, under `submissions/<token>/` in the
+connection root (`~/.lightcone/compute` by default), records why, on a line
+starting `Slurm Dask startup failed:` — for example a node shape that
+does not match the offer, or a scheduler that did not start within 120
+seconds. A local allocation's startup failure is shown as the reason by
+`lc compute status CLUSTER`.
+
+## uv: "Could not acquire lock" (os error 524) on a cluster
+
+A recipe or `lc run` probe on a Slurm compute node fails because uv
+cannot lock its cache: the cache is on a filesystem the compute nodes
+mount without file locking, which is the case for `$HOME` at NERSC. Put
+the cache on one that supports locks, then launch a new allocation,
+since workers keep the environment they were launched with:
+
+```bash
+export UV_CACHE_DIR=$PSCRATCH/uv-cache
+lc compute down "$OLD_CLUSTER_ID"
+CLUSTER=$(lc compute launch --cpus 256 --memory 480)
+```
+
+See [Configure Slurm](../guides/cluster.md#configure-slurm).
+
+## Selecting compute from a login shell
+
+Use `lc compute resources` and `lc compute launch`, then pass the returned cluster
+ID to `run` or `materialize`. Lightcone does not inspect hostnames or site markers
+to reject local compute. The configured catalog and native backend permissions
+determine what can be allocated. See [Running on a Cluster](../guides/cluster.md).
 
 ## git doesn't know who you are
 

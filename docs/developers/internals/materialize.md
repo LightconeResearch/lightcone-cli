@@ -7,23 +7,32 @@ its classification walk.
 
 Source: `src/lightcone/engine/materialize.py`.
 
+Recipes are ordinary Dask tasks. Their stdout/stderr is forwarded as bytes to the
+driver's stderr, independently of success or failure, leaving stdout for the report.
+
 ## Key symbols
 
 | Symbol | Role |
 |---|---|
-| `materialize(root, targets, *, refresh)` | The run: guards → converge → plan → fetch → schedule → save/restore loop → crate converge. |
+| `materialize(root, targets, *, cluster_id, refresh)` | Project checks → graph → cluster connection → fetch/converge → schedule → save/restore → crate converge. |
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
-| `cluster_for_run()` | The venue ladder, and the two-method scheduler seam (`submit`, `completed`). |
+| `cluster_for_run(cluster_id)` | Borrow the cluster; expose resource validation, submission, and completion. |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
 | `_engine_requirement()` | How a record pins its engine: by version for a release, by source commit (hatch-vcs) for a dev build. |
 
 ## The run's order, and why
 
-1. **Login guard first** — the allocation is the remedy with queue
-   latency, so the user submits it before fixing anything else.
-2. **Dirty refusal before the environment converge** — in
+1. **Read-only project checks before connecting** — tool, committer, dirty-tree,
+   spec and lock errors do not require a reachable cluster to report. The shared
+   classification walk identifies outputs already current or left behind.
+2. **Explicit cluster before preparing the environment** — validate native
+   allocation identity, connect, and validate CPU/memory/GPU requests for tasks
+   that may execute. Known skips become values without resource reservations;
+   dependents of potentially rebuilt outputs still need admission. Explicit GPU
+   recipes must also have a supported runtime before any image build.
+   The dirty refusal has already run: in
    containerized mode the converge can commit an image archive, and
    `dataset.save` commits the whole index; on a dirty tree the user's
    staged edits would be swept in.
@@ -33,13 +42,15 @@ Source: `src/lightcone/engine/materialize.py`.
    is made impossible rather than detected).
 4. **Graph (validation, lock scan) before the image** — a refusal
    over a typo must not cost a minutes-long build.
-5. **HEAD, runtime, and foreign-write facts read once, handed down**
+5. **HEAD, runtime, input hashes and foreign-write facts read once, handed down**
    — the driver commits as results arrive, so any per-task read could
    answer differently mid-run. Nondeterminism in a provenance field is
-   worse than either answer.
-6. **Save on `ok`, restore otherwise, `try/finally` around the loop**
-   — an interrupt restores whatever is still outstanding; the tree
-   ends as clean as it started.
+   worse than either answer. The populated input-hash memo travels with each
+   task; independent worker processes do not rehash shared inputs. Unreadable
+   inputs still fail only the tasks that need them.
+6. **Save on `ok`, restore reported failures** — unreported outputs are retained
+   after interruption because their tasks may still be writing. Allocation
+   management does not provide concurrent-writer or cancellation guarantees.
 
 ## What must stay true
 
@@ -69,4 +80,4 @@ Source: `src/lightcone/engine/materialize.py`.
 `tests/test_materialize.py` — real repositories, real recipes, a real
 `LocalCluster` through the seam exactly once, real `datalad rerun` for
 the record's whole claim. `cluster_for_run` is the one monkeypatch
-point for venue-free tests.
+point for allocation-free tests.

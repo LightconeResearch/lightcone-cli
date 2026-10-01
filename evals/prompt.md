@@ -9,13 +9,13 @@ This project is driven by two CLIs — use them rather than improvising:
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
 - `lc` (lightcone-cli) is the execution layer:
-    - `lc materialize` makes every output the spec declares, running each
+    - `lc materialize <cluster_id>` makes every output the spec declares, running each
       recipe in dependency order and committing each result to git as it
       lands, together with a provenance manifest. It refuses to start on
       a dirty tree: commit your own edits first, with plain `git add` and
       `git commit` — the project's git-annex filter handles large files
       transparently, so never run a git-annex command yourself.
-    - `lc materialize <output_id>` (or `<universe>/<output_id>`) narrows
+    - `lc materialize <cluster_id> <output_id>` (or `<universe>/<output_id>`) narrows
       a run to one output and whatever it depends on. Re-running is
       idempotent: only what is stale gets remade — an output the spec now
       defines differently, or one whose declared inputs changed.
@@ -23,13 +23,13 @@ This project is driven by two CLIs — use them rather than improvising:
       with the commit it was made at; `lc status --json` is the
       machine-readable form. It always exits 0. The pass/fail gate is
       `lc materialize --check`, which exits 1 while anything still needs
-      making.
-    - `lc run <command>` runs an ad-hoc command in the project
+      making. `--check` needs no cluster.
+    - `lc run <cluster_id> -- <command>` runs an ad-hoc command in the project
       environment under the same isolation a recipe gets — useful for
       probing why a recipe would fail. Argv style, like `docker run` or
-      `uv run`: `lc run python scripts/fit.py --output /tmp/x`, never a
+      `uv run`: `lc run <cluster_id> -- python scripts/fit.py --output /tmp/x`, never a
       single quoted shell string; for shell syntax use
-      `lc run bash -c '...'`.
+      `lc run <cluster_id> -- bash -c '...'`.
     - Outputs land in `results/baseline/<output_id>.<format>`, each with a
       `.<output_id>.manifest.json` manifest beside it, written and
       committed by the engine. Never write into `results/` yourself: a
@@ -37,6 +37,37 @@ This project is driven by two CLIs — use them rather than improvising:
       foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
+
+Allocate compute before running commands or recipes: `lc compute launch --wait`.
+With no CPU/memory flags, this starts a cluster named `local` using all detected
+usable CPUs and RAM on this machine and waits until it is ready. No configuration
+is needed. GPUs still require explicit offers. Add `--name analysis` to choose
+another name. Replace `<cluster_id>` in these commands with the returned name
+(normally `local`) or a full immutable ID from launch or status JSON (`--json`).
+Reuse the cluster with `run` and `materialize`; neither creates compute automatically.
+
+Only one local cluster can run per user on this machine, even with different names
+or catalogs. If one already exists, use the catalog identified in the refusal to
+inspect `lc compute status` and reuse it rather than launching another.
+`lc compute status <cluster_id> --wait` waits for an
+existing cluster. Launch's `--wait` defaults to a 300-second readiness timeout;
+`--timeout SECONDS` overrides it. A waiting launch that fails reports the accepted
+cluster ID and leaves the allocation unchanged: inspect it before retrying.
+A local cluster ends after 30 minutes without task activity; running work keeps
+it alive, and `--time` adds a hard lifetime that ends it even mid-run. After it
+ends, launch again; the name `local` can be reused, but the immutable ID changes.
+
+Compute configuration is `~/.lightcone/compute.yaml`, or the file selected by
+`LC_COMPUTE_CONFIG`. Its `local.resources` mapping can override the built-in CPU/RAM
+budget (for example, `{cpus: 4, memory: 8GiB}`). Explicit local connections use
+their own offers instead. Remote offers otherwise coexist with the default local
+offer. If `local.enabled: false` is configured, respect that policy: local launch
+and execution are disabled. Inspect `lc compute resources` and supply both
+`--cpus` and `--memory` to select a configured remote allocation; `--wait` works
+there too. The no-resource shortcut never selects remote compute automatically.
+Recognized NERSC login nodes refuse local compute automatically, even without a
+catalog. Use Slurm or an interactive compute-node session; local compute remains
+eligible on those compute nodes. Do not try to override the login-node guard.
 
 ## Recipe template grammar
 
@@ -101,8 +132,8 @@ the task. For each output:
    `decisions:` lists.
 3. Write the script at the path the command names, parameterizing every
    decision via argparse — never hardcode option values.
-4. Commit your edits, then run `lc materialize` (or
-   `lc materialize <output_id>`) to build through the engine.
+4. Commit your edits, then run `lc materialize <cluster_id>` (or
+   `lc materialize <cluster_id> <output_id>`) to build through the engine.
 
 Build iteratively from upstream outputs to downstream. `lc status` shows
 where every output stands.
@@ -117,11 +148,12 @@ publication:
    turns publication on: from then on `lc materialize` also maintains
    `ro-crate-metadata.json` at the project root, an RO-Crate view of
    the project and its provenance.
-2. Commit the edit, then run `lc materialize` once more — nothing is
+2. Commit the edit, then run `lc materialize <cluster_id>` once more — nothing is
    remade, but the crate document is generated and committed.
 
 You're done when `astra validate astra.yaml` and
 `lc materialize --check` pass and `ro-crate-metadata.json` exists.
+Release your allocation with `lc compute down <cluster_id>` when finished.
 
 Skip plan approval and interactive confirmations — this is an automated
 eval run.

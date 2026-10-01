@@ -18,10 +18,10 @@ Sources: `src/lightcone/engine/image.py`,
 | `image.tag(root)` | `lc-env-<16 hex>` over the rendered Containerfile *and* the identity document. |
 | `image.archive_path(root, tag)` | `.datalad/environments/<tag>/image` — the `datalad containers-add` layout. |
 | `container.build(root)` | Build + save + commit, idempotent; returns `(Runtime, "built" \| "present")`. |
-| `container.runtime_for_run(root, *, build)` | One function, two strictnesses: `lc build`/materialize-preflight may build and commit; the probe and worker only ever find, fetch, and load. |
+| `container.runtime_for_run(root, *, build, use_gpus=False)` | Resolve the runtime, refusing unsupported explicit GPU requests before preparing the image. Materialize may build and commit; probes and reruns only find, fetch, and load. |
 | `container.backend(...)` | The single construction point for the exec backend — the only mode branch. |
 | `container.sync(...)` | The in-container environment converge: network on, project `:rw`, host uv cache mounted, into `.lightcone/venv`. |
-| `Runtime` | Facts only — root/mode/name/tag/id/arch — never mechanism. |
+| `Runtime` | Resolved execution facts; `supports_gpus` is true for direct mode and podman-hpc. |
 
 ## What must stay true
 
@@ -57,7 +57,7 @@ Sources: `src/lightcone/engine/image.py`,
   `OCIBackend`, data-parameterized; the podman family is stated once
   (`_PODMAN_FAMILY`) and asked positively, so a new runtime falls
   outside it by default. podman-hpc adds exactly one step (`migrate`,
-  outside the load branch) and joins `_SHARED_STORE_RUNTIMES`.
+  outside the load branch). Execution verifies the prepared image on each worker.
   Detection order podman-hpc → podman → docker; docker's daemon is
   probed at detection.
 - **The architecture gate refuses before the load** — a wrong-arch

@@ -193,6 +193,28 @@ def test_a_missing_archive_refuses_unless_the_caller_may_build(
     assert container.runtime_for_run(root, build=False).image_id == runtime.image_id
 
 
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+@pytest.mark.parametrize("build", [False, True])
+def test_unsupported_gpu_runtime_refuses_before_any_image_preparation(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch,
+    runtime: str, build: bool,
+) -> None:
+    monkeypatch.setattr(container, "runtime_name", lambda _: runtime)
+    with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
+        container.runtime_for_run(root, build=build, use_gpus=True)
+    assert fake == []
+    assert not (root / ".datalad").exists()
+
+
+def test_supported_gpu_runtime_can_prepare_the_image_without_a_driver_gpu_mask(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    runtime = container.runtime_for_run(root, build=True, use_gpus=True)
+    assert runtime.supports_gpus
+    assert _argvs(hpc, "podman-hpc", "build")
+
+
 def test_unfetched_archive_content_is_fetched_by_lc_itself(
     root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:

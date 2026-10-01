@@ -9,8 +9,19 @@ manifest, in a commit whose message is a replayable run record.
 ## Synopsis
 
 ```text
-lc materialize [OPTIONS] [TARGETS]...
+lc materialize [OPTIONS] CLUSTER [TARGETS]...
+lc materialize --check [OPTIONS] [TARGETS]...
 ```
+
+Execution requires a cluster name or full immutable ID from `lc compute launch`.
+No cluster is chosen or started implicitly, and the run never waits for one: a
+cluster that is not active with every expected worker connected is refused
+(`lc compute status CLUSTER --wait` waits for readiness). `--check` needs no
+cluster. Project validation and the dirty-tree check run before connecting to
+compute. A run whose spec selects no outputs still takes the CLUSTER argument
+but never connects to it: it only updates the publication view. A run whose
+outputs are all current still validates the cluster connection, but submits no
+Dask tasks and reserves no recipe resources.
 
 With no targets, everything the spec declares, across every universe.
 A target narrows the run to an output and whatever it depends on:
@@ -36,13 +47,30 @@ never touched, under any flag.
 
 ## The run's contract
 
-- **Starts clean, ends clean.** A dirty tree is a refusal (the message
-  sorts your uncommitted work from stray files under `results/`); a
-  failed or interrupted recipe's partial work is rolled back.
+- **Starts clean.** A dirty tree is a refusal. A recipe that returns a
+  failure has its partial work restored. After a cluster interruption,
+  unreported outputs are retained because tasks may still be running. The
+  same holds when a commit fails while other recipes are still running: the
+  error says so.
+  Stop the allocation with `lc compute down` and its full ID (a name can
+  already belong to a newer allocation), and confirm its recipes have
+  stopped before cleaning results. Local containers may need separate
+  termination through their runtime; see [execution limits](../../guides/cluster.md#execution-requirements-and-limits).
+- **Honors recipe resources.** CPU, memory, and GPU requests must fit one worker
+  and are reserved through standard Dask scheduling. GPU recipes run one at a
+  time per worker and inherit the whole allocation's CUDA mask, which may expose
+  more GPUs than requested. Recipes without `gpus` see none. Resource checks apply
+  to outputs that may rebuild; already-current outputs need no reservation.
+  Omitted memory reserves no RAM, so CPU requests and task slots control concurrency.
+  Recipe `time_limit` is unsupported and refused; allocation walltime remains supported.
+  See [recipe resource requirements](../../guides/cluster.md#recipe-resource-requirements).
 - **Fetches what it needs.** Declared inputs whose annexed content is
-  not in this clone are fetched before anything hashes.
+  not in this clone are fetched before workers hash or execute.
 - **Commits as it goes.** Each output lands in its own commit, written
   by the driver in one thread while other recipes keep running.
+- **Forwards recipe diagnostics.** Recipe stdout and stderr reach the invoking
+  terminal on stderr, including failed recipes. stdout remains available for the
+  report, so `--json` stays machine-readable.
 - **Reports every independent failure.** One failing recipe doesn't
   abort the rest; its dependents report `blocked` and the run exits 1
   with all of it listed.
@@ -52,8 +80,8 @@ never touched, under any flag.
 
 On a containerized project, the run resolves the committed image first
 (building it as a preflight if the declaration is committed but the
-image never built). Inside a SLURM allocation, the run spans every
-allocated node — see [Run on a cluster](../../guides/cluster.md).
+image never built). Tasks use the explicitly selected cluster and the client
+detaches on completion, leaving that cluster available — see [Running on a Cluster](../../guides/cluster.md).
 
 ## Check mode
 
@@ -71,9 +99,9 @@ is what it is for.
 | `--refresh` | off | Also remake `behind` outputs. Never touches `current` ones. |
 | `--json` | off | Emit the report as JSON on stdout. |
 
-There is deliberately no `--jobs` (a run takes every core; sizing
-belongs to the allocation you run it in), no `--force`, and no flag to
-*skip* a stale output — deleting its directory is your own file
+There is deliberately no `--jobs` (task concurrency belongs to the configured
+cluster), no `--force`, and no flag to
+*skip* a stale output — deleting its file is your own file
 operation, and stronger consent than a flag.
 
 ## The JSON report
@@ -104,10 +132,10 @@ remedies are built to be pasted.
 ## Examples
 
 ```bash
-lc materialize                     # everything, all universes
-lc materialize fit                 # one output (and upstreams), every universe
-lc materialize robust/fit          # one universe's output
+lc materialize "$CLUSTER"                     # everything, all universes
+lc materialize "$CLUSTER" fit                 # one output (and upstreams), every universe
+lc materialize "$CLUSTER" robust/fit          # one universe's output
 lc materialize --check             # would anything run? (exit 1 = yes)
-lc materialize --refresh           # also remake behind outputs
+lc materialize "$CLUSTER" --refresh           # also remake behind outputs
 lc materialize --check --json      # the machine-readable gate
 ```

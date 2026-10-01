@@ -66,7 +66,7 @@ When you *do* want behind outputs remade — before a release, say —
 that is one flag:
 
 ```bash
-lc materialize --refresh
+lc materialize "$CLUSTER" --refresh
 ```
 
 `--refresh` only ever widens a run: a `current` output stays current

@@ -32,7 +32,7 @@ it later only fills in whatever is missing.
 
 ```
 line-fit-demo/
-├── astra.yaml          # the spec — this is where everything lives
+├── astra.yaml          # the spec, empty for now — this is where everything lives
 ├── pyproject.toml      # the project's environment: its dependencies…
 ├── .python-version     # …and the exact interpreter, locked by uv
 ├── uv.lock
@@ -44,9 +44,9 @@ line-fit-demo/
 ├── data/               # declared input data lives here
 ├── results/            # outputs materialize here — lc's to write, not yours
 ├── universes/
-│   └── baseline.yaml   # one universe, built from decision defaults
+│   └── baseline.yaml   # one universe, selecting nothing yet
 ├── myst.yml            # MyST report configuration
-└── index.md            # template report that references the spec
+└── index.md            # template report, to reference the spec from
 ```
 
 Two things are worth registering now:
@@ -90,7 +90,7 @@ your tree, and the repository stays light.
 
 ## 3. Write the spec
 
-Open `astra.yaml` and replace the boilerplate with our analysis:
+`astra.yaml` was scaffolded as an empty analysis. Fill it in with ours:
 
 ```yaml
 version: "0.0.14"   # ASTRA schema version — keep what the scaffold wrote
@@ -154,8 +154,8 @@ A few things to notice:
 - The decision's options aren't hardcoded anywhere in code; the scripts
   will take them as command-line arguments.
 
-`universes/baseline.yaml` was scaffolded against the boilerplate spec,
-so point it at our decision instead:
+`universes/baseline.yaml` was scaffolded empty, so give it a value for
+our decision:
 
 ```yaml
 id: baseline
@@ -256,11 +256,26 @@ the record of what your results were computed with.
 
 ## 5. Materialize
 
+Launch the built-in local offer; no compute configuration is needed. It provides
+all usable CPUs and RAM, and stops once it has had no work for 30 minutes. Keep
+the returned ID in `CLUSTER` for this walkthrough. Configured remote offers coexist with that default. A catalog can
+override the local budget, disable local compute, or provide explicit local offers;
+see [Running on a Cluster](cluster.md). NERSC login nodes automatically refuse local
+compute; use a compute node in an interactive allocation or a configured Slurm offer.
+
+```bash
+CLUSTER=$(lc compute launch --wait --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+```
+
+Execution always requires this cluster ID. `lc materialize --check` can inspect
+what needs rebuilding without allocating compute. If the allocation expires
+during the walkthrough, launch another one and replace `CLUSTER` with its new ID.
+
 Commit, then build:
 
 ```bash
 git add -A && git commit -m "Line-fit analysis"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 The commit isn't ceremony — every output is committed together with the
@@ -320,7 +335,7 @@ Commit and materialize again:
 
 ```bash
 git add -A && git commit -m "Add the robust universe"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 ```
@@ -356,7 +371,7 @@ then commit and materialize once more:
 
 ```bash
 git add -A && git commit -m "Declare a license"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 Nothing is rebuilt — but `ro-crate-metadata.json` appears at the project
@@ -385,7 +400,7 @@ repository you already have.
 
 Clone this repository on a fresh machine, run `lc init` (it rebuilds
 the two pieces of local state git doesn't carry — the `.venv` and the
-annex), then `lc materialize`: it reports up to date without fetching a
+annex), then `lc materialize --check`: it reports up to date without fetching a
 single data byte, because the provenance travels in git. The bytes
 themselves follow with `git annex get` whenever you actually need them.
 
@@ -399,3 +414,5 @@ themselves follow with `git annex get` whenever you actually need them.
   in plain language.
 - The [ASTRA docs](https://astra-spec.org/latest/) — the full spec:
   sub-analyses, prior insights, findings, and evidence.
+
+Release the allocation when finished: `lc compute down "$CLUSTER"`.

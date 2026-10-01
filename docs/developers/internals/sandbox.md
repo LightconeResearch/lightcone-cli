@@ -18,9 +18,30 @@ plus `lightcone/_sandbox_exec.py`, the Landlock shim.
 | `Capability` | What this host can do — `detect()`'s answer, the only `sys.platform` branch. |
 | `Attestation` | What was actually enforced, derived from the flags applied — never from what the matrix says should have happened. |
 | `Backend.wrap(policy, argv)` | The pure rewrite. `contains_prefix` declares whether the uv hop rides inside (a container is a world; a host mechanism trusts host plumbing). |
-| `exec_policy(...)` | The one policy: probe and recipe get the same thing. Building it is where the impurity lives (the per-run private `$HOME`); `scope()` owns its cleanup. |
+| `exec_policy(...)` | Shared policy builder with caller-supplied write scope and `use_gpus` setting. Building it creates a private `$HOME`; `scope()` owns its cleanup. |
 | `Unavailable` | A real backend that wraps to the same argv and attests `fs: open`. Saying so is the caller's job; pretending is nobody's. |
 | `denial.explain()` / `denial.trailer()` | Best-guess remedies (allowed to return nothing) and the unconditional trailer on every nonzero sandboxed exit. |
+
+An optional output receiver gets stdout/stderr byte chunks. Capturing output never
+decodes or normalizes stdout; only the retained stderr tail is decoded for denial
+classification. Without a receiver, stdout remains inherited.
+
+`exec_policy(..., use_gpus=True)` passes the allocation's `CUDA_VISIBLE_DEVICES`
+and optional `CUDA_DEVICE_ORDER` through unchanged. CPU commands receive an empty
+CUDA mask. Direct GPU policies grant existing NVIDIA character device nodes.
+Native permissions still apply; visibility is cooperative, and the reusable
+worker's environment is never modified.
+
+The pure OCI rewrite adds podman-hpc's `--gpu` for GPU commands. Runtime selection
+refuses explicit GPU recipes with ordinary Docker or Podman; probes on those
+runtimes receive a CPU policy and an explanatory note. CPU containers remain
+supported on all runtimes and set `NVIDIA_VISIBLE_DEVICES=void` to override image defaults.
+See [GPU allocations](../../guides/cluster.md#gpu-allocations).
+
+Container recipes and probes explicitly receive the worker's effective
+`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `OPENBLAS_NUM_THREADS` values when set.
+This preserves Dask Nanny's numerical-library thread settings across the OCI
+boundary. Container environment variables remain an explicit allowlist.
 
 ## What must stay true
 

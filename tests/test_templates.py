@@ -199,13 +199,12 @@ def test_datalad_config_carries_the_dataset_id() -> None:
 # ---- the rest -------------------------------------------------------------
 
 
-def test_index_md_renders_the_title_and_keeps_myst_roles() -> None:
-    """The report body legitimately contains braces (`{astra}` roles) —
-    which is why substitution is `string.Template`, not `str.format`."""
+def test_index_md_renders_the_title_and_references_no_element() -> None:
+    """The scaffolded spec is empty, and MySTRA renders a path that does not
+    resolve as an error block — so the report names no element of it."""
     rendered = templates.index_md(title="My Analysis")
     assert rendered.startswith("# My Analysis\n")
-    assert "{astra}`decisions.example_method`" in rendered
-    assert "{astra:value}`outputs.main_result`" in rendered
+    assert "{astra" not in rendered
     assert "$" not in rendered
 
 

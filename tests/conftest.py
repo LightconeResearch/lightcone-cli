@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,7 +14,13 @@ import pytest
 from click.testing import CliRunner
 
 from lightcone.engine import dataset, project, templates
+from lightcone.engine.compute.model import Identity
+from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import _run as _real_run
+
+CLUSTER_ID = Identity(
+    namespace="00000000-0000-0000-0000-000000000001", native_id="test", token="test"
+).encode()
 
 
 @pytest.fixture
@@ -22,27 +28,24 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-@pytest.fixture(autouse=True)
-def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip the host's venue out of the suite's environment.
+@pytest.fixture
+def local_allocation_scope(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Count only this session's local allocations, never the developer's or another suite's.
 
-    On a known center's login node every materialize test would otherwise
-    meet the login guard, and inside an allocation the real-cluster test
-    would launch srun across it. The site markers come from the guard's
-    own table, so a center added there is scrubbed here for free; the
-    venue tests set these back deliberately.
+    Returns:
+        The session's base temporary directory, for independent launchers to scope by.
     """
-    from lightcone.engine import venue
+    from lightcone.engine.compute import local
 
-    for name in (
-        *(site.marker for site in venue._SITES),
-        "SLURM_JOB_ID",
-        "SLURMD_NODENAME",
-        "SLURM_JOB_NUM_NODES",
-        "SLURM_NNODES",
-        "SLURM_CPUS_ON_NODE",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    root = tmp_path_factory.getbasetemp()
+    owners = local._running_owners
+    monkeypatch.setattr(
+        local, "_running_owners", lambda: [o for o in owners() if o[1].is_relative_to(root)],
+    )
+    monkeypatch.delenv("NERSC_HOST", raising=False)
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -169,7 +172,13 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
-    def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+        """Run fixture tasks without a finite cluster resource envelope."""
+        return {task.key: {} for task in tasks}
+
+    def submit(
+        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+    ) -> object:
         return fn(*args)
 
     def completed(self, handles: list[object]) -> Iterator[object]:
@@ -183,10 +192,32 @@ def inline(monkeypatch: pytest.MonkeyPatch) -> None:
     from lightcone.engine import materialize
 
     @contextmanager
-    def fake() -> Iterator[_Inline]:
+    def fake(cluster_id: str) -> Iterator[_Inline]:
+        assert cluster_id == CLUSTER_ID
         yield _Inline()
 
     monkeypatch.setattr(materialize, "cluster_for_run", fake)
+
+
+@pytest.fixture
+def cluster_id(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Borrow a real small Dask cluster through the explicit connection seam."""
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
+    with LocalCluster(
+        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None,
+        resources={"CPU": 2, "MEMORY": 1024**3},
+    ) as cluster:
+        @contextmanager
+        def connect(value: str) -> Iterator[Client]:
+            assert value == CLUSTER_ID
+            with Client(cluster, set_as_default=False) as client:
+                yield client
+
+        monkeypatch.setattr(compute, "connect", connect)
+        yield CLUSTER_ID
 
 
 @pytest.fixture

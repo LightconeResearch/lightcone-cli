@@ -16,12 +16,23 @@ so advertising it would hand people a footgun.
 
 Source: `src/lightcone/engine/worker.py`.
 
+Cluster execution supplies an output receiver to `materialize`/`execute`, which
+passes byte chunks from the sandbox back to the invocation. Standalone reruns
+retain direct terminal output. The driver submits each cluster task with its
+CPU, memory, and GPU reservations. Before resetting outputs, `execute` validates
+resource syntax and builds the command policy with GPU access enabled only when
+the recipe requests it. Standalone reruns apply the same checks but do not perform
+Dask resource admission. GPU reruns require an explicit `CUDA_VISIBLE_DEVICES` in
+the rerun environment, for example `CUDA_VISIBLE_DEVICES=0 datalad rerun`. Recipe
+`time_limit` is explicitly refused.
+
 ## Key symbols
 
 | Symbol | Role |
 |---|---|
-| `materialize(task, versions, ...)` | The unit: classify → reset → sandbox → recipe → check the payload → hash → manifest. Returns a `TaskResult`, always. |
-| `TaskResult` | `ok` / `current` / `behind` / `failed` / `blocked`, the output's `data_version`, and the attestation. `.usable` is what dependents check. |
+| `materialize(root, task, context, ...)` | The unit: classify → reset → sandbox → recipe → check the payload → hash → manifest. Returns a `TaskResult`, always. |
+| `execute(root, task, input_versions, context)` | Validate resource syntax and GPU policy, run a recipe unconditionally, then record its payload and manifest. |
+| `TaskResult` | `ok` / `current` / `behind` / `failed` / `blocked`, the output's `data_version`, reason, and diagnostic notes. `.usable` is what dependents check. |
 | `main(argv)` | The rerun entry point: guards, converges the project environment from the commit's own lock, resolves its own HEAD and runtime, executes. |
 | `lc_version()` | The engine version every manifest records. |
 
@@ -31,6 +42,11 @@ Source: `src/lightcone/engine/worker.py`.
   contract holds for failure modes nobody enumerated. Raising would
   make Dask abort every task in flight; reporting all independent
   failures in one run is most of what owning the loop buys.
+- **Device visibility belongs to each command.** CPU recipes receive an empty
+  `CUDA_VISIBLE_DEVICES`; GPU recipes inherit the allocation's whole mask through
+  the sandbox policy. Never modify the reusable worker's shared environment.
+  Admission reserves the worker's full GPU budget for one GPU recipe at a time,
+  even when its minimum requested count is smaller.
 - **`data_version` is computed here, before anything is staged** — the
   dependent's argument *is* this return value, so the digest must
   exist while the files are still unannexed. Deriving it from
@@ -63,3 +79,5 @@ Source: `src/lightcone/engine/worker.py`.
 `tests/test_worker.py` — real recipes through the real boundary
 against a real repository (the `analysis` fixture): whether gates
 hold and bytes land are not questions a stub can answer.
+`tests/test_gpu_execution.py` checks real subprocess masks and unsupported runtime
+refusal before output deletion; it requires no physical GPU.

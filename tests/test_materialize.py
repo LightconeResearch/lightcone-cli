@@ -13,6 +13,7 @@ the seam is only worth having if the real thing still fits through it.
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import _Inline
+from conftest import CLUSTER_ID, _Inline
 
 from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
@@ -77,7 +78,7 @@ def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
     """Point the run at a custom scheduler — the one monkeypatch point."""
 
     @contextmanager
-    def fake() -> Iterator[_Inline]:
+    def fake(cluster_id: str) -> Iterator[_Inline]:
         yield scheduler
 
     monkeypatch.setattr(engine, "cluster_for_run", fake)
@@ -89,7 +90,7 @@ def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
 def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     before = _commits(root)
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert report.ok and not report.up_to_date
@@ -101,7 +102,7 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
 def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None) -> None:
     """One commit is one complete, self-describing materialization — the
     manifest can never come to describe different bytes."""
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     committed = dataset._git(
         ["show", "--name-only", "--format=", "HEAD"], cwd=root
@@ -115,7 +116,7 @@ def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None)
 def test_the_bytes_go_to_the_annex_and_the_manifest_to_git(root: Path, inline: None) -> None:
     """What git records is the test: a pointer for content, the real thing
     for a manifest. The working tree looks the same either way now."""
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     def blob(rel: str) -> str:
         return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
@@ -125,10 +126,10 @@ def test_the_bytes_go_to_the_annex_and_the_manifest_to_git(root: Path, inline: N
 
 
 def test_a_second_run_does_nothing_and_commits_nothing(root: Path, inline: None) -> None:
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     after_first = _commits(root)
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == []
     assert report.current == ["baseline/first", "baseline/second"]
@@ -159,12 +160,12 @@ def test_a_moved_environment_is_reported_and_nothing_is_remade(
     """The change the layer turns on. A rewritten environment says nothing
     about whether a result is still right, and remaking one can cost hours,
     so it is reported and left where it is."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     after_first = _commits(root)
     first = (root / "results/baseline/first.txt").read_text()
     _move_the_environment(root)
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == []
     assert set(report.behind) == {"baseline/first", "baseline/second"}
@@ -177,11 +178,11 @@ def test_a_moved_environment_is_reported_and_nothing_is_remade(
 def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None) -> None:
     """The other half: the report is not the only thing on offer, and asking
     is one flag."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
     before = _commits(root)
 
-    report = engine.materialize(root, [], refresh=True)
+    report = engine.materialize(root, [], refresh=True, cluster_id=CLUSTER_ID)
 
     assert set(report.made) == {"baseline/first", "baseline/second"}
     assert report.behind == {}
@@ -198,7 +199,7 @@ def test_the_manifest_records_the_uv_that_converged_the_environment(
     beside lc_version, never a rebuild signal."""
     from lightcone.engine import project
 
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     manifest = assets.read(root / "results/baseline/.first.manifest.json")
     assert manifest is not None
@@ -209,7 +210,7 @@ def test_the_manifest_records_the_uv_that_converged_the_environment(
 def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> None:
     """`--check` is a gate, and `behind` must not close it — a project of
     curated results would never pass again."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
     report = engine.check(root, [])
@@ -220,7 +221,7 @@ def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> N
 
 
 def test_check_with_refresh_plans_what_is_behind(root: Path, inline: None) -> None:
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
     report = engine.check(root, [], refresh=True)
@@ -235,7 +236,7 @@ def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
 ) -> None:
     """Both moved, and only one of them calls for work. Reporting `behind`
     here would say "left alone" about something the next run will remake."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
     (root / "universes" / "baseline.yaml").write_text(
         "id: baseline\ndecisions:\n  method: beta\n"
@@ -255,7 +256,7 @@ def test_status_names_the_commit_each_output_came_from(root: Path, inline: None)
     """The verb's whole reason to exist: an output that is behind is not
     wrong, and this is where the code that produced it can be read back."""
     ran_against = dataset.head(root)[0]
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     report = engine.status(root)
 
@@ -271,7 +272,7 @@ def test_status_reports_behind_after_the_environment_moves(
     root: Path, inline: None
 ) -> None:
     made_at = dataset.head(root)[0]
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
     report = engine.status(root)
@@ -294,14 +295,14 @@ def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) 
 def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     """It reads. Refusing here would make the one verb that tells you what
     state you are in unavailable exactly when you need it."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "results/baseline/first.txt").write_text("edited by hand\n")
 
     assert engine.status(root).counts["current"] == 2
 
 
 def test_asking_for_an_output_makes_what_it_is_made_of(root: Path, inline: None) -> None:
-    report = engine.materialize(root, ["second"])
+    report = engine.materialize(root, ["second"], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
 
@@ -309,11 +310,11 @@ def test_asking_for_an_output_makes_what_it_is_made_of(root: Path, inline: None)
 def test_a_changed_decision_remakes_the_output_and_its_dependents(
     root: Path, inline: None
 ) -> None:
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions:\n  method: beta\n")
     dataset.save(root, [root], "switch method")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert (root / "results/baseline/second.txt").read_text() == "beta\n"
@@ -324,11 +325,11 @@ def test_the_previous_bytes_are_still_there_at_the_previous_commit(
 ) -> None:
     """The property the whole layer exists for: given a commit, recover the
     exact bytes it produced."""
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     original = dataset._git(["rev-parse", "HEAD"], cwd=root).strip()
     (root / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions:\n  method: beta\n")
     dataset.save(root, [root], "switch method")
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     assert (root / "results/baseline/first.txt").read_text() == "beta\n"
 
     dataset._git(["checkout", original, "--", "results/baseline/first.txt"], cwd=root)
@@ -362,7 +363,7 @@ def test_check_cascades_through_an_output_it_already_decided_to_rebuild(
     """The `None` sentinel. Check mode cannot know whether a rebuild comes
     out byte-identical, so it assumes it will not — the one place it is
     deliberately more pessimistic than a worker."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions:\n  method: beta\n")
     dataset.save(root, [root], "switch method")
 
@@ -388,16 +389,127 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
 ) -> None:
     """Two path classes, two opposite remedies: work the researcher owns is
     committed, and anything under `results/` is lc's to write."""
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     (root / "notes.md").write_text("in progress\n")
     (root / "results/baseline/stray.txt").write_text("by hand\n")
 
     with pytest.raises(ProjectError) as raised:
-        engine.materialize(root, [])
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
     assert "discard these" in message and "results/baseline/stray.txt" in message
+    assert message.index("lc compute down") < message.index("git restore")
+
+
+@pytest.mark.parametrize("invalid", ["dirty", "spec"])
+def test_project_refusals_precede_cluster_connection(
+    root: Path, monkeypatch: pytest.MonkeyPatch, invalid: str,
+) -> None:
+    if invalid == "dirty":
+        (root / "notes.md").write_text("in progress\n")
+    else:
+        (root / "astra.yaml").write_text(_SPEC.replace("    format: txt\n", ""))
+        dataset.save(root, [root], "invalid spec")
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("an invalid project contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+    with pytest.raises(ProjectError):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
+def test_a_run_with_nothing_to_make_needs_no_cluster(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = analysis(
+        'version: "0.0.13"\nname: analysis\ninputs: []\noutputs: []\ndecisions: {}\n',
+        universes={"baseline": "id: baseline\ndecisions: {}\n"},
+    )
+    _declare_license(root)
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("a run that submits nothing contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.up_to_date
+    assert (root / "ro-crate-metadata.json").is_file()
+
+
+@pytest.mark.parametrize("failing", ["baseline/first", "baseline/second"])
+def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
+    root: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
+) -> None:
+    _cluster(monkeypatch, _Inline())
+    save = dataset.save
+
+    def fail(root: Path, paths: list[Path], message: str) -> None:
+        universe, output = failing.split("/")
+        if message.startswith(engine.datalad_run_subject((universe, output))):
+            raise ProjectError("git commit failed")
+        save(root, paths, message)
+
+    monkeypatch.setattr(dataset, "save", fail)
+    with pytest.raises(ProjectError, match="git commit failed") as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    # Only the first output leaves another one outstanding.
+    assert ("did not stop the allocation" in str(raised.value)) == (failing == "baseline/first")
+
+def test_shared_inputs_are_hashed_once_before_task_serialization(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _consuming("data/catalog.fits").replace("inputs: [first]", "inputs: [first, catalog]")
+    root = analysis(spec, files={"data/catalog.fits": "data"}, universes={"baseline": _UNIVERSE})
+    hashed: list[Path] = []
+    real = assets.data_version
+
+    def digest(path: Path) -> str:
+        hashed.append(path)
+        return real(path)
+
+    class _Copied(_Inline):
+        def submit(
+            self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+        ) -> object:
+            return fn(*pickle.loads(pickle.dumps(args)))
+
+    monkeypatch.setattr(assets, "data_version", digest)
+    _cluster(monkeypatch, _Copied())
+    first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert len(first.made) == 2
+    assert hashed.count(root / "data/catalog.fits") == 1
+    second = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert len(second.current) == 2
+    assert hashed.count(root / "data/catalog.fits") == 2
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink-loop"])
+def test_an_unreadable_input_fails_only_its_dependent_tasks(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path, kind: str,
+) -> None:
+    source = "data/missing.fits"
+    if kind == "symlink-loop":
+        loop = tmp_path / "loop"
+        loop.symlink_to(loop.name)
+        source = str(loop)
+    spec = _consuming(source).replace("decisions:\n  method:", """
+  - id: independent
+    type: metric
+    format: txt
+    recipe:
+      command: echo done > {output}
+
+decisions:
+  method:""")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.failed == ["baseline/first"]
+    assert report.blocked == ["baseline/second"]
+    assert report.made == ["baseline/independent"]
+    assert not dataset.status(root)
 
 
 def _consuming(source: str) -> str:
@@ -500,7 +612,7 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     is what tells a user why their variable stopped steering the sync."""
     monkeypatch.setenv("UV_NO_BINARY", "1")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
     assert any("UV_NO_BINARY" in w for w in report.warnings)
@@ -522,7 +634,7 @@ def test_an_edit_while_the_graph_runs_is_reported(
 
     _cluster(monkeypatch, Editing())
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
     assert any("notes.md" in w and "in flight" in w for w in report.warnings)
@@ -546,7 +658,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 
     _cluster(monkeypatch, Staging())
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
     assert any("notes.py" in w and "in flight" in w for w in report.warnings)
@@ -557,7 +669,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 
 
 def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not any("in flight" in w for w in report.warnings)
 
 
@@ -574,7 +686,7 @@ def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
     root = analysis(spec, universes={"baseline": _UNIVERSE})
     before = _commits(root)
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.failed == ["baseline/first"]
     assert report.blocked == ["baseline/second"]
@@ -592,7 +704,7 @@ def test_a_run_in_which_everything_failed_is_not_up_to_date(
     spec = _SPEC.replace("echo {decisions.method} > {output}", "exit 1")
     root = analysis(spec, universes={"baseline": _UNIVERSE})
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == []
     assert not report.up_to_date
@@ -604,14 +716,14 @@ def test_a_run_in_which_everything_failed_is_not_up_to_date(
 def test_a_rebuild_that_fails_puts_the_previous_output_back(
     root: Path, inline: None
 ) -> None:
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(
         _SPEC.replace("echo {decisions.method} > {output}", "exit 1")
     )
     dataset.save(root, [root], "break the recipe")
     at_break = _commits(root)
 
-    report = engine.materialize(root, ["first"])
+    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     assert report.failed == ["baseline/first"]
     assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
@@ -619,12 +731,12 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     assert not dataset.status(root)
 
 
-def test_an_interrupted_run_restores_what_never_reported(
+def test_an_interrupted_run_retains_what_never_reported(
     root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A sibling that already saved keeps its commit; the output still in
-    flight is put back, so the tree ends clean either way."""
-    engine.materialize(root, [])
+    flight may still have a writer, so its partial files are retained."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
     dataset.save(root, [root], "edit both recipes")
 
@@ -636,9 +748,10 @@ def test_an_interrupted_run_restores_what_never_reported(
     _cluster(monkeypatch, _Interrupted())
 
     with pytest.raises(KeyboardInterrupt):
-        engine.materialize(root, [])
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert not dataset.status(root)
+    assert dataset.status(root)
+    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
 
 
 # ---- the commit message ----------------------------------------------------
@@ -655,7 +768,7 @@ def test_the_run_record_is_what_datalad_reads(
     from datalad.local.rerun import get_run_info
 
     monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3")
-    engine.materialize(root, ["second"])
+    engine.materialize(root, ["second"], cluster_id=CLUSTER_ID)
     message = dataset._git(["log", "-1", "--format=%B"], cwd=root)
 
     subject, info = get_run_info(Dataset(str(root)), message)
@@ -721,7 +834,7 @@ def test_the_record_names_the_declared_input_not_the_annex_object(
     root = analysis(spec, files={"data/catalog.txt": "measured\n"})
     dataset.save(root, [root / "data"], "the catalog")
 
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     from datalad.api import Dataset
     from datalad.local.rerun import get_run_info
@@ -735,7 +848,7 @@ def test_every_manifest_of_one_run_names_the_same_commit(root: Path, inline: Non
     """The driver commits each output as it lands, so HEAD moves during the
     run — and reading it per task would stamp later manifests with a commit
     this same run created, nondeterministically."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     shas = {
         assets.read(  # type: ignore[union-attr]
@@ -752,7 +865,7 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     """Manifests are in git, so an output whose bytes were never fetched
     is still classifiable — check mode reads the recorded digest rather
     than the pointer file sitting in its place."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     clone = _clone(root, tmp_path)
     pointer = (clone / "results/baseline/first.txt").read_text()
     assert pointer.startswith("/annex/objects/")  # content really is absent
@@ -804,13 +917,13 @@ def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
     the same bytes the origin recorded. Without the fetch this run
     *failed*: the worker's hash refused the pointer file."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
-    assert engine.materialize(root, []).ok
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
     clone = _clone(root, tmp_path)
     with pytest.raises(assets.ContentNotFetchedError):
         assets.data_version(clone / "data" / "catalog.fits")
 
-    again = engine.materialize(clone, [])
+    again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert again.up_to_date, (again.failed, again.warnings)
     assert assets.data_version(clone / "data" / "catalog.fits")  # the bytes came
@@ -825,11 +938,11 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     failure. Reaching the state honestly: clone, then delete the origin
     the annex would fetch from."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
-    assert engine.materialize(root, []).ok
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     clone = _clone(root, tmp_path)
     dataset._git(["remote", "remove", "origin"], cwd=clone)
 
-    report = engine.materialize(clone, [])
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert not report.ok
     assert report.failed == ["baseline/copy"]
@@ -867,7 +980,7 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     dataset.save(root, [root], "add a dependency without syncing")
     assert not project_mod._env_is_current(root)
 
-    report = engine.materialize(root, ["first"])
+    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     assert report.ok
     assert project_mod._env_is_current(root)
@@ -889,7 +1002,7 @@ def test_the_recorded_command_reproduces_the_output(
     # build committed code, so the suite pins the wheel built from the
     # working tree — the code actually under test.
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     original = assets.read(root / "results/baseline/.first.manifest.json")
     assert original is not None
 
@@ -924,7 +1037,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     pytest.importorskip("datalad")
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
-    engine.materialize(root, ["first"])
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     original = assets.read(root / "results/baseline/.first.manifest.json")
     assert original is not None
 
@@ -949,10 +1062,204 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
 # ---- the scheduler seam ----------------------------------------------------
 
 
-def test_a_real_cluster_still_fits_through_the_seam(root: Path) -> None:
+def _resource_cluster(
+    monkeypatch: pytest.MonkeyPatch, *, workers: int = 1, gpus: int = 0,
+) -> None:
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
+    @contextmanager
+    def connect(cluster_id: str) -> Iterator[Any]:
+        with LocalCluster(
+            n_workers=workers, threads_per_worker=4, processes=False,
+            dashboard_address=None, resources={"CPU": 4, "MEMORY": 2 * 1024**3, "GPU": gpus},
+        ) as cluster, Client(cluster, set_as_default=False) as client:
+            yield client
+
+    monkeypatch.setattr(compute, "connect", connect)
+
+
+@pytest.mark.parametrize("resource_spec", ["cpus: 5", "memory: 3Gi"])
+def test_resource_refusal_precedes_preparation_and_all_recipes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat"
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    before = dataset.head(root)
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before all resource requests were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.container, "runtime_for_run", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second:.*no worker"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert dataset.head(root) == before
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
+
+@pytest.mark.parametrize("resource_spec", [
+    "gpus: 1", "disk: 1Gi", "cpus: 0.5", "cpus: 0", "memory: null", "time_limit: 1s",
+])
+def test_execution_only_resources_do_not_block_read_only_commands(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat",
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    assert len(engine.status(root).outputs) == 2
+    assert set(engine.check(root, []).planned) == {"baseline/first", "baseline/second"}
+
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before execution requirements were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
+
+
+
+@pytest.mark.parametrize("runtime_name", ["docker", "podman"])
+def test_gpu_runtime_refusal_precedes_image_build_and_all_recipes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, runtime_name: str,
+) -> None:
+    spec = _SPEC.replace("command: cat", "resources: {gpus: 1}\n      command: cat")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    _resource_cluster(monkeypatch, gpus=1)
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + "\n[tool.lightcone.image]\napt-install = []\n")
+    dataset.save(root, [pyproject], "declare a container image")
+    monkeypatch.setattr(engine.container, "runtime_name", lambda _: runtime_name)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("image preparation began for an unsupported GPU runtime")
+
+    monkeypatch.setattr(engine.container.image, "tag", unexpected)
+    before = dataset.head(root)
+    with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert dataset.head(root) == before
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
+def test_empty_cluster_refuses_before_project_preparation(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resource_cluster(monkeypatch, workers=0)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began without an available worker")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="no workers"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
+
+
+@pytest.mark.parametrize(
+    ("resource_spec", "gpus", "expected_parallelism"),
+    [
+        ("", 0, 4),
+        ("cpus: 3, memory: 256Mi", 0, 1),
+        ("cpus: 1, memory: 1Gi", 0, 2),
+        ("cpus: 1, memory: 256Mi, gpus: 1", 2, 1),
+    ],
+)
+def test_real_dask_respects_recipe_resource_reservations(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+    resource_spec: str, gpus: int, expected_parallelism: int,
+) -> None:
+    # Four Dask threads would run all four subprocesses together without
+    # resource reservations. Each independent output records its live interval.
+    spec = 'version: "0.0.13"\nname: analysis\ninputs: []\noutputs:\n' + "".join(
+        f"  - id: task{index}\n"
+        "    type: metric\n"
+        "    format: json\n"
+        "    recipe:\n"
+        f"      resources: {{{resource_spec}}}\n"
+        "      command: python src/work.py {output}\n"
+        for index in range(4)
+    )
+    root = analysis(spec, files={"src/work.py": """
+        import json
+        import os
+        import sys
+        import time
+        from pathlib import Path
+        start = time.monotonic()
+        time.sleep(0.5)
+        Path(sys.argv[1]).write_text(json.dumps([
+            start, time.monotonic(), os.environ.get("CUDA_VISIBLE_DEVICES"),
+        ]))
+    """})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
+    _resource_cluster(monkeypatch, gpus=gpus)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and len(report.made) == 4
+    events = []
+    for path in (root / "results/baseline").glob("task*.json"):
+        start, finish, visible = json.loads(path.read_text())
+        assert visible == ("2,0" if gpus else "")
+        events.extend([(start, 1), (finish, -1)])
+    live = peak = 0
+    for _, change in sorted(events):
+        live += change
+        peak = max(peak, live)
+    assert peak == expected_parallelism
+    assert not dataset.status(root)
+
+
+
+def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _SPEC.replace("command: echo", "resources: {gpus: 1}\n      command: echo")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    _resource_cluster(monkeypatch, gpus=1)
+    assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).made == ["baseline/first"]
+    original = (root / "results/baseline/.first.manifest.json").read_bytes()
+
+    _resource_cluster(monkeypatch)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.ok
+    assert report.current == ["baseline/first"]
+    assert report.made == ["baseline/second"]
+    assert (root / "results/baseline/.first.manifest.json").read_bytes() == original
+    assert not dataset.status(root)
+
+
+def test_current_outputs_are_not_submitted_to_dask(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    class NoExecution(_Inline):
+        def validate(self, tasks: Any) -> dict[Any, Any]:
+            assert not list(tasks)
+            return {}
+
+        def submit(self, *args: Any, **kwargs: Any) -> Any:
+            pytest.fail("a current output was submitted to Dask")
+
+    _cluster(monkeypatch, NoExecution())
+    assert len(engine.materialize(root, [], cluster_id=CLUSTER_ID).current) == 2
+
+def test_a_real_cluster_still_fits_through_the_seam(root: Path, cluster_id: str) -> None:
     """The one test that starts Dask. The seam is only worth having if the
     thing it abstracts still goes through it."""
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert not dataset.status(root)
@@ -966,18 +1273,21 @@ def test_a_processes_cluster_fits_through_the_seam(
     (`worker.materialize`, `Task`, `Versions`, `TaskResult`) and that
     results travel back whole."""
 
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
     @contextmanager
-    def processes() -> Iterator[engine._Dask]:
-        from distributed import Client, LocalCluster
-
-        with LocalCluster(  # type: ignore[no-untyped-call]
-            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None
+    def processes(cluster_id: str) -> Iterator[Any]:
+        with LocalCluster(
+            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None,
+            resources={"CPU": 1, "MEMORY": 1024**3},
         ) as cluster:
-            with Client(cluster) as client:  # type: ignore[no-untyped-call]
-                yield engine._Dask(client)
+            with Client(cluster, set_as_default=False) as client:
+                yield client
 
-    monkeypatch.setattr(engine, "cluster_for_run", processes)
-    report = engine.materialize(root, [])
+    monkeypatch.setattr(compute, "connect", processes)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert not dataset.status(root)
@@ -987,7 +1297,7 @@ def test_a_processes_cluster_fits_through_the_seam(
 
 
 def test_the_report_is_json_ready(root: Path, inline: None) -> None:
-    report = engine.materialize(root, ["first"])
+    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     data = json.loads(json.dumps(report.as_dict()))
 
     assert data["ok"] is True
@@ -1008,7 +1318,7 @@ def _forge(path: Path, text: str) -> None:
 
 
 def test_a_materialized_output_has_no_foreign_write(root: Path, inline: None) -> None:
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert all(not o.foreign_write for o in engine.status(root).outputs)
 
@@ -1018,7 +1328,7 @@ def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None)
     read `current` forever, because a skip returns the recorded digest —
     so a directory last written by anything but its own run record is a
     *contradiction*, and contradiction is what `stale` means."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
@@ -1038,7 +1348,7 @@ def test_check_plans_the_remake_of_a_foreign_written_output(
 ) -> None:
     """Status and `--check` answer from one walk, so they cannot disagree
     about a foreign write — and the gate exits nonzero over it."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
@@ -1055,7 +1365,7 @@ def test_the_foreign_write_fact_survives_a_bytes_free_clone(
     """History-based on purpose: content changes move pointers in git, so
     the fact needs no annex content — where a rehash would have nothing to
     hash."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
@@ -1073,12 +1383,12 @@ def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None)
     """`results/` is lc's to write — the same philosophy as the dirty-tree
     refusal's path split — so a committed hand edit is remade, and the
     rebuild's own run record becomes the last writer again."""
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert "baseline/first" in report.made
     assert forged.read_text() == "alpha\n"  # the recipe's bytes, not the hand's
@@ -1099,7 +1409,7 @@ def _declare_license(root: Path) -> None:
 def test_an_unlicensed_project_gets_no_crate_and_one_report_line(
     root: Path, inline: None
 ) -> None:
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert not (root / "ro-crate-metadata.json").exists()
     assert any("[project].license" in w for w in report.warnings)
@@ -1110,7 +1420,7 @@ def test_a_licensed_materialize_converges_the_crate_and_commits_it(
 ) -> None:
     _declare_license(root)
 
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     crate_path = root / "ro-crate-metadata.json"
     assert crate_path.is_file()
@@ -1126,20 +1436,20 @@ def test_an_idempotent_rerun_commits_nothing(root: Path, inline: None) -> None:
     """The document is a pure function of repository state — a re-render at
     the same state is a string compare, not a commit."""
     _declare_license(root)
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     before = _commits(root)
 
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert _commits(root) == before
 
 
 def test_declaring_a_license_later_creates_the_crate_then(root: Path, inline: None) -> None:
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not (root / "ro-crate-metadata.json").exists()
 
     _declare_license(root)
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert (root / "ro-crate-metadata.json").is_file()
 
@@ -1150,12 +1460,12 @@ def test_a_removed_license_stops_maintenance_but_keeps_the_file(
     """The crate is in committed history either way; deleting a file over a
     possibly temporary edit is not convergence's call."""
     _declare_license(root)
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text().replace('license = "MIT"\n', ""))
     dataset.save(root, [pyproject], "drop the license")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert (root / "ro-crate-metadata.json").is_file()
     assert any("no longer maintained" in w for w in report.warnings)
@@ -1168,7 +1478,7 @@ def test_status_places_the_publication_view(root: Path, inline: None) -> None:
     _declare_license(root)
     assert engine.status(root).crate == "will be created by the next `lc materialize`"
 
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert engine.status(root).crate == "up to date with the outputs"
 
 
@@ -1180,7 +1490,7 @@ def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> N
     from dataclasses import replace
 
     _declare_license(root)
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     sidecar = root / "results/baseline/.second.manifest.json"
     manifest = assets.read(sidecar)
     assert manifest is not None
@@ -1189,20 +1499,20 @@ def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> N
 
     assert engine.status(root).crate.startswith("behind")
 
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert engine.status(root).crate == "up to date with the outputs"
 
 
 def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:
     _declare_license(root)
-    engine.materialize(root, [])
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
     spec_path = root / "astra.yaml"
     spec = spec_path.read_text()
     block = spec[spec.index("  - id: second") : spec.index("\ndecisions:") + 1]
     spec_path.write_text(spec.replace(block, ""))
     dataset.save(root, [spec_path], "drop the second output")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()

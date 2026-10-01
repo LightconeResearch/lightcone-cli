@@ -14,14 +14,17 @@ one it finishes with.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from lightcone.engine import container, sandbox
+from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
     SPEC_FILENAME,
+    ProjectError,
     child_env,
     require_uv,
     uv_prefix,
@@ -29,56 +32,70 @@ from lightcone.engine.project import (
 )
 
 
-def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
-    """Run a command in the project environment, inside the boundary.
-
-    A containerized probe never builds the image — it finds one, or
-    refuses naming the exact ``lc build`` — and converges the in-image
-    environment before executing, which is the same promise the direct
-    probe makes through its syncing ``uv run`` hop: the environment a
-    probe describes is one it just converged.
+def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.Outcome:
+    """Run a sandboxed command on one worker of the selected cluster.
 
     Args:
-        project: The project root.
-        command: The argv to run. Required — there is deliberately no bare
-            ``lc run`` shell, since an agent that opens an interactive
-            shell waits forever for input nobody will type.
+        project: The shared project root.
+        command: Command argv; no implicit shell is opened.
+        cluster_id: The name or immutable ID returned by ``lc compute launch``.
 
     Returns:
-        The exit code, what the boundary enforced, and any lines the
-        caller should print verbatim.
+        The command's exit status, sandbox attestation and diagnostic notes.
+
+    Raises:
+        ProjectError: If the cluster or its workers cannot execute this project.
     """
+    from lightcone.engine import compute
+    from lightcone.engine.compute.output import call, forwarding
+
     require_uv()
-    spec = read_spec(project)
+    paths = input_paths(project, read_spec(project))
+    with compute.connect(cluster_id) as client:
+        resources = TaskResources().requirements(
+            worker_capacities(client.scheduler_info()["workers"]), whole_worker=True,
+        )
+        runtime = container.runtime_for_run(project, build=False)
+        notes = [f"uv: {warning}" for warning in container.converge(runtime)]
+        use_gpus = resources.get("GPU", 0) > 0 and runtime.supports_gpus
+        if resources.get("GPU", 0) > 0 and not use_gpus:
+            notes.append(
+                f"GPU access is not supported by {runtime.runtime}; this probe runs without GPUs"
+            )
+        invocation = uuid4().hex
+        with forwarding(client) as output:
+            future = client.submit(
+                call, _probe, output.topic, "probe", runtime, paths, tuple(command),
+                use_gpus,
+                key=f"lc-{invocation}-probe", pure=False, resources=resources,
+            )
+            try:
+                outcome: sandbox.Outcome = future.result()
+            except ProjectError:
+                raise
+            except Exception as exc:
+                raise ProjectError(
+                    f"cluster execution failed: {exc}. {compute.UNSTOPPED}"
+                ) from exc
+            if not output.wait("probe"):
+                notes.append("remote output forwarding did not finish before its deadline")
+    if warning := uv_scrub_warning():
+        notes.append(warning)
+    return replace(outcome, notes=(*notes, *outcome.notes))
 
-    runtime = container.runtime_for_run(project, build=False)
-    if runtime.mode == "containerized":
-        # The probe's converge. Direct mode's is the syncing hop below —
-        # the deliberate exception to `container.converge`, because there
-        # the hop itself is what converges.
-        container.sync(project, runtime)
 
-    built = container.policy_for(runtime, input_paths(project, spec))
+def _probe(
+    runtime: container.Runtime, paths: list[Path], command: tuple[str, ...],
+    use_gpus: bool,
+    *, output: Callable[[str, bytes], None],
+) -> sandbox.Outcome:
+    """Execute the prepared probe; the driver alone converges its environment."""
+    built = container.policy_for(runtime, paths, use_gpus=use_gpus)
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
-            container.backend(runtime),
-            policy,
-            list(command),
-            cwd=project,
-            # The direct hop converges; the containerized one must not —
-            # the converge above already did, into the in-image
-            # environment the hop is about to enter.
-            prefix=uv_prefix(project, sync=runtime.mode == "direct"),
-            # Same reason as convergence: this uv invocation names its
-            # project explicitly, so an environment activated elsewhere
-            # is never what we mean — and uv says so, once per run, in
-            # the middle of the probe's own output.
-            env=child_env(),
+            container.backend(runtime), policy, command, cwd=runtime.root,
+            prefix=uv_prefix(runtime.root), env=child_env(), output=output,
         )
-    # The probe is what called `child_env`, so the probe's outcome is
-    # where the scrub's fact belongs — the caller prints notes verbatim.
-    if warning := uv_scrub_warning():
-        outcome = replace(outcome, notes=(warning, *outcome.notes))
     return outcome
 
 

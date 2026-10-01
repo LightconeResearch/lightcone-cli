@@ -63,10 +63,7 @@ def _available() -> list[str]:
     try:
         if (
             shutil.which("docker")
-            and subprocess.run(
-                ["docker", "info"], capture_output=True, timeout=10
-            ).returncode
-            == 0
+            and subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode == 0
         ):
             found.append("docker")
     except subprocess.TimeoutExpired:
@@ -97,9 +94,11 @@ def runtime(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         shutil,
         "which",
-        lambda tool, path=None: None
-        if tool in ("podman-hpc", "podman", "docker") and tool != name
-        else real_which(tool, path=path),
+        lambda tool, path=None: (
+            None
+            if tool in ("podman-hpc", "podman", "docker") and tool != name
+            else real_which(tool, path=path)
+        ),
     )
     return name
 
@@ -110,9 +109,7 @@ def cproject(analysis: Callable[..., Path]) -> Path:
     the way a real project escalates: edit pyproject, commit, build."""
     root = analysis(_SPEC, files={"data/catalog.fits": "stars\n"})
     text = (root / "pyproject.toml").read_text()
-    (root / "pyproject.toml").write_text(
-        text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n'
-    )
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
     dataset.save(root, [root], "containerize")
     return root
 
@@ -146,8 +143,11 @@ def test_build_commits_the_exact_bytes_and_leaves_the_tree_clean(
     # And the image carries its own identity.
     label = subprocess.run(
         [
-            runtime, "image", "inspect",
-            "--format", '{{index .Config.Labels "io.lightcone.image"}}',
+            runtime,
+            "image",
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "io.lightcone.image"}}',
             resolved.image_id,
         ],  # fmt: skip
         capture_output=True,
@@ -163,7 +163,7 @@ def test_build_commits_the_exact_bytes_and_leaves_the_tree_clean(
 # ---- lc run: the probe ------------------------------------------------------
 
 
-def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
+def test_the_probe_and_its_boundary(runtime: str, cproject: Path, cluster_id: str) -> None:
     """One image, the probe's whole contract — each denial beside the
     mutation check that proves the same reach works where it should.
 
@@ -173,10 +173,10 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     host itself reads it fine). The network is not controlled here any
     more than on the host mechanisms — `allowed`, symmetrically."""
     with pytest.raises(ProjectError, match="lc build"):
-        engine_run.probe(cproject, ["bc", "--version"])
+        engine_run.probe(cproject, ["bc", "--version"], cluster_id=cluster_id)
 
     container.build(cproject)
-    outcome = engine_run.probe(cproject, ["bc", "--version"])
+    outcome = engine_run.probe(cproject, ["bc", "--version"], cluster_id=cluster_id)
     assert outcome.returncode == 0
     assert outcome.attestation.mechanism == runtime
     assert outcome.attestation.network == "allowed"
@@ -185,7 +185,7 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     outside = Path.home() / ".lc-smoke-outside.txt"
     outside.write_text("host secret\n")
     try:
-        denied = engine_run.probe(cproject, ["cat", str(outside)])
+        denied = engine_run.probe(cproject, ["cat", str(outside)], cluster_id=cluster_id)
         assert denied.returncode != 0
         assert outside.read_text() == "host secret\n"  # the host itself can
     finally:
@@ -194,15 +194,18 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     # The rootfs is read-only: a write outside the declared set is a
     # loud denial, not bytes vanishing with the container. The mutation
     # check is the same write into results/, which must succeed.
-    rootfs = engine_run.probe(cproject, ["bash", "-c", "mkdir /output"])
+    rootfs = engine_run.probe(cproject, ["bash", "-c", "mkdir /output"], cluster_id=cluster_id)
     assert rootfs.returncode != 0
-    results = engine_run.probe(cproject, ["bash", "-c", "touch results/probe-write"])
+    results = engine_run.probe(
+        cproject, ["bash", "-c", "touch results/probe-write"], cluster_id=cluster_id
+    )
     assert results.returncode == 0
     (cproject / "results" / "probe-write").unlink()
 
     loopback = engine_run.probe(
         cproject,
         ["python", "-c", 'import socket; socket.socket().bind(("127.0.0.1", 0))'],
+        cluster_id=cluster_id,
     )
     assert loopback.returncode == 0
 
@@ -210,12 +213,12 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
 # ---- lc materialize ---------------------------------------------------------
 
 
-def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path) -> None:
+def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, cluster_id: str) -> None:
     """The whole layer at once: the driver builds and commits the image,
     converges the in-image environment, runs the recipe behind the mount
     table, records the runtime facts, and leaves the tree clean — through
     the real Dask cluster, not a stub."""
-    report = engine.materialize(cproject, [])
+    report = engine.materialize(cproject, [], cluster_id=cluster_id)
 
     assert report.ok, report.warnings
     assert report.made == ["baseline/sums"]
@@ -244,6 +247,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     cproject: Path,
     tmp_path: Path,
     engine_dist: tuple[str, Path],
+    cluster_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The record's whole claim, on the machine that matters: a clone with
@@ -258,7 +262,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
         pytest.skip("the rerun subprocess always uses the host's preferred runtime")
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
-    report = engine.materialize(cproject, [])
+    report = engine.materialize(cproject, [], cluster_id=cluster_id)
     assert report.ok, report.warnings
     original = assets.read(cproject / "results/baseline/.sums.manifest.json")
     assert original is not None

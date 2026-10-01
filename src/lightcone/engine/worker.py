@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox, venue
+from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -122,6 +123,7 @@ def materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     *upstream: TaskResult,
+    output: Callable[[str, bytes], None] | None = None,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
 
@@ -142,12 +144,13 @@ def materialize(
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
+        output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, context, refresh, foreign, upstream)
+        return _materialize(root, task, context, refresh, foreign, upstream, output)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -159,6 +162,7 @@ def _materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     upstream: tuple[TaskResult, ...],
+    output: Callable[[str, bytes], None] | None,
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
@@ -179,7 +183,7 @@ def _materialize(
         foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(root, task, inputs, context)
+        return execute(root, task, inputs, context, output=output)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -201,6 +205,8 @@ def execute(
     task: Task,
     input_versions: Mapping[str, str],
     context: RunContext,
+    *,
+    output: Callable[[str, bytes], None] | None = None,
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
@@ -216,11 +222,13 @@ def execute(
         input_versions: Each declared input's content identity, recorded
             in the manifest as the chain.
         context: The run's driver-resolved facts.
+        output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
         nothing and never touches git beyond reading HEAD.
     """
+    resources = TaskResources.parse(task.resources)
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
@@ -233,24 +241,26 @@ def execute(
     # cannot reach a sibling, a longer id, another output's sidecar, or a
     # scope directory of the same name.
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
-    task.manifest_path.unlink(missing_ok=True)
-    for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
-        if stale.is_file() or stale.is_symlink():
-            stale.unlink()
-
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
-        context.runtime, read_paths, write_dir=task.output_path.parent
+        context.runtime, read_paths, write_dir=task.output_path.parent,
+        use_gpus=resources.gpus > 0,
     )
-    started_at = _now()
     with sandbox.scope(policy):
+        # Validate device visibility and container support before removing outputs.
+        task.manifest_path.unlink(missing_ok=True)
+        for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
+            if stale.is_file() or stale.is_symlink():
+                stale.unlink()
+        started_at = _now()
         outcome = sandbox.run(
             container.backend(context.runtime),
             policy,
             [_SHELL, "-c", task.recipe],
             cwd=root,
-            prefix=uv_prefix(root, sync=False),
+            prefix=uv_prefix(root),
             env=child_env(),
+            output=output,
         )
     finished_at = _now()
 
@@ -334,7 +344,7 @@ def _gate(root: Path, env_version: str) -> str:
     return (
         "the environment changed while the run was in flight — uv.lock, "
         ".python-version, or an install setting was edited. Nothing was "
-        "recorded; re-run `lc materialize`."
+        "recorded; re-run `lc materialize <cluster>`."
     )
 
 
@@ -396,9 +406,6 @@ def main(argv: list[str]) -> int:
 
     universe_id, _, output_id = argv[0].partition("/")
     try:
-        # A rerun executes a recipe, so it is gated the way materialize
-        # is: compute nodes, never a NERSC login node.
-        venue.require_compute_node("datalad rerun <commit>")
         root = declared_project()
         # The graph — and with it the task lookup — before any converge:
         # a typo'd target must cost nothing and mask nothing, and a
@@ -410,7 +417,9 @@ def main(argv: list[str]) -> int:
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
-        runtime = container.runtime_for_run(root, build=False)
+        runtime = container.runtime_for_run(
+            root, build=False, use_gpus=TaskResources.parse(task.resources).gpus > 0,
+        )
         container.converge(runtime)
         result = execute(
             root,
@@ -449,7 +458,7 @@ def _from_disk(task: Task) -> dict[str, str]:
             if (manifest := assets.read(assets.manifest_path(path))) is None:
                 raise ProjectError(
                     f"the input `{name}` has never been materialized — there is no "
-                    f"manifest beside {path}. Run `lc materialize` instead."
+                    f"manifest beside {path}. Run `lc materialize <cluster>` instead."
                 )
             versions[name] = manifest.data_version
         else:

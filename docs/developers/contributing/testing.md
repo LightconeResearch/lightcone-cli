@@ -31,7 +31,7 @@ testing execution.
 | Classification | `test_assets.py` | pure |
 | One output, real recipe | `test_worker.py` | real boundary, real repo |
 | The run, the record | `test_materialize.py` | real repos; one real `LocalCluster`; real `datalad rerun` |
-| Venue detection & launch | `test_venue.py` | fakes the *host* (env vars, a stub srun), never the code |
+| Compute lifecycle | `test_compute*.py` | real detached local clusters; fake Slurm commands; real stock Dask bootstrap |
 | Policy / wrap / denial | `test_sandbox_*.py` | pure, run on every OS |
 | The kernel's answer | `test_sandbox_enforcement.py` | gated |
 | Image identity | `test_image.py` | pure — structure and ordering, never byte goldens |

@@ -22,12 +22,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox.boundary import SANDBOX_ENV
 from lightcone.engine.sandbox.model import Attestation, Capability, Policy
 
 #: The runtimes this backend can speak for — the one statement of the
 #: set, so the type does not get hand-copied out of step at its uses.
 OCIRuntime = Literal["podman", "docker", "podman-hpc"]
+
+
+def supports_gpus(runtime: str) -> bool:
+    """Whether the runtime can preserve the native allocation's GPU assignment."""
+    return runtime == "podman-hpc"
+
+
+def require_gpu_runtime(runtime: str) -> None:
+    """Refuse runtimes that need device translation outside the native allocation."""
+    if not supports_gpus(runtime):
+        raise ProjectError(
+            "GPU containers require podman-hpc; Docker/Podman GPUs are not supported"
+        )
 
 
 @dataclass(frozen=True)
@@ -81,7 +95,16 @@ class OCIBackend:
         # host-layout collision `_write_roots` documents for direct mode.
         mounts = [f"--volume={path.resolve()}:{path}:ro" for path in policy.read]
         mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
-        overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
+        gpu_mask = policy.env.get("CUDA_VISIBLE_DEVICES", "")
+        environment = dict(policy.env)
+        if not gpu_mask:
+            # CUDA images may default to all devices under an NVIDIA runtime.
+            environment["NVIDIA_VISIBLE_DEVICES"] = "void"
+        overlay = [f"--env={k}={v}" for k, v in sorted(environment.items())]
+        gpu_flags = []
+        if gpu_mask:
+            require_gpu_runtime(self.runtime)
+            gpu_flags = ["--gpu"]
         return [
             self.runtime, "run", "--rm",
             "--entrypoint", "",
@@ -97,6 +120,7 @@ class OCIBackend:
             # would rewrite the user's own file contexts on disk.
             "--security-opt", "label=disable",
             *self.user_flags,
+            *gpu_flags,
             *mounts,
             "--tmpfs", "/tmp:rw,exec",
             "--shm-size", "1g",

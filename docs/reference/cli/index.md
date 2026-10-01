@@ -16,7 +16,7 @@ and audit it.
   alone, which is what makes the CLI safe to drive from scripts and
   agents.
 - **Refusals carry their remedy.** When a command refuses (a dirty
-  tree, a login node, a missing image), the message names the exact
+  tree, an unavailable cluster, a missing image), the message names the exact
   command that fixes it.
 
 ## Commands
@@ -26,6 +26,7 @@ and audit it.
 | [`lc init`](init.md) | Converge a directory into a Lightcone project (idempotent). |
 | [`lc materialize`](materialize.md) | Make the analysis's outputs; commit each one as it lands. |
 | [`lc status`](status.md) | Report the state of every output. Reads only; always exits 0. |
+| [`lc compute`](compute.md) | Allocate resources, inspect clusters, and end allocations. |
 | [`lc run`](run.md) | Run an ad-hoc command in the project environment, under isolation. |
 | [`lc build`](build.md) | Containerized projects: build the image and commit it. |
 

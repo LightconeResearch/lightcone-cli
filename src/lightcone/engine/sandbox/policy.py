@@ -32,6 +32,7 @@ from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox.model import Policy
 
 #: The utility tier of the exec allowlist. A maintained policy
@@ -174,6 +175,18 @@ _HOME_LAYOUT = {
     "TMPDIR": ".tmp",
 }
 
+_DEVICE_ROOT = Path("/dev")
+
+
+def _gpu_device_paths() -> tuple[Path, ...]:
+    """Grant existing NVIDIA character devices, retaining native OS/cgroup limits."""
+    candidates = [
+        *(_DEVICE_ROOT / name for name in ("nvidiactl", "nvidia-uvm", "nvidia-uvm-tools")),
+        *_DEVICE_ROOT.glob("nvidia[0-9]*"),
+        *(_DEVICE_ROOT / "nvidia-caps").glob("*"),
+    ]
+    return tuple(sorted(path for path in candidates if path.is_char_device()))
+
 
 def exec_policy(
     project: Path,
@@ -182,6 +195,7 @@ def exec_policy(
     env_dir: Path | None = None,
     containerized: bool = False,
     write_dir: Path | None = None,
+    use_gpus: bool = False,
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
@@ -211,6 +225,7 @@ def exec_policy(
             directory holding its output file, shared with the siblings
             declared beside it. Absent for a probe, which has no analysis
             node and gets the project's own ``results/`` whole.
+        use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
 
     Returns:
         The policy. The in-tree write scope is granted only if it exists —
@@ -219,6 +234,13 @@ def exec_policy(
         disk; the caller owns removing it (see
         :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
+    gpu_mask = os.environ.get("CUDA_VISIBLE_DEVICES", "") if use_gpus else ""
+    if use_gpus and not gpu_mask:
+        raise ProjectError(
+            "GPU execution requires a nonempty CUDA_VISIBLE_DEVICES mask. "
+            "Slurm sets it for GPU jobs; for a local rerun, select your devices explicitly, "
+            "for example: CUDA_VISIBLE_DEVICES=0 datalad rerun"
+        )
     env_dir = env_dir if env_dir is not None else project / ".venv"
     # The containerized HOME lives under the project's own (gitignored)
     # `.lightcone/`, not the system temp dir: it is a mount source, and
@@ -234,6 +256,10 @@ def exec_policy(
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     in_tree_write = write_dir if write_dir is not None else project / "results"
+    overlay = home_overlay(tmp_home, env_dir, containerized=containerized)
+    overlay["CUDA_VISIBLE_DEVICES"] = gpu_mask
+    if use_gpus and "CUDA_DEVICE_ORDER" in os.environ:
+        overlay["CUDA_DEVICE_ORDER"] = os.environ["CUDA_DEVICE_ORDER"]
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a
@@ -246,14 +272,15 @@ def exec_policy(
             write=_declared([tmp_home, in_tree_write]),
             execute=(),
             tmp_home=tmp_home,
-            env=home_overlay(tmp_home, env_dir, containerized=True),
+            env=overlay,
         )
 
     python = _venv_python(env_dir)
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, in_tree_write, *_write_roots(project)])
+    devices = _gpu_device_paths() if use_gpus else ()
+    write = _existing([tmp_home, in_tree_write, *_write_roots(project), *devices])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -261,7 +288,7 @@ def exec_policy(
         write=write,
         execute=_existing(_exec_set(env_dir, python)),
         tmp_home=tmp_home,
-        env=home_overlay(tmp_home, env_dir),
+        env=overlay,
     )
 
 
@@ -321,6 +348,11 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
     }
     if containerized:
         overlay["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
+        # Dask's Nanny configures these on the worker. Containers do not
+        # inherit them, so carry the effective values across the boundary.
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            if name in os.environ:
+                overlay[name] = os.environ[name]
     return overlay
 
 
