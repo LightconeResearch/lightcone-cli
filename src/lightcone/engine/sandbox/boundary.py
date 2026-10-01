@@ -132,6 +132,7 @@ def run(
     env: dict[str, str],
     prefix: Sequence[str] = (),
     output: Callable[[str, bytes], None] | None = None,
+    umask: int = -1,
 ) -> Outcome:
     """Run a command through a backend, and explain it if it fails.
 
@@ -154,6 +155,7 @@ def run(
             host-resolved ``env``.
         output: Optional receiver for unchanged stdout/stderr bytes, used when the
             caller forwards a remote command's output to its own terminal.
+        umask: The command's file-creation mask; ``-1`` inherits ours.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
@@ -184,6 +186,7 @@ def run(
         stdout=subprocess.PIPE if output is not None else None,
         stderr=subprocess.PIPE,
         bufsize=0,
+        umask=umask,
     )
     assert proc.stderr is not None  # Popen was given PIPE
     tail = _Tail(proc.stderr, output)
