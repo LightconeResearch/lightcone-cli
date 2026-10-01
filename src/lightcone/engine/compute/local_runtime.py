@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from types import FrameType
 
+from lightcone._signals import clear_inherited_mask
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
     create_security,
@@ -23,6 +24,7 @@ from lightcone.engine.compute.runtime import (
 
 def main() -> None:
     """Run the detached allocation owner until shutdown or its walltime expires."""
+    clear_inherited_mask()
     os.umask(0o077)
     directory = private_directory(Path(sys.argv[1]))
     launch = read_private_json(directory / "launch.json")

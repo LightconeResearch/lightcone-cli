@@ -517,4 +517,7 @@ def _from_disk(task: Task) -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    from lightcone._signals import clear_inherited_mask
+
+    clear_inherited_mask()
     raise SystemExit(main(sys.argv[1:]))

@@ -9,6 +9,9 @@ def main() -> None:
     The console-script entry point. Imports the command module lazily, so
     the cost of click and the engine is paid only once a command runs.
     """
+    from lightcone._signals import clear_inherited_mask
     from lightcone.cli.commands import main as _main
+
+    clear_inherited_mask()
 
     _main()
