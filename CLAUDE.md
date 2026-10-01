@@ -107,11 +107,12 @@ Each of these has been asked for in review at least once; none is optional.
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
 - **`docs/` is live again** (rewritten 2026-08, PRs #185–#188; the
-  freeze is over). The site is two tracks — user guide + developer
-  corner — and a change now lands with its docs: a new or changed verb
-  updates its `docs/cli/` page, an engine change updates its
-  `docs/api/` module page, and user-visible behavior updates the user
-  guide. The docs' own rules match this file's: document only what
+  freeze is over). The site's sections are Home, Tutorial, Guides,
+  Concepts, Reference and Developers (the nav is `zensical.toml`), and
+  a change now lands with its docs: a new or changed verb updates its
+  `docs/reference/cli/` page, an engine change updates its
+  `docs/developers/internals/` module page, and user-visible behavior
+  updates the Quickstart, guide or concept page it touches. The docs' own rules match this file's: document only what
   exists, quote refusals from real runs, and verify every command
   block by executing it. `check-docs.yml` reviews each merged PR for
   drift.

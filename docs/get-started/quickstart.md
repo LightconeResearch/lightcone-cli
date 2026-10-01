@@ -98,14 +98,16 @@ project's directory, it manages everything through Lightcone: decisions
 go into the analysis file, results are made with `lc`, and it keeps
 track of what's out of date.
 
-## 6. Two commands to know
+## 6. Commands to know
 
 ```bash
-lc materialize    # make the results, each recorded with what made it
-lc status         # see which results are out of date, and why
+CLUSTER=$(lc compute launch --wait)   # start compute on this machine, keep its name
+lc materialize "$CLUSTER"             # make the results, each recorded with what made it
+lc status                             # see which results are out of date, and why
 ```
 
-Run them yourself, or ask your agent to. The
+The local cluster stops on its own after 30 minutes without work. Run
+these yourself, or ask your agent to. The
 [`lc` reference](../reference/cli/index.md) covers every command.
 
 ## Next steps

@@ -41,7 +41,7 @@ lc compute down "$CLUSTER"
 ASTRA specs are plain, structured YAML — they work well hand-written or
 drafted with any AI coding assistant.
 
-→ [Full getting-started guide](https://docs.lightconeresearch.org/user/getting-started/)
+→ [Full walkthrough](https://docs.lightconeresearch.org/guides/without-agent/)
 
 ## Capabilities
 

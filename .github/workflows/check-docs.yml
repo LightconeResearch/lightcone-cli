@@ -35,16 +35,18 @@ jobs:
             and complete given the code changes introduced by this PR.
 
             The documentation is structured, and each kind of change has a home:
-            - A verb's flags, output, JSON shape, or exit codes → its page in docs/cli/
-              (one page per verb, plus the overview's exit-code contract).
+            - A verb's flags, output, JSON shape, or exit codes → its page in
+              docs/reference/cli/ (one page per verb, plus the overview's exit-code
+              contract).
             - An engine module's responsibility, key symbols, or invariants → its page
-              in docs/api/ (hand-written module tours) and, for cross-cutting shifts,
-              docs/architecture.md.
+              in docs/developers/internals/ (hand-written module tours) and, for
+              cross-cutting shifts, docs/developers/architecture.md.
             - User-visible behavior (scaffold contents, states, refusal messages,
-              environment model, SLURM, publication) → docs/user/ (getting-started
-              quotes real console output; troubleshooting quotes real refusals) and
-              README.md's quick start.
-            - Test structure, dev workflow, or conventions → docs/contributing/.
+              environment model, SLURM, publication) → docs/get-started/ (the
+              Quickstart), docs/guides/ (guides/without-agent.md quotes real console
+              output), docs/concepts/, docs/reference/ (troubleshooting quotes real
+              refusals; glossary; installation) and README.md's quick start.
+            - Test structure, dev workflow, or conventions → docs/developers/contributing/.
 
             Steps to follow:
             1. Run: git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }}
