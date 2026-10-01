@@ -38,10 +38,11 @@ runtimes receive a CPU policy and an explanatory note. CPU containers remain
 supported on all runtimes and set `NVIDIA_VISIBLE_DEVICES=void` to override image defaults.
 See [GPU allocations](../user/cluster.md#gpu-allocations).
 
-Container recipes and probes explicitly receive the worker's effective
-`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `OPENBLAS_NUM_THREADS` values when set.
-This preserves Dask Nanny's numerical-library thread settings across the OCI
-boundary. Container environment variables remain an explicit allowlist.
+A recipe's policy sets every pool in `THREAD_POOLS` (`OMP_NUM_THREADS`,
+`MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMBA_NUM_THREADS`) to its declared
+CPUs, in both modes. Container probes explicitly receive the worker's effective
+`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `OPENBLAS_NUM_THREADS` values when set,
+preserving Dask Nanny's settings across the container boundary. Container environment variables remain an explicit allowlist.
 
 ## What must stay true
 

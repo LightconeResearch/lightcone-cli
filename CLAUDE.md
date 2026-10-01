@@ -1763,7 +1763,10 @@ from the driver's temporary directory.
 runs a Nanny and its separate worker process; rank zero also hosts the scheduler.
 Nanny defaults `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `OPENBLAS_NUM_THREADS`
 to `1`, preserving explicit launch environment values, and sandbox policy passes
-the effective values into recipe containers. The step sets
+the effective values into probe containers. A recipe's pools are its own: the
+policy sets `THREAD_POOLS` (those three plus `NUMBA_NUM_THREADS`, whose default
+is the node's core count) to the recipe's declared CPUs, so the Dask reservation
+and the threads that use it are one number. The step sets
 `--kill-on-bad-exit=0 --wait=0` so a rank exit alone does not terminate the others.
 This is worker-process recovery, not complete recipe isolation: site OOM policy
 may still kill a step or job; dead schedulers and Nannies are not restarted;

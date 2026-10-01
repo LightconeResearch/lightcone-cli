@@ -421,7 +421,7 @@ def converge(runtime: Runtime) -> list[str]:
 
 def policy_for(
     runtime: Runtime, read_paths: list[Path], *, write_dir: Path | None = None,
-    use_gpus: bool = False,
+    use_gpus: bool = False, threads: int | None = None,
 ) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
@@ -436,6 +436,8 @@ def policy_for(
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
         write_dir: The directory a recipe's output lands in; absent for a probe.
         use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
+        threads: The recipe's declared CPUs, for its thread pools; absent
+            for a probe.
 
     Returns:
         The policy for this world.
@@ -451,6 +453,7 @@ def policy_for(
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,
         use_gpus=use_gpus,
+        threads=threads,
     )
 
 

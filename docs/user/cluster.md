@@ -318,9 +318,10 @@ controls Dask task concurrency independently of the allocation's logical CPUs.
 Dask's Nanny defaults `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and
 `OPENBLAS_NUM_THREADS` to `1`, preventing each concurrent recipe from requesting
 the whole node's numerical-library threads. Values explicitly set in the launch
-environment take precedence and also reach containerized recipes. For recipes
-that need more threads, set those values before launching and declare enough
-recipe CPUs for each task; `task_slots_per_node` can further cap concurrency. See
+environment take precedence and also reach containerized probes. A recipe's
+own pools are sized to its declared CPUs instead (see
+[Recipe resource requirements](#recipe-resource-requirements)); `task_slots_per_node` can further cap
+concurrency. See
 [Dask's Nanny environment settings](https://distributed.dask.org/en/stable/worker.html#nanny).
 
 The Nanny restarts an exited worker, and Dask can reschedule its tasks. The step
@@ -531,14 +532,14 @@ its request. Slurm enforces the overall allocation, while local execution
 uses cooperative budgets. Leave capacity for the scheduler, workers, and other
 overhead when declaring recipe requirements.
 
-A CPU reservation does not set numerical-library thread counts. Local and Slurm
-clusters use Dask's Nanny defaults of `1` for `OMP_NUM_THREADS`, `MKL_NUM_THREADS`,
-and `OPENBLAS_NUM_THREADS` when those variables are unset. Container recipes
-receive the worker's effective values too. Set the variables before
-`lc compute launch`, or in the recipe command, to choose another value, and
-declare enough recipe CPUs for those threads. See
-[Dask's defaults](https://docs.dask.org/en/stable/configuration.html#distributed.nanny.pre-spawn-environ.OMP_NUM_THREADS)
-and [environment precedence](https://distributed.dask.org/en/stable/_modules/distributed/nanny.html).
+A recipe's declared CPUs also size its numerical-library thread pools: the
+recipe runs with `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and
+`NUMBA_NUM_THREADS` set to its `cpus` (1 when undeclared), in direct and
+containerized mode alike, so it uses the cores reserved for it and no more. Set
+a variable in the recipe command to choose another value. `lc run` probes have
+no declaration and keep the worker's values: Dask's Nanny defaults of `1` for
+the first three, or values set before `lc compute launch`. See
+[Dask's defaults](https://docs.dask.org/en/stable/configuration.html#distributed.nanny.pre-spawn-environ.OMP_NUM_THREADS).
 
 ## Execution requirements and limits
 
