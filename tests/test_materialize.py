@@ -730,7 +730,7 @@ def test_a_root_output_consumes_a_sub_analysis_output(
     it. The whole tree materializes from the root and converges."""
     root = analysis(_PARENT, files={"part/astra.yaml": _PART, "data/seed.txt": "42\n"})
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/part.number", "baseline/overview"]
     assert (root / "results/baseline/part/number.txt").read_text() == "42\n"
