@@ -18,7 +18,7 @@ Source: `src/lightcone/engine/assets.py`.
 | `Versions` | Per-run memo populated on the driver and serialized with tasks, so shared declared inputs are hashed once. |
 | `read(sidecar)` / `write(...)` | The manifest, `.<output_id>.manifest.json`. Both take the sidecar's own path, so a caller holding an output path has to say `manifest_path` out loud. |
 | `output_path(root, u, id, fmt)` | The output's file, guarded: any part that is not a single path component is refused, and so is a format that could not be an extension. |
-| `manifest_path(output)` | The sidecar beside it, named from the id alone — so it keeps its path, and its history, across a re-declared format. |
+| `manifest_path(directory, id)` | The sidecar in the output's directory, named from the id alone — so it keeps its path, and its history, across a re-declared format. |
 | `ContentNotFetchedError` | An annexed file whose content is not in this clone, in either shape it takes. |
 
 ## What must stay true

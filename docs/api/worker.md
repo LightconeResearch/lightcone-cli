@@ -56,8 +56,8 @@ the rerun environment, for example `CUDA_VISIBLE_DEVICES=0 datalad rerun`. Recip
 - **The reset takes what the output's id names, never the directory** —
   outputs share a directory and Dask writes them concurrently, so a
   whole-directory delete would take a neighbour's bytes with it. The
-  glob is `<output_id>.*` plus the sidecar: an id cannot contain a dot,
-  so it cannot reach a sibling, and it *does* reach a payload left by a
+  glob is `<local_id>.*` in the output's directory plus the sidecar: a
+  local id cannot contain a dot, so it cannot reach a sibling, and it *does* reach a payload left by a
   run that declared another `format`.
 - **A payload that is not a regular file fails the task.** `data_version`
   hashes a directory perfectly happily, so `mkdir {output}` would

@@ -16,6 +16,7 @@ import json
 import pickle
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,8 +24,10 @@ from typing import Any
 
 import pytest
 from conftest import CLUSTER_ID, _Inline
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from lightcone.engine import assets, dataset, identity
+from lightcone.engine import assets, dataset, identity, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskResult
@@ -671,6 +674,134 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not any("in flight" in w for w in report.warnings)
+
+
+# ---- a spec with a sub-analysis --------------------------------------------
+
+_PARENT = """
+version: "0.0.13"
+name: parent
+
+inputs: []
+
+outputs:
+  - id: number
+    from: part.number
+
+  - id: overview
+    type: report
+    format: txt
+    inputs: [number]
+    recipe:
+      command: cat {inputs.number} > {output}
+
+analyses:
+  part:
+    path: ./part
+"""
+
+# The seed sits at the project root, not under part/: a `path:` sub-analysis
+# resolves its sources and runs its recipe from the root (#201).
+_PART = """
+version: "0.0.13"
+name: part
+
+inputs:
+  - id: seed
+    type: data
+    source: data/seed.txt
+
+outputs:
+  - id: number
+    type: metric
+    format: txt
+    inputs: [seed]
+    recipe:
+      command: cat {inputs.seed} > {output}
+"""
+
+
+def test_a_root_output_consumes_a_sub_analysis_output(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """ASTRA qualifies a sub-analysis output as `<analysis>.<output>`; its
+    scope becomes a directory under the universe, so the file and its
+    manifest are named from the local id and a root output can chain on
+    it. The whole tree materializes from the root and converges."""
+    root = analysis(_PARENT, files={"part/astra.yaml": _PART, "data/seed.txt": "42\n"})
+
+    report = engine.materialize(root, [])
+
+    assert report.made == ["baseline/part.number", "baseline/overview"]
+    assert (root / "results/baseline/part/number.txt").read_text() == "42\n"
+    assert (root / "results/baseline/part/.number.manifest.json").is_file()
+    assert (root / "results/baseline/overview.txt").read_text() == "42\n"
+    assert not dataset.status(root)
+
+    def blob(rel: str) -> str:
+        return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
+
+    assert blob("results/baseline/part/number.txt").startswith("/annex/objects/")
+    assert blob("results/baseline/part/.number.manifest.json").startswith("{")
+    manifest = assets.read(root / "results/baseline/part/.number.manifest.json")
+    assert manifest is not None and manifest.output_id == "part.number"
+    assert engine.check(root, []).up_to_date
+    assert engine.status(root).counts == {"current": 2, "behind": 0, "stale": 0}
+
+
+_IDS = st.lists(st.sampled_from(["a", "ab", "b", "manifest", "json"]), min_size=1, max_size=3)
+_FORMATS = st.sampled_from(["txt", "b", "tar.gz", "b.txt", "manifest.json"])
+
+
+@settings(max_examples=300, deadline=None)
+@given(declared=st.dictionaries(_IDS.map(".".join), _FORMATS, min_size=1, max_size=6),
+       stale=_FORMATS)
+def test_every_output_owns_exactly_its_own_files(declared: dict[str, str], stale: str) -> None:
+    """Root and qualified ids side by side — `a` beside `ab` and `a.b`, `a.b` beside
+    `a.b.c`, so one name is both an output and an analysis — with dotted
+    formats, each output having also left a payload in the `stale` format and
+    a half-written manifest.
+    No two outputs share a payload or manifest path, the manifest does not
+    depend on the format, and what an output clears (the worker's sweep,
+    run for real) and stages (`_owned`, asked of git) is its own files and
+    never another output's."""
+    from lightcone.engine.plan import Task
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        tasks = {
+            i: Task("u", i, assets.output_path(root, "u", i, fmt), "", {}, {}, {}, "")
+            for i, fmt in declared.items()
+        }
+        payloads = {t.output_path for t in tasks.values()}
+        manifests = {t.manifest_path for t in tasks.values()}
+        assert len(payloads) == len(manifests) == len(declared)
+        assert not payloads & manifests
+        for i, t in tasks.items():
+            other = assets.output_path(root, "u", i, stale)
+            assert assets.manifest_path(other.parent, i) == t.manifest_path
+
+        leftovers = {assets.output_path(root, "u", i, stale) for i in declared}
+        half_written = {m.with_name(m.name + ".tmp") for m in manifests}
+        everything = payloads | manifests | leftovers | half_written
+        for path in everything:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+        for i, task in tasks.items():
+            mine = {task.output_path, task.manifest_path, assets.output_path(root, "u", i, stale)}
+            staged = subprocess.run(
+                ["git", "ls-files", "-o", "-z", "--", *engine._owned(root, task)],
+                cwd=root, check=True, capture_output=True, text=True,
+            ).stdout.split("\0")
+            own_tmp = task.manifest_path.with_name(task.manifest_path.name + ".tmp")
+            assert {root / s for s in staged if s} == mine | {own_tmp}
+
+            worker._clear(task)
+            assert {p for p in everything if not p.exists()} == mine
+            for path in mine:
+                path.touch()
 
 
 # ---- leaving the tree as clean as it was found -----------------------------

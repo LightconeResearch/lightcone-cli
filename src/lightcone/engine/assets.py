@@ -56,59 +56,66 @@ def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
     this is the path a rendered recipe writes to, with no staging, scratch
     or relocation in between.
 
+    An output declared inside a sub-analysis carries ASTRA's **qualified**
+    id — the scope path and the local id joined with dots, e.g.
+    ``null_tests.config_space_pte_data``. Each scope becomes a directory,
+    so the results tree mirrors the analysis tree and the file's own name
+    is the local id alone.
+
     Args:
         root: The project root.
         universe_id: The universe the output is made under.
-        output_id: The output's id.
+        output_id: The output's id, qualified if it is not root-level.
         fmt: The declared serialization, without a leading dot.
 
     Returns:
         The output's path.
 
     Raises:
-        ProjectError: If either id cannot name a single path component, or
-            the format could not be an extension. The path is *composed*,
-            so an unchecked part would place a file outside the tree the
-            caller checked — and an id carrying a dot would make
-            :func:`manifest_path` recover the wrong name.
+        ProjectError: If the universe id or any segment of the output id
+            cannot name a single path component, or the format could not
+            be an extension. The path is *composed*, so an unchecked part
+            would place a file outside the tree the caller checked.
     """
-    for label, value in (("universe", universe_id), ("output", output_id)):
+    segments = output_id.split(".") if output_id else []
+    for label, value in (("universe", universe_id), *(("output", s) for s in segments)):
         if not value or "/" in value or "\\" in value or value in {".", ".."}:
             raise ProjectError(
                 f"{label} id {value!r} is not a single path component, so it "
                 f"cannot name a directory under results/."
             )
-    if "." in output_id:
+    if not segments:
         raise ProjectError(
-            f"output id {output_id!r} contains a dot, so the manifest beside it "
-            f"could not be told from the output's own name."
+            f"output id {output_id!r} is not a single path component, so it "
+            f"cannot name a directory under results/."
         )
     if not fmt or "/" in fmt or "\\" in fmt or fmt.startswith("."):
         raise ProjectError(
             f"output `{output_id}` declares the format {fmt!r}, which cannot name a "
             f"file extension, so the output has nowhere to be written."
         )
-    return root / "results" / universe_id / f"{output_id}.{fmt}"
+    return root.joinpath("results", universe_id, *segments[:-1], f"{segments[-1]}.{fmt}")
 
 
-def manifest_path(output: Path) -> Path:
-    """The manifest sidecar beside *output*.
+def manifest_path(directory: Path, output_id: str) -> Path:
+    """The manifest sidecar of the output *output_id* in *directory*.
 
-    ``.<output_id>.manifest.json``, named from the output's id alone and
-    never its format — so the manifest keeps its path, and therefore its
-    history, when a spec re-declares the output in another serialization.
-
-    An id carries no dot (:func:`output_path` refuses one) while a format
-    may (``tar.gz``), so the id is recovered by partitioning on the
-    **first** dot. ``Path.stem`` would answer ``x.tar`` for ``x.tar.gz``.
+    ``.<local_id>.manifest.json``, named from the id alone and never the
+    format — so the manifest keeps its path, and therefore its history,
+    when a spec re-declares the output in another serialization. The id is
+    taken, not read back from the output's file name, which a format with
+    a dot of its own (``tar.gz``) makes ambiguous. A qualified id's scope
+    is already *directory* (:func:`output_path`), so only its last segment
+    names the sidecar.
 
     Args:
-        output: The output's own path.
+        directory: The directory the output's file is in.
+        output_id: The output's id, qualified or local.
 
     Returns:
         The sidecar's path.
     """
-    return output.parent / f".{output.name.partition('.')[0]}{MANIFEST_SUFFIX}"
+    return directory / f".{output_id.rpartition('.')[2]}{MANIFEST_SUFFIX}"
 
 
 # =============================================================================
