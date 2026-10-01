@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from lightcone._signals import clear_inherited_mask
 from lightcone.engine.compute.model import ComputeError, Connection, Identity
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
@@ -171,6 +172,9 @@ async def run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Read frozen launcher arguments; a failure becomes a nonzero native task exit."""
+    # This process is the Slurm step's first, where an inherited SIGCHLD
+    # block would otherwise reach every task the nanny spawns.
+    clear_inherited_mask()
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("submission", "namespace", "connection-root"):
         parser.add_argument(f"--{name}", required=True)
