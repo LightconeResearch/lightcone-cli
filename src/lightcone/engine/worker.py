@@ -244,7 +244,7 @@ def execute(
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
         context.runtime, read_paths, write_dir=task.output_path.parent,
-        use_gpus=resources.gpus > 0,
+        use_gpus=resources.gpus > 0, threads=resources.cpus,
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing outputs.

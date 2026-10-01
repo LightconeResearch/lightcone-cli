@@ -188,6 +188,12 @@ def _gpu_device_paths() -> tuple[Path, ...]:
     return tuple(sorted(path for path in candidates if path.is_char_device()))
 
 
+#: The thread-pool sizes a recipe's declared CPUs set: OpenMP, the BLAS
+#: builds, and numba, whose default is the node's core count rather than
+#: the task's share of it.
+THREAD_POOLS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMBA_NUM_THREADS")
+
+
 def exec_policy(
     project: Path,
     *,
@@ -196,6 +202,7 @@ def exec_policy(
     containerized: bool = False,
     write_dir: Path | None = None,
     use_gpus: bool = False,
+    threads: int | None = None,
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
@@ -226,6 +233,9 @@ def exec_policy(
             declared beside it. Absent for a probe, which has no analysis
             node and gets the project's own ``results/`` whole.
         use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
+        threads: The recipe's declared CPUs, which every numerical thread
+            pool in :data:`THREAD_POOLS` is sized to. Absent for a probe,
+            which keeps the worker's own values.
 
     Returns:
         The policy. The in-tree write scope is granted only if it exists —
@@ -256,7 +266,14 @@ def exec_policy(
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     in_tree_write = write_dir if write_dir is not None else project / "results"
-    overlay = home_overlay(tmp_home, env_dir, containerized=containerized)
+    # The reservation and the pools are one number: Dask holds the declared
+    # CPUs for this task, and the recipe's libraries use them and no more.
+    # Left to themselves they size from the worker's Nanny default (one
+    # thread, wasting a wide reservation) or, for numba and any library
+    # that reads the hardware, from the whole node (oversubscribing every
+    # task beside it).
+    pools = {name: str(threads) for name in THREAD_POOLS} if threads is not None else {}
+    overlay = {**home_overlay(tmp_home, env_dir, containerized=containerized), **pools}
     overlay["CUDA_VISIBLE_DEVICES"] = gpu_mask
     if use_gpus and "CUDA_DEVICE_ORDER" in os.environ:
         overlay["CUDA_DEVICE_ORDER"] = os.environ["CUDA_DEVICE_ORDER"]

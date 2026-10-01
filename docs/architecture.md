@@ -69,7 +69,7 @@ The division of labor is strict and load-bearing:
 - **Dask accounts for task resources.** Workers advertise CPU, memory, and GPU
   budgets; submissions reserve the recipe's requirements. Omitted memory adds no
   RAM reservation. These coordinate scheduling rather than imposing per-recipe
-  OS limits or numerical-library thread counts.
+  OS limits; the declared CPUs also size the recipe's numerical thread pools.
   Recipe `time_limit` is explicitly refused; allocation walltime remains supported.
   A GPU recipe reserves the worker's full GPU budget and inherits its allocation
   mask, even when it requests fewer GPUs. CPU recipes expose none; probes reserve
