@@ -75,7 +75,7 @@ class Policy:
 class Capability:
     """What enforcement this host can provide, as probed."""
 
-    kind: Literal["landlock", "seatbelt", "podman", "docker", "podman-hpc", "none"]
+    kind: Literal["landlock", "seatbelt", "podman", "docker", "podman-hpc", "apptainer", "none"]
     landlock_abi: int | None = None
     #: Why, when ``kind`` is ``none``. Reaches the user — a downgrade is
     #: never silent.
@@ -93,7 +93,9 @@ class Attestation:
     genuinely emits a denial flag; nothing may attest it without one.
     """
 
-    mechanism: Literal["landlock", "seatbelt", "podman", "docker", "podman-hpc", "none"]
+    mechanism: Literal[
+        "landlock", "seatbelt", "podman", "docker", "podman-hpc", "apptainer", "none"
+    ]
     fs: Literal["declared", "open"]
     network: Literal["allowed", "denied"] = "allowed"
     landlock_abi: int | None = None
