@@ -1,0 +1,39 @@
+# Sender for LightconeResearch/lightcone-bench (source: senders/ in that repo; setup in its docs/pr-triggered-benchmarks.md).
+# Comment "/benchmark" on a PR (maintainers only) to benchmark that PR's stack.
+name: benchmark-on-comment
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  dispatch:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/benchmark') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # for the reaction ack
+    steps:
+      - name: Resolve PR head sha
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            "${{ github.event.issue.pull_request.url }}" | jq -r .head.sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Dispatch lightcone-bench (stack under test = PR head)
+        env:
+          GH_TOKEN: ${{ secrets.BENCH_DISPATCH_TOKEN }}
+        run: |
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/LightconeResearch/lightcone-bench/actions/workflows/benchmark.yml/dispatches \
+            -d '{"ref":"main","inputs":{"task":"lightcone-cli/snae-build","stack_ref":"${{ steps.pr.outputs.sha }}"}}'
+      - name: Ack with a rocket
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -d '{"content":"rocket"}'
