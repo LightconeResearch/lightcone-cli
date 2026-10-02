@@ -1,0 +1,28 @@
+# Sender for LightconeResearch/lightcone-bench (source: senders/ in that repo; setup in its docs/pr-triggered-benchmarks.md).
+# Every non-draft PR — opened, pushed to, reopened, or marked ready for review — is
+# benchmarked against its head commit, with the skills from agent-skills main
+# installed (the skills axis is held fixed here; varying it is the agent-skills
+# senders' job). Draft PRs are not run automatically: comment "/benchmark" on them
+# (benchmark-on-comment.yml) when a run is wanted. Fork PRs are skipped — they do
+# not receive this repo's secrets.
+name: benchmark-on-pr
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  dispatch:
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch lightcone-bench (stack under test = PR head)
+        env:
+          GH_TOKEN: ${{ secrets.BENCH_DISPATCH_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/LightconeResearch/lightcone-bench/actions/workflows/benchmark.yml/dispatches \
+            -d "{\"ref\":\"main\",\"inputs\":{\"task\":\"lightcone-cli/snae-build\",\"use_skills\":\"true\",\"stack_ref\":\"$SHA\"}}"
+          echo "Dispatched benchmark for $SHA — results in lightcone-bench's Actions tab"
