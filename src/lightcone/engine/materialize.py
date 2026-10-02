@@ -80,8 +80,8 @@ class MaterializeReport:
 
     @property
     def ok(self) -> bool:
-        """Whether everything that was attempted finished."""
-        return not self.failed and not self.blocked
+        """Whether the run finished or the check gate passed."""
+        return not self.failed and not self.blocked and not self.planned
 
     @property
     def up_to_date(self) -> bool:
@@ -97,7 +97,7 @@ class MaterializeReport:
         so without ``ok`` here the first two keys of the JSON report would
         read "nothing to do" over a list of failures.
         """
-        return self.ok and not self.made and not self.planned
+        return self.ok and not self.made
 
     def as_dict(self) -> dict[str, Any]:
         """Return the report as JSON-ready data.

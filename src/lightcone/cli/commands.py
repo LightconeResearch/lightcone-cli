@@ -298,7 +298,7 @@ def build(as_json: bool) -> None:
     is_flag=True,
     help=(
         "Report what would run and why, without executing or committing "
-        "anything; exit 1 if anything is out of date."
+        "anything. Exit 1 if any output would run; in JSON, `ok` is false."
     ),
 )
 @click.option(
@@ -391,7 +391,7 @@ def materialize(
             click.echo("\n".join(["", *report.notes]), err=True)
         _render_materialize_output(report, root, dry_run=check_only)
 
-    if not report.ok or (check_only and not report.up_to_date):
+    if not report.ok:
         sys.exit(1)
 
 
@@ -499,7 +499,7 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
-    if not report.ok:
+    if report.failed or report.blocked:
         verdict = f"[red]✗[/red] {where} did not finish"
     elif report.up_to_date:
         verdict = f"[green]✓[/green] {where} is up to date — nothing to do"

@@ -585,7 +585,7 @@ def test_a_lock_that_builds_from_source_is_a_warning_not_a_refusal(root: Path) -
 
     report = engine.check(root, [])
 
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert any("oldlib" in w for w in report.warnings)
 
 
