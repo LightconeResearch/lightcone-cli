@@ -1,5 +1,6 @@
 # Sender for LightconeResearch/lightcone-bench (source: senders/ in that repo; setup in its docs/pr-triggered-benchmarks.md).
-# Every merge to main refreshes lightcone-bench's stored stack baseline.
+# Every merge to main refreshes lightcone-bench's stored stack baseline (skills from
+# agent-skills main installed, matching the /benchmark runs it is compared with).
 name: benchmark-baseline
 on:
   push:
@@ -14,4 +15,4 @@ jobs:
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/LightconeResearch/lightcone-bench/actions/workflows/benchmark.yml/dispatches \
-            -d '{"ref":"main","inputs":{"task":"lightcone-cli/snae-build","stack_ref":"${{ github.sha }}","save_baseline":true}}'
+            -d '{"ref":"main","inputs":{"task":"lightcone-cli/snae-build","use_skills":"true","stack_ref":"${{ github.sha }}","save_baseline":true}}'
