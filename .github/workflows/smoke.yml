@@ -1,0 +1,34 @@
+# Agent smoke suite for the `lc` paths of the agent-skills lightcone plugin,
+# run against this PR's head. The suite, its images, legs, gate and PR comment
+# live in LightconeResearch/agent-skills (evals/, .github/workflows/smoke.yml);
+# this caller only says which lightcone-cli to build and which tasks to run.
+#
+# The agent legs need ANTHROPIC_API_KEY and OPENAI_API_KEY repository secrets
+# (API keys, never a subscription token); without them the legs fail and the
+# comment says which key is missing. The oracle job needs no secrets.
+name: smoke
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - src/**
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/smoke.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  smoke:
+    if: ${{ !github.event.pull_request.draft }}
+    uses: LightconeResearch/agent-skills/.github/workflows/smoke.yml@main
+    with:
+      lightcone_ref: ${{ github.event.pull_request.head.sha }}
+      tasks: "lc-*"
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
