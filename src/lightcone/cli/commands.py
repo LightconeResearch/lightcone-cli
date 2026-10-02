@@ -453,7 +453,7 @@ def status(as_json: bool) -> None:
     # in `why`, so this one path covers it; the dedicated field exists
     # for machine consumers of `--json`.
     lines += [
-        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+        f"  {marks[o.status]} {o.status:<9} {o.output:<{width}}  "
         f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{escape(o.why)}[/dim]" if o.why else "")
         for o in report.outputs
     ]
@@ -461,7 +461,7 @@ def status(as_json: bool) -> None:
 
     counts = report.counts
     if not report.outputs:
-        lines.append("[dim]The analysis declares no output with a recipe.[/dim]")
+        lines.append("[dim]The analysis declares no output.[/dim]")
     else:
         lines.append("")
         lines.append(

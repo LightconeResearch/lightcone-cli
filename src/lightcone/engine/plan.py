@@ -280,9 +280,9 @@ def _tasks(
     """Resolve one universe's tasks and outputs that cannot be executed.
 
     ``resolve_outputs`` has already dropped what this universe does not
-    produce. Outputs without a command remain visible to status but are
-    not scheduled: a re-export names bytes another output makes, and
-    making it twice under two ids is not a thing to do.
+    produce. Outputs without a command are not scheduled. Declared-only
+    ones are returned for status; a re-export is not, because it names
+    bytes another output makes and that output is reported in its place.
     """
     from astra.resolve import render_command, resolve_outputs
 
@@ -311,7 +311,8 @@ def _tasks(
     no_recipe = []
     for out in resolved:
         if not out.command:
-            no_recipe.append(out.id)
+            if out.reexports is None:
+                no_recipe.append(out.id)
             continue
         output_path = file_of(out)
         values: dict[str, str] = {}
