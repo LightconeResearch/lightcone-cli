@@ -77,6 +77,36 @@ def test_one_task_per_universe_and_output_with_a_recipe(tmp_path: Path) -> None:
     nothing to schedule for it."""
     graph = _build(_project(tmp_path))
     assert sorted(graph.tasks) == [("baseline", "fit"), ("baseline", "report")]
+    assert graph.no_recipe == (("baseline", "reexport"),)
+
+
+def test_a_reexport_is_not_reported_as_missing_a_recipe(tmp_path: Path) -> None:
+    """A ``from:`` re-export stands for its target, so only the target is
+    reported when neither carries a recipe."""
+    spec = """
+    version: "0.0.13"
+    name: demo
+    inputs: []
+    analyses:
+      sub:
+        name: sub
+        inputs:
+          - id: cat
+            type: data
+            source: data/cat.txt
+        outputs:
+          - id: made
+            type: metric
+            format: txt
+        decisions: {}
+    outputs:
+      - id: top
+        type: metric
+        from: sub.made
+    decisions: {}
+    """
+    graph = _build(_project(tmp_path, spec, baseline="id: baseline\ndecisions: {}\n"))
+    assert graph.no_recipe == (("baseline", "sub.made"),)
 
 
 def test_every_universe_gets_its_own_task(tmp_path: Path) -> None:

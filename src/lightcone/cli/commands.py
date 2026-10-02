@@ -298,7 +298,7 @@ def build(as_json: bool) -> None:
     is_flag=True,
     help=(
         "Report what would run and why, without executing or committing "
-        "anything; exit 1 if anything is out of date."
+        "anything. Exit 1 if any output would run; in JSON, `ok` is false."
     ),
 )
 @click.option(
@@ -391,7 +391,7 @@ def materialize(
             click.echo("\n".join(["", *report.notes]), err=True)
         _render_materialize_output(report, root, dry_run=check_only)
 
-    if not report.ok or (check_only and not report.up_to_date):
+    if not report.ok:
         sys.exit(1)
 
 
@@ -441,7 +441,10 @@ def status(as_json: bool) -> None:
     lines.append(f"  sandbox: {escape(report.sandbox)}")
     lines.append(f"  crate:   {escape(report.crate)}")
     lines.append("")
-    marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
+    marks = {
+        "current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]",
+        "stale": "[yellow]![/yellow]", "no recipe": "[yellow]·[/yellow]",
+    }
     width = max((len(o.output) for o in report.outputs), default=0)
     # The commit gets a column of its own, for every state and not only
     # the interesting ones: "which code made this" is the question the
@@ -450,7 +453,7 @@ def status(as_json: bool) -> None:
     # in `why`, so this one path covers it; the dedicated field exists
     # for machine consumers of `--json`.
     lines += [
-        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+        f"  {marks[o.status]} {o.status:<9} {o.output:<{width}}  "
         f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{escape(o.why)}[/dim]" if o.why else "")
         for o in report.outputs
     ]
@@ -458,7 +461,7 @@ def status(as_json: bool) -> None:
 
     counts = report.counts
     if not report.outputs:
-        lines.append("[dim]The analysis declares no output with a recipe.[/dim]")
+        lines.append("[dim]The analysis declares no output.[/dim]")
     else:
         lines.append("")
         lines.append(
@@ -499,7 +502,7 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
-    if not report.ok:
+    if report.failed or report.blocked:
         verdict = f"[red]✗[/red] {where} did not finish"
     elif report.up_to_date:
         verdict = f"[green]✓[/green] {where} is up to date — nothing to do"

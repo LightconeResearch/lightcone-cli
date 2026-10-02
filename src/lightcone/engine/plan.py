@@ -4,7 +4,8 @@
 ``(universe, output)`` pair that has a recipe. A task carries everything
 executing it needs and nothing about *how* it will be executed: the
 rendered command, where its bytes go, what it reads, which decisions it
-was made under, and its ``definition_version``.
+was made under, and its ``definition_version``. Active outputs without a
+recipe are retained separately for status and are not executable tasks.
 
 What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
 universe's decisions, resolves every output's inputs to what supplies
@@ -73,9 +74,11 @@ class Task:
 
 @dataclass(frozen=True)
 class Graph:
-    """Every task a run could make, and how they relate."""
+    """Every task a run could make, and outputs with no recipe."""
 
     tasks: dict[Key, Task]
+    #: Active outputs ASTRA resolved without a recipe; reportable, not executable.
+    no_recipe: tuple[Key, ...] = ()
 
     def order(self) -> list[Key]:
         """Return the tasks in dependency order.
@@ -157,8 +160,7 @@ def build(root: Path) -> Graph:
         root: The project root.
 
     Returns:
-        One task per ``(universe, output)`` pair that has a recipe and is
-        active in that universe.
+        The active recipe tasks and keys of active outputs without recipes.
 
     Raises:
         ProjectError: If the spec is missing, declares no universe, gives
@@ -181,6 +183,7 @@ def build(root: Path) -> Graph:
     spec = dict(resolve_analysis_tree(load_yaml(spec_path), root))
 
     tasks: dict[Key, Task] = {}
+    no_recipe: list[Key] = []
     declared_in: dict[str, Path] = {}
     for path in universes:
         universe = load_yaml(path)
@@ -196,10 +199,12 @@ def build(root: Path) -> Graph:
                 f"results/{universe_id}/. Give each universe its own id."
             )
         declared_in[universe_id] = path
-        for task in _tasks(root, universe_id, spec, universe):
+        universe_tasks, universe_no_recipe = _tasks(root, universe_id, spec, universe)
+        for task in universe_tasks:
             tasks[task.key] = task
+        no_recipe.extend((universe_id, output_id) for output_id in universe_no_recipe)
 
-    return Graph(tasks=tasks)
+    return Graph(tasks=tasks, no_recipe=tuple(no_recipe))
 
 
 def declared_path(root: Path, path: Path) -> str:
@@ -271,13 +276,13 @@ def _tasks(
     universe_id: str,
     spec: dict[str, object],
     universe: dict[str, object],
-) -> list[Task]:
-    """Every task one universe contributes.
+) -> tuple[list[Task], list[str]]:
+    """Resolve one universe's tasks and outputs that cannot be executed.
 
     ``resolve_outputs`` has already dropped what this universe does not
-    produce, so the only filter left is whether an output carries a
-    command: a re-export names bytes another output makes, and making it
-    twice under two ids is not a thing to do.
+    produce. Outputs without a command are not scheduled. Declared-only
+    ones are returned for status; a re-export is not, because it names
+    bytes another output makes and that output is reported in its place.
     """
     from astra.resolve import render_command, resolve_outputs
 
@@ -303,8 +308,11 @@ def _tasks(
         )
 
     tasks = []
+    no_recipe = []
     for out in resolved:
         if not out.command:
+            if out.reexports is None:
+                no_recipe.append(out.id)
             continue
         output_path = file_of(out)
         values: dict[str, str] = {}
@@ -351,4 +359,4 @@ def _tasks(
                 resources=resources,
             )
         )
-    return tasks
+    return tasks, no_recipe

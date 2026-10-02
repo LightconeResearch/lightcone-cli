@@ -121,10 +121,12 @@ operation, and stronger consent than a flag.
 }
 ```
 
-The first two keys are the ones to branch on: `ok` — everything
-attempted finished; `up_to_date` — nothing needed doing (a failed run
-is never up to date, and `behind` outputs don't count against it).
-`planned` is check mode's answer, mapping each would-run output to why;
+The first two keys are the ones to branch on. `ok` is the command result:
+in execution mode, every attempted output finished; in check mode, no
+output would run. A failed run or a check with planned work returns
+`ok: false` and exits 1. `up_to_date` means nothing was or needs to be
+done (a failed run is never up to date, and `behind` outputs do not count
+against it). `planned` is check mode's answer, mapping each would-run output to why;
 `behind` maps each left-alone output to the commit that can rebuild its
 environment. `notes` carries sandbox messages verbatim — denial
 remedies are built to be pasted.
