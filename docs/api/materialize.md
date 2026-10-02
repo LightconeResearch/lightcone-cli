@@ -16,7 +16,7 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 |---|---|
 | `materialize(root, targets, *, cluster_id, refresh)` | Project checks → graph → cluster connection → fetch/converge → schedule → save/restore → crate converge. |
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
-| `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
+| `status(root)` | The report: every output's state and provenance commit, including `no recipe` outputs, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
 | `cluster_for_run(cluster_id)` | Borrow the cluster; expose resource validation, submission, and completion. |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
@@ -59,9 +59,10 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
   measured-safe (the clean filter renames over the path, which never
   stops existing) and must not be "fixed" by moving the save into the
   task.
-- **`up_to_date` is `ok and not made and not planned`** — a run where
-  every recipe failed must not report "nothing to do", and `behind`
-  never counts against it.
+- **`ok` is a successful run or a passed check gate** — execution requires
+  no failures or blocked tasks; check mode also requires an empty `planned`
+  mapping. `up_to_date` means `ok and not made`; a failed run must not report
+  "nothing to do", and `behind` never counts against it.
 - **A read-only verb never tracebacks.** Anything `check`/`status`
   cannot read classifies as "will be remade" and the real error
   belongs to the recipe that follows.

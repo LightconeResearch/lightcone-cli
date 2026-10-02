@@ -13,7 +13,7 @@ Source: `src/lightcone/engine/plan.py`.
 | Symbol | Role |
 |---|---|
 | `build(root)` | Validate the spec with ASTRA's own validators, resolve every universe, return the `Graph`. |
-| `Graph` | Tasks keyed on `(universe_id, output_id)`; `order()` for the read-only topological walk, `resolve(targets)` for what a user typed, `closure(keys)` to narrow a run. |
+| `Graph` | Recipe tasks keyed on `(universe_id, output_id)` plus `no_recipe` keys retained for status; `order()` for the read-only topological walk, `resolve(targets)` for what a user typed, `closure(keys)` to narrow a run. |
 | `Task` | One output in one universe, frozen, retaining ASTRA's resource declaration in `resources`. |
 | `declared_path(root, path)` | The one rule that names a path: project-relative inside the tree, absolute outside, never resolved. |
 
@@ -31,6 +31,9 @@ Source: `src/lightcone/engine/plan.py`.
   schema, file, and universe validators before resolving anything —
   resolution answers what a *valid* spec means and does not re-check
   that it is one.
+- **Outputs without recipes remain reportable.** `Graph.no_recipe` lists active
+  `(universe, output)` pairs ASTRA resolved without a command. They are not tasks
+  and cannot be materialized; `lc status` shows them as `no recipe`.
 - **Resource declarations survive resolution.** `build` reads
   `recipe.resources` from ASTRA's resolved output definition and preserves the
   mapping. A valid declaration remains readable by `status` and

@@ -441,7 +441,10 @@ def status(as_json: bool) -> None:
     lines.append(f"  sandbox: {escape(report.sandbox)}")
     lines.append(f"  crate:   {escape(report.crate)}")
     lines.append("")
-    marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
+    marks = {
+        "current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]",
+        "stale": "[yellow]![/yellow]", "no recipe": "[yellow]·[/yellow]",
+    }
     width = max((len(o.output) for o in report.outputs), default=0)
     # The commit gets a column of its own, for every state and not only
     # the interesting ones: "which code made this" is the question the

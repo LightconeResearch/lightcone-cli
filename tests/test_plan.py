@@ -77,6 +77,7 @@ def test_one_task_per_universe_and_output_with_a_recipe(tmp_path: Path) -> None:
     nothing to schedule for it."""
     graph = _build(_project(tmp_path))
     assert sorted(graph.tasks) == [("baseline", "fit"), ("baseline", "report")]
+    assert graph.no_recipe == (("baseline", "reexport"),)
 
 
 def test_every_universe_gets_its_own_task(tmp_path: Path) -> None:

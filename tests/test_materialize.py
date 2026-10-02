@@ -265,7 +265,7 @@ def test_status_names_the_commit_each_output_came_from(root: Path, inline: None)
     # The commit the tree was at when the run *started* — the code that
     # produced the output, not the commit the run itself went on to make.
     assert all(o.git_sha == ran_against for o in report.outputs)
-    assert report.counts == {"current": 2, "behind": 0, "stale": 0}
+    assert report.counts == {"current": 2, "behind": 0, "stale": 0, "no recipe": 0}
 
 
 def test_status_reports_behind_after_the_environment_moves(
@@ -277,7 +277,7 @@ def test_status_reports_behind_after_the_environment_moves(
 
     report = engine.status(root)
 
-    assert report.counts == {"current": 0, "behind": 2, "stale": 0}
+    assert report.counts == {"current": 0, "behind": 2, "stale": 0, "no recipe": 0}
     assert all(o.git_sha == made_at for o in report.outputs), "the commit it was made at"
     assert "earlier environment" in report.outputs[0].why
 
@@ -287,7 +287,7 @@ def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) 
     which would claim the output came from a commit that never made it."""
     report = engine.status(root)
 
-    assert report.counts == {"current": 0, "behind": 0, "stale": 2}
+    assert report.counts == {"current": 0, "behind": 0, "stale": 2, "no recipe": 0}
     assert all(o.git_sha == "" and o.data_version == "" for o in report.outputs)
     assert "never been materialized" in report.outputs[0].why
 

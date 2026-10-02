@@ -7,6 +7,7 @@ Convergence *semantics* are tested against the engine in
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -739,7 +740,7 @@ def test_status_json_is_machine_readable(
         "image": None,
         "sandbox": "",
         "crate": "",
-        "counts": {"current": 1, "behind": 1, "stale": 1},
+        "counts": {"current": 1, "behind": 1, "stale": 1, "no recipe": 0},
         "outputs": [
             {
                 "output": "baseline/first",
@@ -767,6 +768,36 @@ def test_status_json_is_machine_readable(
             },
         ],
         "warnings": [],
+    }
+
+
+def test_status_shows_outputs_without_recipes_in_text_and_json(
+    runner: CliRunner, analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = """
+    version: "0.0.13"
+    name: analysis
+    inputs: []
+    outputs:
+      - id: pending
+        type: metric
+        format: txt
+    decisions: {}
+    """
+    root = analysis(spec, universes={"baseline": "id: baseline\ndecisions: {}\n"})
+    monkeypatch.chdir(root)
+
+    human = runner.invoke(main, ["status"])
+    assert human.exit_code == 0
+    assert "baseline/pending" in human.output
+    assert "no recipe" in human.output
+
+    machine = runner.invoke(main, ["status", "--json"])
+    assert machine.exit_code == 0
+    report = json.loads(machine.output)
+    assert report["counts"]["no recipe"] == 1
+    assert {output["output"]: output["status"] for output in report["outputs"]} == {
+        "baseline/pending": "no recipe",
     }
 
 
