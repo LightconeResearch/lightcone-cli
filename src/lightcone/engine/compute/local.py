@@ -176,9 +176,10 @@ class LocalProvider:
             raise ComputeError(
                 "local offer config supports only scratch_root, python, and task_slots_per_node"
             )
-        for name in ("python", "scratch_root"):
-            if name in config:
-                config_text(config[name], f"local {name}")
+        python_text = config_text(config.get("python", sys.executable), "local python")
+        scratch_text = config_text(
+            config.get("scratch_root", tempfile.gettempdir()), "local scratch_root",
+        )
         slots = positive_int(
             config.get("task_slots_per_node", offer.resources.cpus), "task_slots_per_node",
         )
@@ -204,10 +205,10 @@ class LocalProvider:
         if seconds is not None and limit is not None and seconds > limit:
             raise ComputeError("the requested time exceeds the local offer's maximum")
         try:
-            python = Path(config.get("python", sys.executable)).expanduser()
+            python = Path(python_text).expanduser()
         except RuntimeError as exc:
             raise ComputeError(f"cannot expand the configured local Python: {exc}") from exc
-        scratch = configured_directory(Path(config.get("scratch_root", tempfile.gettempdir())))
+        scratch = configured_directory(Path(scratch_text))
         if not python.is_absolute() or not python.is_file() or not os.access(python, os.X_OK):
             raise ComputeError("the configured local Python must be an executable absolute path")
         return LaunchPlan(
@@ -230,14 +231,6 @@ class LocalProvider:
         """Start a detached allocation owner and retain its immutable OS identity."""
         if reason := local_disabled_reason():
             raise ComputeError(reason)
-        if (
-            plan.offer.provider != "local"
-            or plan.details["connection_root"] != str(self.root)
-            or plan.num_nodes != 1
-        ):
-            raise ComputeError(
-                "local launch plan belongs to a different provider, connection root or node count"
-            )
         if plan.name is not None:
             validate_name(plan.name)
         _refuse_a_second_allocation()

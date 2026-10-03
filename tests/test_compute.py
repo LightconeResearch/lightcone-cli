@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from lightcone.cli.commands import main
 from lightcone.engine import compute
-from lightcone.engine.compute.catalog import Catalog
+from lightcone.engine.compute.catalog import Catalog, local_disabled_reason
 from lightcone.engine.compute.model import (
     GIB,
     Accelerator,
@@ -35,7 +35,7 @@ from lightcone.engine.compute.model import (
     validate_name,
 )
 
-IDENTITY = Identity(provider="fake", native_id="1234", token="abc")
+IDENTITY = Identity(provider="slurm", native_id="1234", token="abc")
 
 
 @pytest.fixture
@@ -60,6 +60,7 @@ def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def catalog(
     default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: MagicMock,
 ) -> Path:
+    # Its offers name slurm, which the stub `provider` replaces: nothing here runs Slurm.
     path = tmp_path / "compute.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -68,7 +69,7 @@ def catalog(
                 "offers": [
                     {
                         "name": name,
-                        "provider": "fake",
+                        "provider": "slurm",
                         "resources": {"cpus": cpus, "memory": memory},
                         "max_nodes": nodes,
                         "time": {"default": "30m", "max": "2h"},
@@ -100,7 +101,7 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     client = MagicMock()
     client.scheduler_info.return_value = {"workers": {"one": {}}}
     adapter.connect.return_value.__enter__.return_value = client
-    monkeypatch.setitem(compute.PROVIDERS, "fake", lambda root: adapter)
+    monkeypatch.setitem(compute.PROVIDERS, "slurm", lambda root: adapter)
     return adapter
 
 
@@ -299,7 +300,7 @@ def test_configured_catalogs_can_disable_local_and_obey_path_precedence(
     default.parent.mkdir()
     default.write_text(catalog.read_text())
     configured = Catalog.load()
-    assert configured.providers == ["fake", "local"]
+    assert configured.providers == ["slurm", "local"]
     assert [offer.name for offer in configured.offers] == ["quick", "large"]
     # Disabled local compute remains available for inspection and termination.
     default.write_text("allow_local: false\noffers: []\n")
@@ -535,7 +536,7 @@ def test_nersc_login_nodes_block_first_launch_without_writing_a_catalog(
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setattr("socket.gethostname", lambda: "login07.nersc.gov")
     service = compute.Compute()
-    assert not service.catalog.allow_local
+    assert local_disabled_reason(service.catalog.allow_local)
     assert service.catalog.providers == ["local"]
     assert service.resources()["offers"] == []
     for flags in ([], ["--dry-run"]):
@@ -582,7 +583,7 @@ def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setattr("socket.gethostname", lambda: "login07")
     service = compute.Compute()
-    assert not service.catalog.allow_local
+    assert local_disabled_reason(service.catalog.allow_local)
     assert [offer.name for offer in service.catalog.offers] == ["quick", "large"]
     plan = service.plan(Request.parse("4", "8"))
     assert service.launch(plan) == IDENTITY
@@ -685,7 +686,7 @@ def test_disabled_builtin_does_not_reserve_remote_offer_names(catalog: Path) -> 
     catalog.write_text(yaml.safe_dump(data))
     loaded = Catalog.load()
     assert [offer.name for offer in loaded.offers] == ["local", "large"]
-    assert loaded.offers[0].provider == "fake"
+    assert loaded.offers[0].provider == "slurm"
 
 
 def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
@@ -922,7 +923,7 @@ def test_discovery_preserves_unknown_authority(catalog: Path, provider: MagicMoc
     provider.discover.side_effect = ComputeError("native service unavailable")
     clusters, errors = compute.Compute().discover()
     assert clusters == []
-    assert errors == {"fake": "native service unavailable"}
+    assert errors == {"slurm": "native service unavailable"}
 
 
 def test_live_allocation_is_not_automatically_ready(catalog: Path, provider: MagicMock) -> None:
@@ -1123,9 +1124,9 @@ def test_the_connection_root_is_resolved_once_and_handed_to_one_provider_per_nam
     data["connection_root"] = str(tmp_path / "alias" / "compute")
     catalog.write_text(yaml.safe_dump(data))
     roots: list[Path] = []
-    factory = compute.PROVIDERS["fake"]
+    factory = compute.PROVIDERS["slurm"]
     monkeypatch.setitem(
-        compute.PROVIDERS, "fake", lambda root: roots.append(root) or factory(root),
+        compute.PROVIDERS, "slurm", lambda root: roots.append(root) or factory(root),
     )
     service = compute.Compute()
     assert service.catalog.connection_root == str(physical / "compute")
@@ -1204,7 +1205,7 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
     assert result.exit_code == 0, result.output
     plan = json.loads(result.output)["plan"]
     assert plan["offer"] == "quick"
-    assert plan["provider"] == "fake"
+    assert plan["provider"] == "slurm"
     assert plan["resources"] == {"cpus": 4, "memory": 8, "accelerators": None}
     assert plan["time_seconds"] == 1800
     assert plan["startup"] == "fast"
@@ -1319,7 +1320,7 @@ def test_cli_partial_failure_and_ambiguous_submit(catalog: Path, provider: Magic
     runner = CliRunner()
     result = runner.invoke(main, ["compute", "status", "--json"])
     assert result.exit_code == 1
-    assert json.loads(result.output)["errors"] == {"fake": "unavailable"}
+    assert json.loads(result.output)["errors"] == {"slurm": "unavailable"}
     provider.discover.side_effect = None
     provider.launch.side_effect = ComputeError("uncertain", submission_token="token")
     result = runner.invoke(main, ["compute", "launch", "--cpus", "4", "--memory", "8", "--json"])

@@ -160,8 +160,7 @@ def launch(
         else:
             plan = service.plan(
                 Request.parse(
-                    cpus, memory, gpus="0" if gpus is None else gpus, num_nodes=num_nodes,
-                    time=walltime, startup=startup,
+                    cpus, memory, gpus=gpus, num_nodes=num_nodes, time=walltime, startup=startup,
                 ),
                 name=name,
             )

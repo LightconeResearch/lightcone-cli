@@ -23,7 +23,7 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
-from lightcone.engine.compute.slurm import allocation_directory
+from lightcone.engine.compute.slurm import attempt_directory
 
 _STARTUP_TIMEOUT = 120.0
 
@@ -85,8 +85,9 @@ async def run(args: argparse.Namespace) -> None:
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    root = configured_directory(Path(args.connection_root))
-    directory = allocation_directory(root, identity.token) / f"attempt-{restarts}"
+    directory = attempt_directory(
+        configured_directory(Path(args.connection_root)), identity.token, restarts,
+    )
     scratch = configured_directory(Path(args.scratch_root or tempfile.gettempdir()))
     scratch = private_directory(
         scratch / identity.token / f"attempt-{restarts}" / str(rank), create=True

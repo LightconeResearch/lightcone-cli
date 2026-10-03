@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from lightcone.engine.compute.model import (
+    NAME_PATTERN,
     ComputeError,
     Identity,
     LaunchPlan,
@@ -38,7 +39,7 @@ from lightcone.engine.compute.runtime import (
 _PREFIX = "lc-"
 _COMMENT_PREFIX = "lightcone:kind=dask:token="
 _TOKEN = re.compile(r"[0-9a-f]{32}")
-_JOB_NAME = re.compile(r"lc-([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)")
+_JOB_NAME = re.compile(f"{re.escape(_PREFIX)}({NAME_PATTERN})")
 _QUERY_TIMEOUT = 10.0
 _SUBMIT_TIMEOUT = 60.0
 _ACCEPT_TIMEOUT = 10.0
@@ -77,6 +78,11 @@ def allocation_directory(root: Path, token: str) -> Path:
     under another connection root.
     """
     return root / "slurm" / token
+
+
+def attempt_directory(root: Path, token: str, restarts: int) -> Path:
+    """Locate one native attempt's connection material; the bootstrap writes, connect reads."""
+    return allocation_directory(root, token) / f"attempt-{restarts}"
 
 
 def _phase(state: str) -> str:
@@ -188,16 +194,13 @@ class SlurmProvider:
         # nodes: workers run the driver's own installation, so they match it
         # exactly, and rendezvous under its home. Scratch left unset is chosen
         # by each node, whose temporary directory may not be the driver's.
-        defaults = {"python": sys.executable, "cwd": str(Path.home())}
-        paths: dict[str, str | None] = {"connection_root": str(self.root)}
-        for name in ("python", "scratch_root", "cwd"):
-            if name not in config and name not in defaults:
-                paths[name] = None
-                continue
-            path = Path(config_text(config.get(name, defaults.get(name)), f"Slurm {name}"))
-            if name == "scratch_root":
-                path = configured_directory(path)
-            elif not path.is_absolute() or ".." in path.parts:
+        paths: dict[str, str | None] = {"connection_root": str(self.root), "scratch_root": None}
+        if "scratch_root" in config:
+            scratch = config_text(config["scratch_root"], "Slurm scratch_root")
+            paths["scratch_root"] = str(configured_directory(Path(scratch)))
+        for name, default in (("python", sys.executable), ("cwd", str(Path.home()))):
+            path = Path(config_text(config.get(name, default), f"Slurm {name}"))
+            if not path.is_absolute() or ".." in path.parts:
                 raise ComputeError(f"Slurm {name} must be an absolute path without '..'")
             paths[name] = str(path)
         submit = config.get("submit", "sbatch")
@@ -291,7 +294,7 @@ class SlurmProvider:
             "--submission",
             token,
             "--connection-root",
-            details["connection_root"],
+            str(self.root),
             "--num-nodes",
             str(plan.num_nodes),
             "--cpus",
@@ -311,8 +314,6 @@ class SlurmProvider:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Submit once; preserve the nonce when native acceptance is uncertain."""
-        if plan.offer.provider != "slurm" or plan.details["connection_root"] != str(self.root):
-            raise ComputeError("Slurm launch plan belongs to another provider or connection root")
         token = uuid.uuid4().hex
         name = plan.name if plan.name is not None else f"lc-{token[:12]}"
         validate_name(name)
@@ -609,14 +610,13 @@ class SlurmProvider:
         if not restart_text.isdigit():
             raise ComputeError("Slurm did not identify the current allocation attempt")
         restarts = int(restart_text)
-        allocation = allocation_directory(self.root, identity.token)
-        if not allocation.is_dir():
+        directory = attempt_directory(self.root, identity.token, restarts)
+        if not directory.parent.is_dir():
             raise ComputeError(
                 f"this allocation has no directory under connection_root {self.root}: it was "
                 "launched with another connection_root, or its directory was removed",
                 cluster_id=identity.encode(),
             )
-        directory = allocation / f"attempt-{restarts}"
         if not (directory / "identity.json").exists():
             raise ComputeError(NOT_STARTED, cluster_id=identity.encode())
         metadata = read_private_json(directory / "identity.json")

@@ -83,8 +83,8 @@ class Catalog(ComputeModel):
     """Configuration for new requests, never a registry of live clusters."""
 
     #: Resolved once here, so providers append managed paths to a physical root.
-    connection_root: Annotated[Text, Field(min_length=1), AfterValidator(_resolved_root)] = (
-        Field(DEFAULT_CONNECTION_ROOT, validate_default=True)
+    connection_root: Annotated[Text, AfterValidator(_resolved_root)] = Field(
+        DEFAULT_CONNECTION_ROOT, validate_default=True,
     )
     offers: list[Offer] = Field(default_factory=list)
     #: False blocks local launch and execution; inspection and termination remain.
@@ -143,8 +143,7 @@ class Catalog(ComputeModel):
     def _with_local(self) -> Catalog:
         """Keep explicit local offers, or add the built-in one with the mask's GPUs."""
         offers = list(self.offers)
-        allowed = local_disabled_reason(self.allow_local) is None
-        if not allowed:
+        if local_disabled_reason(self.allow_local):
             offers = [offer for offer in offers if offer.provider != "local"]
         elif not any(offer.provider == "local" for offer in offers):
             if any(offer.name == "local" for offer in offers):
@@ -163,4 +162,4 @@ class Catalog(ComputeModel):
                 ),
                 max_nodes=1, time=TimeLimits(idle="30m"), startup=Startup(class_="fast"),
             ))
-        return self.replace(offers=offers, allow_local=allowed)
+        return self.replace(offers=offers)

@@ -126,7 +126,7 @@ def _native(
 
 def _metadata(provider: slurm.SlurmProvider, *, restarts: int = 0, **changes: Any) -> Path:
     directory = private_directory(
-        slurm.allocation_directory(provider.root, TOKEN) / f"attempt-{restarts}", create=True
+        slurm.attempt_directory(provider.root, TOKEN, restarts), create=True
     )
     write_private_json(
         directory / "identity.json",
@@ -1095,7 +1095,7 @@ def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
     directory = private_directory(
-        slurm.allocation_directory(Path(args.connection_root), TOKEN) / "attempt-0", create=True,
+        slurm.attempt_directory(Path(args.connection_root), TOKEN, 0), create=True,
     )
     write_private_json(directory / "identity.json", {
         "native_id": "123", "token": TOKEN, "uid": os.getuid(),
@@ -1184,9 +1184,8 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         # CPU-only submissions can omit the optional GPU count.
         if value is not None and key != "gpus":
             argv += ["--" + key.replace("_", "-"), str(value)]
-    directory = (
-        slurm.allocation_directory(configured_directory(Path(args.connection_root)), TOKEN)
-        / "attempt-0"
+    directory = slurm.attempt_directory(
+        configured_directory(Path(args.connection_root)), TOKEN, 0,
     )
     processes = []
     client = None

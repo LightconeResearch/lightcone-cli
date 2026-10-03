@@ -50,10 +50,7 @@ class Compute:
     def provider(self, name: str) -> Provider:
         """Construct the adapter for one native authority, once per command."""
         if name not in self._providers:
-            factory = PROVIDERS.get(name)
-            if factory is None:
-                raise ComputeError(f"unsupported compute provider: {name}")
-            self._providers[name] = factory(Path(self.catalog.connection_root))
+            self._providers[name] = PROVIDERS[name](Path(self.catalog.connection_root))
         return self._providers[name]
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
@@ -176,8 +173,7 @@ class Compute:
                 offer = offer.replace(resources=offer.resources.replace(accelerators=None))
             request = Request.parse(
                 str(offer.resources.cpus), f"{offer.resources.memory_bytes}B",
-                gpus="0" if gpus is None else gpus,
-                num_nodes=num_nodes, time=time, startup=startup,
+                gpus=gpus, num_nodes=num_nodes, time=time, startup=startup,
             )
             if gpus is None:
                 request = request.replace(accelerators=offer.resources.accelerators)

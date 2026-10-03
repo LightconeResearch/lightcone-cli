@@ -93,9 +93,13 @@ def config_text(value: object, name: str) -> str:
     return value
 
 
+#: A cluster name: portable across native providers and safe in commands.
+NAME_PATTERN = r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+
+
 def validate_name(value: str) -> None:
     """Keep cluster names portable across native providers and safe in commands."""
-    if not re.fullmatch(r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+    if not re.fullmatch(NAME_PATTERN, value):
         raise ComputeError(
             "cluster names must be 1–63 lowercase letters, digits, or hyphens; "
             "start with a letter and end with a letter or digit"
@@ -139,9 +143,15 @@ def _duration(value: str) -> str:
     return value
 
 
+def _provider(value: str) -> str:
+    if value not in PROVIDERS:
+        raise ValueError(f"must name a supported provider: {', '.join(PROVIDERS)}")
+    return value
+
+
 Text = Annotated[str, Field(pattern=r"^[^\x00-\x1f]*$")]
 Name = Annotated[Text, AfterValidator(_name)]
-ProviderName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")]
+ProviderName = Annotated[str, AfterValidator(_provider)]
 PositiveInt = Annotated[int, Field(gt=0, strict=True)]
 Count = Annotated[int, BeforeValidator(_count, json_schema_input_type=int | str)]
 GiB = Annotated[
@@ -259,17 +269,17 @@ class Request(ComputeModel):
         cpus: str,
         memory: str,
         *,
-        gpus: str = "0",
+        gpus: str | None = None,
         num_nodes: int = 1,
         time: str | None = None,
         startup: str | None = None,
     ) -> Request:
-        """Parse the CLI's exact or minimum per-node quantities."""
+        """Parse the CLI's exact or minimum per-node quantities; no ``gpus`` is CPU only."""
         try:
             return cls.model_validate({
                 "cpus": positive_int(cpus.removesuffix("+"), "cpus"),
                 "memory_bytes": memory_bytes(memory.removesuffix("+")),
-                "accelerators": None if gpus == "0" else gpus,
+                "accelerators": None if gpus in (None, "0") else gpus,
                 "num_nodes": positive_int(num_nodes, "num_nodes"),
                 "min_cpus": cpus.endswith("+"),
                 "min_memory": memory.endswith("+"),
@@ -347,19 +357,12 @@ class Offer(ComputeModel):
     """A fixed resource shape with user-supplied limits and native bindings."""
 
     name: Name
-    provider: str
+    provider: ProviderName
     resources: Resources
     max_nodes: Count
     time: TimeLimits
     startup: Startup = Field(default_factory=lambda: Startup(class_="unknown"))
     config: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("provider")
-    @classmethod
-    def supported_provider(cls, value: str) -> str:
-        if value not in PROVIDERS:
-            raise ValueError(f"must name a supported provider: {', '.join(PROVIDERS)}")
-        return value
 
 
 class Identity(ComputeModel):
@@ -395,14 +398,9 @@ class Identity(ComputeModel):
             data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_"))
             if not isinstance(data, list) or len(data) != 5:
                 raise ValueError
-            if not all(isinstance(item, str) for item in data):
-                raise ValueError
             provider, native_id, token, host, name = data
-            if not native_id or not token:
-                raise ValueError
-            if any(ord(char) < 32 for item in data for char in item):
-                raise ValueError
             validate_name(name)
+            # The fields' own strict types refuse the rest; ValidationError is a ValueError.
             identity = cls(
                 provider=provider, native_id=native_id, token=token, host=host, name=name
             )

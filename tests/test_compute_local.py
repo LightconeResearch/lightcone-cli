@@ -447,14 +447,7 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
         "connection_root": str(provider.root),
-        "offers": [{
-            "name": "small",
-            "provider": "local",
-            "resources": {"cpus": 1, "memory": 0.5},
-            "max_nodes": 1,
-            "time": {"default": "1m", "max": "1m"},
-            "config": {"scratch_root": str(_scratch(provider))},
-        }],
+        "offers": [_offer(provider).model_dump(mode="json", by_alias=True)],
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     service = Compute()
@@ -510,14 +503,7 @@ def test_an_unused_allocation_idles_out_despite_status_polling_and_frees_its_nam
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
         "connection_root": str(provider.root),
-        "offers": [{
-            "name": "small",
-            "provider": "local",
-            "resources": {"cpus": 1, "memory": 0.5},
-            "max_nodes": 1,
-            "time": {"idle": "8s"},
-            "config": {"scratch_root": str(_scratch(provider))},
-        }],
+        "offers": [_offer(provider, idle="8s").model_dump(mode="json", by_alias=True)],
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     plan = Compute().plan(Request(cpus=1, memory_bytes=512 * 1024**2), name="analysis")
@@ -1221,13 +1207,11 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
         monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
     probe = MagicMock(side_effect=AssertionError("local GPU planning must not probe hardware"))
     monkeypatch.setattr(local.subprocess, "run", probe)
-    offer = Offer(
-        name="gpu", provider="local",
+    offer = _offer(provider).replace(
+        name="gpu",
         resources=Resources.from_bytes(
             cpus=1, memory_bytes=512 * 1024**2, gpus=gpus, accelerator_name="A100",
         ),
-        max_nodes=1, time=TimeLimits(default="1m", max="1m"),
-        config={"scratch_root": str(_scratch(provider))},
     )
     plan = provider.plan(offer, Request.parse("1", "0.5", gpus=f"GPU:{gpus}" if gpus else "0"))
     assert plan.details["cuda_visible_devices"] == (mask if gpus else "")
