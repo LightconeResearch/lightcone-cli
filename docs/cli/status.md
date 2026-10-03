@@ -31,12 +31,13 @@ The header is repository facts: which mode the project executes in
 what enforcement a run on this host would get. No runtime and no
 network is needed to answer either.
 
-Then one line per output the spec declares, in dependency order: its
-state, **the commit it was made at**, and — for anything not current —
-why. The commit column is the verb's reason to exist: "which code made
-this?" has an answer for a current output too, and for a `behind`
-output that commit is where the environment that produced it can be
-read back.
+Then one line per output the spec declares: recipe outputs appear in
+dependency order, and outputs without recipes appear as `no recipe`.
+Each line gives its state, **the commit it was made at**, and — for
+stale or behind outputs — why. The commit column is the verb's reason to
+exist: "which code made this?" has an answer for a current output too,
+and for a `behind` output that commit is where the environment that
+produced it can be read back.
 
 ## States
 
@@ -46,6 +47,7 @@ read back.
 - `stale` — contradicts the project: definition changed, an input's
   content changed, or the output was edited by hand since it was made
   (a *foreign write* — the offending commit is named).
+- `no recipe` — declared but not executable yet; add a recipe to make it.
 
 ## Report vs gate
 
@@ -67,7 +69,7 @@ eyes, check for exit codes.
   "mode": "direct",
   "image": null,
   "sandbox": "landlock (fs: declared, network: allowed)",
-  "counts": {"current": 4, "behind": 0, "stale": 0},
+  "counts": {"current": 4, "behind": 0, "stale": 0, "no recipe": 0},
   "outputs": [
     {
       "output": "baseline/fit",
