@@ -64,7 +64,7 @@ def catalog(
     path.write_text(
         yaml.safe_dump(
             {
-                "local": {"enabled": False},
+                "allow_local": False,
                 "offers": [
                     {
                         "name": name,
@@ -302,7 +302,7 @@ def test_configured_catalogs_can_disable_local_and_obey_path_precedence(
     assert configured.providers == ["fake", "local"]
     assert [offer.name for offer in configured.offers] == ["quick", "large"]
     # Disabled local compute remains available for inspection and termination.
-    default.write_text("local: {enabled: false}\noffers: []\n")
+    default.write_text("allow_local: false\noffers: []\n")
     assert Catalog.load().offers == []
     assert Catalog.load().providers == ["local"]
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
@@ -535,7 +535,7 @@ def test_nersc_login_nodes_block_first_launch_without_writing_a_catalog(
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setattr("socket.gethostname", lambda: "login07.nersc.gov")
     service = compute.Compute()
-    assert not service.catalog.local.enabled
+    assert not service.catalog.allow_local
     assert service.catalog.providers == ["local"]
     assert service.resources()["offers"] == []
     for flags in ([], ["--dry-run"]):
@@ -569,7 +569,7 @@ def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
 ) -> None:
     identity = IDENTITY.replace(provider="local", native_id="5678")
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"enabled": True}
+    data["allow_local"] = True
     data["offers"].insert(0, {**data["offers"][0], "name": "workstation", "provider": "local"})
     catalog.write_text(yaml.safe_dump(data))
     local = MagicMock()
@@ -582,7 +582,7 @@ def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setattr("socket.gethostname", lambda: "login07")
     service = compute.Compute()
-    assert not service.catalog.local.enabled
+    assert not service.catalog.allow_local
     assert [offer.name for offer in service.catalog.offers] == ["quick", "large"]
     plan = service.plan(Request.parse("4", "8"))
     assert service.launch(plan) == IDENTITY
@@ -600,19 +600,22 @@ def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
     local.launch.assert_not_called()
 
 
-def test_local_config_overrides_default_and_survives_disabling(
+def test_an_explicit_local_offer_replaces_the_builtin_and_allow_local_disables_both(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("dask.system.CPU_COUNT", 8)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
     path = default_home / "compute.yaml"
-    path.write_text("local:\n  resources: {cpus: 2, memory: 3}\n")
+    offer = "{name: local, provider: local, resources: {cpus: 2, memory: 3}, max_nodes: 1, "
+    offer += "time: {idle: 30m}}"
+    path.write_text(f"offers:\n  - {offer}\n")
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
     service = compute.Compute()
+    assert [offer.name for offer in service.catalog.offers] == ["local"]
     plan = service.plan_local(name="sandbox", time="1h")
     assert (plan.name, plan.resources.cpus, plan.resources.memory_bytes) == ("sandbox", 2, 3 * GIB)
     assert plan.seconds == 3600
-    path.write_text("local: {enabled: false}\n")
+    path.write_text(f"allow_local: false\noffers:\n  - {offer}\n")
     disabled = compute.Compute()
     assert not disabled.resources()["offers"]
     assert disabled.catalog.providers == ["local"]
@@ -628,7 +631,7 @@ def test_catalog_adds_local_after_remote_offers_and_shortcut_never_selects_remot
     catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data.pop("local")
+    data.pop("allow_local")
     catalog.write_text(yaml.safe_dump(data))
     monkeypatch.setattr("dask.system.CPU_COUNT", 4)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 8 * GIB)
@@ -643,7 +646,7 @@ def test_catalog_adds_local_after_remote_offers_and_shortcut_never_selects_remot
 
 def test_builtin_name_conflict_identifies_the_catalog_and_remedy(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"enabled": True}
+    data["allow_local"] = True
     data["offers"][0]["name"] = "local"
     catalog.write_text(yaml.safe_dump(data))
     with pytest.raises(ComputeError) as error:
@@ -653,13 +656,16 @@ def test_builtin_name_conflict_identifies_the_catalog_and_remedy(catalog: Path) 
     assert "rename the configured offer" in str(error.value)
 
 
-def test_local_time_replaces_the_builtin_idle_timeout(
+def test_an_explicit_local_offer_sets_its_own_time_limits(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("dask.system.CPU_COUNT", 8)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
     path = default_home / "compute.yaml"
-    path.write_text("local:\n  time: {idle: 1h, max: 8h}\n")
+    path.write_text(
+        "offers:\n  - {name: local, provider: local, resources: {cpus: 8, memory: 16}, "
+        "max_nodes: 1, time: {idle: 1h, max: 8h}}\n"
+    )
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
     service = compute.Compute()
     plan = service.plan_local()
@@ -686,7 +692,7 @@ def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
     catalog: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"enabled": True}
+    data["allow_local"] = True
     for offer in data["offers"]:
         offer["provider"] = "local"
     catalog.write_text(yaml.safe_dump(data))
@@ -697,19 +703,17 @@ def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
     plan = service.plan_local()
     assert (plan.offer.name, plan.name, plan.resources.cpus) == ("quick", "local", 4)
     assert plan.resources.memory_bytes == 8 * GIB
-    for setting, value in (
-        ("resources", {"cpus": 2, "memory": 2}), ("time", {"idle": "1h"}),
-    ):
-        catalog.write_text(yaml.safe_dump({**data, "local": {setting: value}}))
-        with pytest.raises(ComputeError, match="cannot be combined with explicit local"):
-            Catalog.load()
 
 
 def test_configured_local_budget_still_must_fit_host_capacity(
     catalog: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"resources": {"cpus": 8, "memory": 16}}
+    data["allow_local"] = True
+    data["offers"] = [{
+        "name": "local", "provider": "local", "resources": {"cpus": 8, "memory": 16},
+        "max_nodes": 1, "time": {"idle": "30m"},
+    }]
     catalog.write_text(yaml.safe_dump(data))
     monkeypatch.setattr("dask.system.CPU_COUNT", 4)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 8 * GIB)
@@ -718,16 +722,12 @@ def test_configured_local_budget_still_must_fit_host_capacity(
     assert "exceeds this host's CPU or RAM capacity" in json.loads(result.stdout)["error"]
 
 
-@pytest.mark.parametrize("settings, message", [
-    ({"enabled": "false"}, "local.enabled"),
-    ({"resources": {"cpus": 0, "memory": 1}}, "local.resources.cpus"),
-    ({"resources": {"cpus": 1, "memory": 1, "accelerators": "GPU:1"}}, "CUDA_VISIBLE_DEVICES"),
-])
-def test_local_policy_validation(catalog: Path, settings: object, message: str) -> None:
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_allow_local_must_be_a_boolean(catalog: Path, value: object) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = settings
+    data["allow_local"] = value
     catalog.write_text(yaml.safe_dump(data))
-    with pytest.raises(ComputeError, match=message):
+    with pytest.raises(ComputeError, match="allow_local"):
         Catalog.load()
 
 
@@ -1169,7 +1169,7 @@ def test_invalid_catalog_encoding_is_a_structured_error(catalog: Path) -> None:
 @pytest.mark.parametrize("setting", ["scratch_root", "python"])
 def test_local_offer_path_types_fail_without_a_traceback(catalog: Path, setting: str) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"enabled": True}
+    data["allow_local"] = True
     for offer in data["offers"]:
         offer["provider"] = "local"
     data["offers"][0]["config"] = {setting: None}

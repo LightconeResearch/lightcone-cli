@@ -1740,11 +1740,10 @@ timeout. Loading the catalog writes no catalog and starts no cluster.
 the name to `local`. `--wait` returns when the accepted allocation is ready; timeout
 or startup failure retains its ID without resubmitting or terminating it.
 Configured remote offers precede the built-in local offer in selection order.
-A catalog's own local offers replace it. `local.resources`
-and `local.time` override the built-in CPU/RAM budget and time limits and cannot
-accompany explicit local offers.
-`local.enabled: false` blocks local launch and execution while preserving inspection
-and termination. Recognized NERSC login nodes disable local compute automatically;
+A catalog's own local offers replace it, which is the one way to change the
+local CPU/RAM budget or time limits: there is no separate local settings block.
+`allow_local: false`, the catalog's only local key, blocks local launch and
+execution while preserving inspection and termination. Recognized NERSC login nodes disable local compute automatically;
 other sites can disable it in their catalogs. Native permissions remain the
 enforcement boundary.
 The built-in local offer takes its GPUs from the `CUDA_VISIBLE_DEVICES` mask on
@@ -1899,7 +1898,7 @@ instead of holding it for Dask's default hour.
 
 **Block local compute on recognized NERSC login nodes (2026-09).** A nonempty
 `NERSC_HOST` plus a short hostname matching `login[0-9]+` disables local launch
-and execution, including explicit local offers and `local.enabled: true`.
+and execution, including explicit local offers and `allow_local: true`.
 Interactive compute nodes remain eligible; inherited `SLURM_JOB_ID` never exempts
 a login node. Apply this policy at runtime without writing a configuration file.
 Keep inspection, termination, and Slurm execution available. Both execution
@@ -2209,9 +2208,11 @@ unlinks before writing; a new tampering test should too.
 - **Local compute accompanies remote catalogs (2026-09).** The built-in offer
   uses the host's usable CPU/RAM capacity and follows configured offers, replacing
   the previous one-CPU/1-GiB fallback that disappeared when a catalog existed.
-  `local.resources` sets a smaller budget; a catalog's own local offers
-  replace it. Login-node catalogs disable local launch and execution through
-  `local.enabled: false`. Inspection and termination stay available. One local
+  A catalog's own local offers replace it, including to set a smaller budget
+  (a `local.resources`/`local.time` block once did that too, a second way to
+  say what an offer already says, so it went). Login-node catalogs disable
+  local launch and execution through `allow_local: false`. Inspection and
+  termination stay available. One local
   allocation per user per machine is enforced across catalogs and connection
   roots by scanning the process table for a live owner before launch
   (`local._running_owners`: a session leader of this user running

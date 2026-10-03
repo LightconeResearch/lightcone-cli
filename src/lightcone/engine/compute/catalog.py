@@ -13,7 +13,6 @@ import yaml
 from pydantic import AfterValidator, Field, ValidationError, model_validator
 
 from .model import (
-    Accelerator,
     ComputeError,
     ComputeModel,
     Offer,
@@ -26,7 +25,7 @@ from .model import (
 from .runtime import DEFAULT_CONNECTION_ROOT, configured_directory
 
 
-def local_disabled_reason(enabled: bool = True) -> str | None:
+def local_disabled_reason(allowed: bool = True) -> str | None:
     """Explain a local-compute refusal while retaining inspection and termination."""
     if os.environ.get("NERSC_HOST") and re.fullmatch(
         r"login[0-9]+", socket.gethostname().split(".", 1)[0].lower(),
@@ -35,8 +34,8 @@ def local_disabled_reason(enabled: bool = True) -> str | None:
             "local compute is disabled on NERSC login nodes; use an interactive compute node "
             "or configure a Slurm offer and launch with --cpus and --memory"
         )
-    if not enabled:
-        return "local compute is disabled by the compute configuration"
+    if not allowed:
+        return "local compute is disabled by allow_local: false in the compute catalog"
     return None
 
 
@@ -80,22 +79,6 @@ def _unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[str
 _UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
 
 
-class LocalSettings(ComputeModel):
-    """Policy for local launches, including the implicit workstation offer."""
-
-    enabled: bool = True
-    resources: Resources | None = None
-    time: TimeLimits | None = None
-
-    @model_validator(mode="after")
-    def cpu_only(self) -> Self:
-        if self.resources is not None and self.resources.gpus:
-            raise ValueError(
-                "local.resources supports CPUs and memory; GPUs come from CUDA_VISIBLE_DEVICES"
-            )
-        return self
-
-
 class Catalog(ComputeModel):
     """Configuration for new requests, never a registry of live clusters."""
 
@@ -104,7 +87,8 @@ class Catalog(ComputeModel):
         Field(DEFAULT_CONNECTION_ROOT, validate_default=True)
     )
     offers: list[Offer] = Field(default_factory=list)
-    local: LocalSettings = Field(default_factory=LocalSettings)
+    #: False blocks local launch and execution; inspection and termination remain.
+    allow_local: bool = True
 
     @model_validator(mode="after")
     def unique_offers(self) -> Self:
@@ -159,16 +143,10 @@ class Catalog(ComputeModel):
     def _with_local(self) -> Catalog:
         """Keep explicit local offers, or add the built-in one with the mask's GPUs."""
         offers = list(self.offers)
-        local = self.local
-        if local_disabled_reason(local.enabled) is not None:
-            local = local.replace(enabled=False)
-        explicit = any(offer.provider == "local" for offer in offers)
-        if explicit and (local.resources is not None or local.time is not None):
-            raise ComputeError(
-                "local.resources and local.time cannot be combined with explicit local "
-                "offers; set those offers' resources and time instead"
-            )
-        if not explicit and local.enabled:
+        allowed = local_disabled_reason(self.allow_local) is None
+        if not allowed:
+            offers = [offer for offer in offers if offer.provider != "local"]
+        elif not any(offer.provider == "local" for offer in offers):
             if any(offer.name == "local" for offer in offers):
                 raise ComputeError(
                     "offer name 'local' is reserved for the built-in local backend; "
@@ -177,17 +155,12 @@ class Catalog(ComputeModel):
             from dask.system import CPU_COUNT
             from distributed.system import MEMORY_LIMIT
 
-            resources = local.resources or Resources.from_bytes(
-                cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
-            )
-            if gpus := cuda_device_count():
-                resources = resources.replace(accelerators=Accelerator(name="GPU", count=gpus))
             # Interactive work comes and goes: end when idle, not at a fixed age.
             offers.append(Offer(
-                name="local", provider="local", resources=resources,
-                max_nodes=1, time=local.time or TimeLimits(idle="30m"),
-                startup=Startup(class_="fast"),
+                name="local", provider="local",
+                resources=Resources.from_bytes(
+                    cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT, gpus=cuda_device_count(),
+                ),
+                max_nodes=1, time=TimeLimits(idle="30m"), startup=Startup(class_="fast"),
             ))
-        if not local.enabled:
-            offers = [offer for offer in offers if offer.provider != "local"]
-        return self.replace(offers=offers, local=local)
+        return self.replace(offers=offers, allow_local=allowed)

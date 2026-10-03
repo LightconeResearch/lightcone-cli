@@ -164,7 +164,7 @@ class Compute:
         Without ``gpus``, each offer is taken whole, GPUs included; ``"0"`` takes
         it without them, since a local allocation never reserves its GPUs.
         """
-        if reason := local_disabled_reason(self.catalog.local.enabled):
+        if reason := local_disabled_reason(self.catalog.allow_local):
             raise ComputeError(reason)
         name = "local" if name is None else name
         validate_name(name)
@@ -196,7 +196,7 @@ class Compute:
     def launch(self, plan: LaunchPlan) -> Identity:
         """Choose an unused name from native observations, then submit exactly once."""
         if plan.offer.provider == "local" and (
-            reason := local_disabled_reason(self.catalog.local.enabled)
+            reason := local_disabled_reason(self.catalog.allow_local)
         ):
             raise ComputeError(reason)
         if plan.name is not None:
@@ -285,7 +285,7 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
     service = Compute()
     provider, identity = service.resolve(cluster_id)
     if identity.provider == "local" and (
-        reason := local_disabled_reason(service.catalog.local.enabled)
+        reason := local_disabled_reason(service.catalog.allow_local)
     ):
         raise ComputeError(reason, cluster_id=identity.encode())
     snapshot = provider.inspect(identity)
