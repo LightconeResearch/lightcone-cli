@@ -18,9 +18,7 @@ from lightcone.engine.compute.model import Identity
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import _run as _real_run
 
-CLUSTER_ID = Identity(
-    namespace="00000000-0000-0000-0000-000000000001", native_id="test", token="test"
-).encode()
+CLUSTER_ID = Identity(provider="local", native_id="test", token="test").encode()
 
 
 @pytest.fixture

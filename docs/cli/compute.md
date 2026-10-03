@@ -22,8 +22,8 @@ GPUs still require explicit offers and, locally, a `CUDA_VISIBLE_DEVICES` mask.
 `~/.lightcone/compute.yaml` configures resource offers; `LC_COMPUTE_CONFIG` selects
 another file for all compute and execution commands. The top-level `local` block
 can override the built-in CPU/RAM budget or time limits, or disable local compute.
-Without an explicit local connection, the built-in local offer is appended after
-configured offers. Catalogs with explicit local connections use their own offers instead;
+Each offer names its `provider` (`local` or `slurm`). The built-in local offer is
+appended after configured offers, unless the catalog lists its own local offers;
 the shortcut chooses the first eligible local offer. See
 [local configuration](../user/cluster.md#customize-resource-offers).
 Missing explicit paths and invalid catalogs are errors. Loading a catalog or
@@ -41,7 +41,7 @@ See [local allocations](../user/cluster.md#local-allocations) for detection deta
 | `launch` | Resolve one resource request and submit exactly once; print only the cluster name to stdout on acceptance. |
 | `launch --wait` | Submit once, then wait for all expected workers. `--timeout` sets the readiness deadline (default 300 seconds). |
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
-| `status` | List one `name: status` line per current allocation across every configured connection; report the connections that could not be queried. |
+| `status` | List one `name: status` line per current allocation across every provider the catalog's offers use, and always local; report the providers that could not be queried. |
 | `status CLUSTER` | Resolve a name or full ID, inspect native state, and probe Dask readiness separately. |
 | `status CLUSTER --wait` | Wait for readiness: the allocation is active and every node's worker is connected. The default deadline is 300 seconds, and queries grow less frequent as the wait goes on (up to every 30 seconds). Exits 1 on timeout, or at once if the allocation is ending or has ended; the allocation is left unchanged. |
 | `down CLUSTER` | Request native termination even if the scheduler is unavailable. An allocation that has already ended is a successful no-op when addressed by full ID; its name no longer resolves. A Slurm job that has left the queue is refused unless accounting confirms it ended. |
@@ -57,14 +57,15 @@ CLUSTER=$(lc compute launch --wait)
 lc compute down "$CLUSTER"
 ```
 
-Launch checks current allocations across all configured connections. An explicit
+Launch checks current allocations across all of the catalog's providers. An explicit
 name already in use is rejected; generated collisions are retried before the
 single submission. This check is not an atomic reservation: concurrent launches
 can race. Name lookup refuses ambiguous or incomplete discovery instead of
 choosing a cluster. A name can be reused after its allocation ends; it is not a
 durable reference to that allocation. Use the full immutable `id` from launch or
-status JSON to address one allocation directly, including when unrelated
-connections are unavailable. No name registry is maintained.
+status JSON to address one allocation directly, including when other providers
+are unavailable or no offer uses its provider any more. No name registry is
+maintained.
 
 Supply both `--cpus` and `--memory`, or omit both for the local shortcut.
 The shortcut never selects a remote offer, including when local compute is disabled.
@@ -122,8 +123,8 @@ name only once ready; JSON adds `ready: true`. A timeout or startup failure exit
 1 and includes the accepted immutable ID in the error. Waiting never resubmits
 or terminates the accepted allocation.
 
-Only one local cluster may run per user on a machine, across names, namespaces,
-and configured roots. A launch that finds one of your local clusters running in
+Only one local cluster may run per user on a machine, across names and
+configured roots. A launch that finds one of your local clusters running in
 the process table fails until that cluster ends; launches that overlap can both
 succeed.
 
@@ -134,7 +135,7 @@ scheduler credentials:
 |---|---|
 | `launch` | `plan`, `id`, `name`, `accepted` (`ready: true` after `--wait`; only `plan` with `--dry-run`) |
 | `status CLUSTER` | `id`, `name`, `phase`, `allocation`, `dask`, `reason`, `native_state` |
-| `status` | `clusters` (a list of the above) and `errors` (by connection name) |
+| `status` | `clusters` (a list of the above) and `errors` (by provider name) |
 | `down` | `id`, `name`, `termination_requested` |
 | any failure | `error`, `id`, `submission_token`, on stdout, with exit 1 |
 

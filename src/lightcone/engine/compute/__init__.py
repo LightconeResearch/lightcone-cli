@@ -6,13 +6,13 @@ import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from .catalog import Catalog, local_disabled_reason
 from .model import (
     ComputeError,
-    Connection,
     Identity,
     LaunchPlan,
     Offer,
@@ -25,16 +25,16 @@ from .model import (
 )
 
 
-def _local(connection: Connection) -> Provider:
+def _local(root: Path) -> Provider:
     from .local import LocalProvider
 
-    return LocalProvider(connection)
+    return LocalProvider(root)
 
 
-def _slurm(connection: Connection) -> Provider:
+def _slurm(root: Path) -> Provider:
     from .slurm import SlurmProvider
 
-    return SlurmProvider(connection)
+    return SlurmProvider(root)
 
 
 # The lifecycle seam is intentionally small: execution never dispatches on a provider.
@@ -62,12 +62,12 @@ class Compute:
     def __init__(self) -> None:
         self.catalog = Catalog.load()
 
-    def provider(self, connection: Connection) -> Provider:
-        """Construct an adapter for an explicitly configured native authority."""
-        factory = PROVIDERS.get(connection.provider)
+    def provider(self, name: str) -> Provider:
+        """Construct the adapter for one native authority."""
+        factory = PROVIDERS.get(name)
         if factory is None:
-            raise ComputeError(f"unsupported compute provider: {connection.provider}")
-        return factory(connection)
+            raise ComputeError(f"unsupported compute provider: {name}")
+        return factory(Path(self.catalog.connection_root))
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
         """Route an immutable ID, or resolve one unambiguous name from native state."""
@@ -97,7 +97,7 @@ class Compute:
                     f"cluster name {cluster_id!r} is ambiguous; use a full cluster ID: {ids}"
                 )
             identity = matches.pop()
-        return self.provider(self.catalog.connection_for(identity.namespace)), identity
+        return self.provider(identity.provider), identity
 
     def resources(self) -> dict[str, Any]:
         """Describe configured policy, without inventing live free capacity."""
@@ -144,7 +144,6 @@ class Compute:
         self, offer: Offer, request: Request, name: str | None,
     ) -> LaunchPlan | None:
         """Match one shape and validate its provider without allocating anything."""
-        connection = self.catalog.connections[offer.connection]
         if request.num_nodes > offer.max_nodes:
             return None
         if request.startup is not None and request.startup != offer.startup.class_:
@@ -168,7 +167,7 @@ class Compute:
             matches = request.accelerators.matches(offer.resources.accelerators)
         if not matches:
             return None
-        return self.provider(connection).plan(offer, request).replace(name=name)
+        return self.provider(offer.provider).plan(offer, request).replace(name=name)
 
     def plan_local(
         self, *, name: str | None = None, time: str | None = None,
@@ -181,8 +180,7 @@ class Compute:
         validate_name(name)
         unavailable: list[str] = []
         for offer in self.catalog.offers:
-            connection = self.catalog.connections[offer.connection]
-            if connection.provider != "local":
+            if offer.provider != "local":
                 continue
             request = Request.parse(
                 str(offer.resources.cpus), f"{offer.resources.memory_bytes}B",
@@ -202,7 +200,7 @@ class Compute:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Choose an unused name from native observations, then submit exactly once."""
-        if plan.connection.provider == "local" and (
+        if plan.offer.provider == "local" and (
             reason := local_disabled_reason(self.catalog.local.enabled)
         ):
             raise ComputeError(reason)
@@ -225,15 +223,15 @@ class Compute:
                 raise ComputeError("could not generate an unused cluster name; no allocation made")
         elif name in names:
             raise ComputeError(f"cluster name {name!r} is already in use; choose another name")
-        return self.provider(plan.connection).launch(plan.replace(name=name))
+        return self.provider(plan.offer.provider).launch(plan.replace(name=name))
 
     def discover(self) -> tuple[list[Snapshot], dict[str, str]]:
         """Query each native authority once, retaining partial discovery failures."""
         snapshots: list[Snapshot] = []
         errors: dict[str, str] = {}
-        for name, connection in self.catalog.connections.items():
+        for name in self.catalog.providers:
             try:
-                snapshots.extend(self.provider(connection).discover())
+                snapshots.extend(self.provider(name).discover())
             except ComputeError as exc:
                 errors[name] = str(exc)
         return snapshots, errors
@@ -296,8 +294,7 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
         raise ComputeError("timeout must be finite and positive")
     service = Compute()
     provider, identity = service.resolve(cluster_id)
-    connection = service.catalog.connection_for(identity.namespace)
-    if connection.provider == "local" and (
+    if identity.provider == "local" and (
         reason := local_disabled_reason(service.catalog.local.enabled)
     ):
         raise ComputeError(reason, cluster_id=identity.encode())

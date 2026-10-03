@@ -21,7 +21,6 @@ from lightcone.engine.compute.model import (
     GIB,
     Accelerator,
     ComputeError,
-    Connection,
     Identity,
     LaunchPlan,
     Offer,
@@ -36,8 +35,7 @@ from lightcone.engine.compute.model import (
     validate_name,
 )
 
-NAMESPACE = "5a9d058c-7c6e-4e2a-919b-786f1148536c"
-IDENTITY = Identity(namespace=NAMESPACE, native_id="1234", token="abc")
+IDENTITY = Identity(provider="fake", native_id="1234", token="abc")
 
 
 @pytest.fixture
@@ -65,11 +63,10 @@ def catalog(default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             {
                 "version": 1,
                 "local": {"enabled": False},
-                "connections": {"test": {"namespace": NAMESPACE, "provider": "fake"}},
                 "offers": [
                     {
                         "name": name,
-                        "connection": "test",
+                        "provider": "fake",
                         "resources": {"cpus": cpus, "memory": memory},
                         "max_nodes": nodes,
                         "time": {"default": "30m", "max": "2h"},
@@ -91,7 +88,6 @@ def catalog(default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 def provider(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     adapter = MagicMock()
     adapter.plan.side_effect = lambda offer, request: LaunchPlan(
-        connection=compute.Compute().catalog.connections["test"],
         offer=offer,
         request=request,
         seconds=request.seconds or offer.time.default_seconds,
@@ -102,7 +98,7 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     client = MagicMock()
     client.scheduler_info.return_value = {"workers": {"one": {}}}
     adapter.connect.return_value.__enter__.return_value = client
-    monkeypatch.setitem(compute.PROVIDERS, "fake", lambda connection: adapter)
+    monkeypatch.setitem(compute.PROVIDERS, "fake", lambda root: adapter)
     return adapter
 
 
@@ -257,17 +253,10 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
     first, second = Catalog.load(), Catalog.load()
     assert first == second
-    assert set(first.connections) == {"local"}
-    connection = first.connections["local"]
-    assert connection.provider == "local"
-    assert str(UUID(connection.namespace)) == connection.namespace
-    with monkeypatch.context() as patch:
-        patch.setattr("socket.gethostname", lambda: "other-host")
-        assert Catalog.load().connections["local"].namespace == connection.namespace
-    assert Catalog.load().connections["local"].namespace == connection.namespace
+    assert first.providers == ["local"]
     assert len(first.offers) == 1
     offer = first.offers[0]
-    assert (offer.name, offer.connection) == ("local", "local")
+    assert (offer.name, offer.provider) == ("local", "local")
     assert (offer.resources.cpus, offer.resources.memory_bytes, offer.max_nodes) == (1, GIB, 1)
     # No hard lifetime: the built-in offer ends after 30 minutes without task activity.
     assert (offer.time.default_seconds, offer.time.max_seconds, offer.time.idle_seconds) == (
@@ -308,11 +297,12 @@ def test_configured_catalogs_can_disable_local_and_obey_path_precedence(
     default.parent.mkdir()
     default.write_text(catalog.read_text())
     configured = Catalog.load()
-    assert set(configured.connections) == {"test", "local"}
+    assert configured.providers == ["fake", "local"]
     assert [offer.name for offer in configured.offers] == ["quick", "large"]
-    # Disabled local connections remain available for inspection and termination.
-    default.write_text("version: 1\nlocal: {enabled: false}\nconnections: {}\noffers: []\n")
+    # Disabled local compute remains available for inspection and termination.
+    default.write_text("version: 1\nlocal: {enabled: false}\noffers: []\n")
     assert Catalog.load().offers == []
+    assert Catalog.load().providers == ["local"]
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     assert Catalog.load() == configured
     assert Catalog.load(default).offers == []
@@ -338,7 +328,7 @@ def test_only_an_absent_implicit_catalog_uses_the_builtin(
     default.write_text("version: [\n")
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load()
-    default.write_text("version: 1\nconnections: {}\noffers: []\n")
+    default.write_text("version: 1\noffers: []\n")
 
     def unreadable(_path: Path, *args: object, **kwargs: object) -> str:
         raise PermissionError("catalog is not readable")
@@ -512,7 +502,7 @@ def test_nersc_login_nodes_block_first_launch_without_writing_a_catalog(
     monkeypatch.setattr("socket.gethostname", lambda: "login07.nersc.gov")
     service = compute.Compute()
     assert not service.catalog.local.enabled
-    assert service.catalog.connections["local"] == plan.connection
+    assert service.catalog.providers == ["local"]
     assert service.resources()["offers"] == []
     for flags in ([], ["--dry-run"]):
         result = CliRunner().invoke(main, ["compute", "launch", *flags, "--json"])
@@ -543,14 +533,10 @@ def test_local_compute_remains_available_outside_identified_nersc_login_nodes(
 def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
     catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = compute.Compute().catalog.connections["local"]
-    identity = IDENTITY.replace(namespace=connection.namespace, native_id="5678")
+    identity = IDENTITY.replace(provider="local", native_id="5678")
     data = yaml.safe_load(catalog.read_text())
     data["local"] = {"enabled": True}
-    data["connections"]["workstation"] = connection.model_dump()
-    data["offers"].insert(0, {
-        **data["offers"][0], "name": "workstation", "connection": "workstation",
-    })
+    data["offers"].insert(0, {**data["offers"][0], "name": "workstation", "provider": "local"})
     catalog.write_text(yaml.safe_dump(data))
     local = MagicMock()
     local.discover.return_value = []
@@ -558,7 +544,7 @@ def test_nersc_login_guard_keeps_remote_compute_and_local_inspection_available(
     local.connect.return_value.__enter__.return_value.scheduler_info.return_value = {
         "workers": {"one": {}},
     }
-    monkeypatch.setitem(compute.PROVIDERS, "local", lambda connection: local)
+    monkeypatch.setitem(compute.PROVIDERS, "local", lambda root: local)
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setattr("socket.gethostname", lambda: "login07")
     service = compute.Compute()
@@ -592,11 +578,10 @@ def test_local_config_overrides_default_and_survives_disabling(
     plan = service.plan_local(name="sandbox", time="1h")
     assert (plan.name, plan.resources.cpus, plan.resources.memory_bytes) == ("sandbox", 2, 3 * GIB)
     assert plan.seconds == 3600
-    connection = plan.connection
     path.write_text("version: 1\nlocal: {enabled: false}\n")
     disabled = compute.Compute()
     assert not disabled.resources()["offers"]
-    assert disabled.catalog.connection_for(connection.namespace) == connection
+    assert disabled.catalog.providers == ["local"]
     with pytest.raises(ComputeError, match="disabled"):
         disabled.plan_local()
     with pytest.raises(ComputeError, match="disabled"):
@@ -616,32 +601,22 @@ def test_catalog_adds_local_after_remote_offers_and_shortcut_never_selects_remot
     service = compute.Compute()
     assert [offer.name for offer in service.catalog.offers] == ["quick", "large", "local"]
     assert service.plan(Request.parse("4", "8")).offer.name == "quick"
-    assert service.plan_local().connection.provider == "local"
+    assert service.plan_local().offer.provider == "local"
     with pytest.raises(ComputeError, match="no local offer"):
         service.plan_local(num_nodes=2)
     provider.launch.assert_not_called()
 
 
-@pytest.mark.parametrize("kind, enabled", [
-    ("connection", True), ("connection", False), ("offer", True),
-])
-def test_builtin_name_conflicts_identify_the_catalog_and_remedy(
-    catalog: Path, kind: str, enabled: bool,
-) -> None:
+def test_builtin_name_conflict_identifies_the_catalog_and_remedy(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["local"] = {"enabled": enabled}
-    if kind == "connection":
-        data["connections"]["local"] = data["connections"].pop("test")
-        for offer in data["offers"]:
-            offer["connection"] = "local"
-    else:
-        data["offers"][0]["name"] = "local"
+    data["local"] = {"enabled": True}
+    data["offers"][0]["name"] = "local"
     catalog.write_text(yaml.safe_dump(data))
     with pytest.raises(ComputeError) as error:
         Catalog.load()
     assert f"invalid compute catalog {catalog}" in str(error.value)
-    assert f"{kind} name 'local' is reserved for the built-in local backend" in str(error.value)
-    assert f"rename the configured {kind}" in str(error.value)
+    assert "offer name 'local' is reserved for the built-in local backend" in str(error.value)
+    assert "rename the configured offer" in str(error.value)
 
 
 def test_local_time_replaces_the_builtin_idle_timeout(
@@ -670,7 +645,7 @@ def test_disabled_builtin_does_not_reserve_remote_offer_names(catalog: Path) -> 
     catalog.write_text(yaml.safe_dump(data))
     loaded = Catalog.load()
     assert [offer.name for offer in loaded.offers] == ["local", "large"]
-    assert loaded.connections[loaded.offers[0].connection].provider == "fake"
+    assert loaded.offers[0].provider == "fake"
 
 
 def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
@@ -678,12 +653,13 @@ def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
     data["local"] = {"enabled": True}
-    data["connections"]["test"]["provider"] = "local"
+    for offer in data["offers"]:
+        offer["provider"] = "local"
     catalog.write_text(yaml.safe_dump(data))
     monkeypatch.setattr("dask.system.CPU_COUNT", 8)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
     service = compute.Compute()
-    assert set(service.catalog.connections) == {"test"}
+    assert [offer.name for offer in service.catalog.offers] == ["quick", "large"]
     plan = service.plan_local()
     assert (plan.offer.name, plan.name, plan.resources.cpus) == ("quick", "local", 4)
     assert plan.resources.memory_bytes == 8 * GIB
@@ -725,18 +701,20 @@ def test_disabled_policy_blocks_local_execution_but_allows_status_and_down(
     catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = yaml.safe_load(catalog.read_text())
-    data["connections"]["test"]["provider"] = "local"
+    for offer in data["offers"]:
+        offer["provider"] = "local"
     catalog.write_text(yaml.safe_dump(data))
-    monkeypatch.setitem(compute.PROVIDERS, "local", lambda connection: provider)
+    monkeypatch.setitem(compute.PROVIDERS, "local", lambda root: provider)
+    identity = IDENTITY.replace(provider="local")
     service = compute.Compute()
     assert service.catalog.offers == []
     with pytest.raises(ComputeError, match="disabled"):
-        with compute.connect(IDENTITY.encode()):
+        with compute.connect(identity.encode()):
             pytest.fail("borrowed disabled local compute")
     provider.connect.assert_not_called()
-    assert service.status(IDENTITY.encode()).ready
-    service.down(IDENTITY.encode())
-    provider.terminate.assert_called_once_with(IDENTITY)
+    assert service.status(identity.encode()).ready
+    service.down(identity.encode())
+    provider.terminate.assert_called_once_with(identity)
 
 
 def test_configured_catalogs_do_not_probe_local_gpus(
@@ -823,7 +801,6 @@ def test_catalog_uses_the_public_models_and_roundtrips_without_an_adapter(catalo
     offer = loaded.offers[0]
     for instance, model in (
         (loaded, Catalog),
-        (loaded.connections["test"], Connection),
         (offer, Offer),
         (offer.resources, Resources),
         (offer.time, TimeLimits),
@@ -831,7 +808,6 @@ def test_catalog_uses_the_public_models_and_roundtrips_without_an_adapter(catalo
     ):
         assert isinstance(instance, BaseModel)
         assert type(instance) is model
-    assert "name" not in loaded.connections["test"].model_dump()
     dumped = loaded.model_dump(by_alias=True)
     assert dumped["offers"][0]["resources"] == {
         "cpus": 4, "memory": Decimal(8), "accelerators": None,
@@ -853,7 +829,7 @@ def test_model_updates_revalidate_fields_and_catalog_relationships(catalog: Path
     with pytest.raises(ValidationError):
         offer.time.replace(default="3h")
     with pytest.raises(ValidationError):
-        loaded.replace(offers=[offer.replace(connection="missing")])
+        loaded.replace(offers=[offer, offer])
     with pytest.raises(ValidationError):
         Request(cpus=1, memory_bytes=GIB).replace(memory_bytes=0)
 
@@ -887,8 +863,7 @@ def test_selection_skips_known_ineligibility_but_stops_on_an_unknown_authority(
 ) -> None:
     service = compute.Compute()
     selected = LaunchPlan(
-        connection=service.catalog.connections["test"], offer=service.catalog.offers[1],
-        request=Request.parse("1+", "1+"), seconds=1800,
+        offer=service.catalog.offers[1], request=Request.parse("1+", "1+"), seconds=1800,
     )
     provider.plan.side_effect = [UnavailableOfferError("login host"), selected]
     assert service.plan(Request.parse("1+", "1+")).offer.name == "large"
@@ -913,7 +888,7 @@ def test_discovery_preserves_unknown_authority(catalog: Path, provider: MagicMoc
     provider.discover.side_effect = ComputeError("native service unavailable")
     clusters, errors = compute.Compute().discover()
     assert clusters == []
-    assert errors == {"test": "native service unavailable"}
+    assert errors == {"fake": "native service unavailable"}
 
 
 def test_live_allocation_is_not_automatically_ready(catalog: Path, provider: MagicMock) -> None:
@@ -990,30 +965,25 @@ def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> No
 
 
 @pytest.mark.parametrize("mutation", [
-    "version_missing", "namespace", "context", "offer", "limits", "unbounded", "reference",
-    "unknown", "resources_extra", "time_extra", "startup_extra", "connection_extra",
+    "version_missing", "provider_missing", "provider", "offer", "limits", "unbounded",
+    "unknown", "resources_extra", "time_extra", "startup_extra", "catalog_extra",
 ])
 def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     data = yaml.safe_load(catalog.read_text())
     if mutation == "version_missing":
         data.pop("version")
-    elif mutation == "namespace":
-        data["connections"]["other"] = {"namespace": NAMESPACE, "provider": "other"}
-    elif mutation == "context":
-        data["connections"]["other"] = {
-            "namespace": "8613532d-378c-43f0-bf3a-132895093d6e",
-            "provider": "fake",
-        }
+    elif mutation == "provider_missing":
+        data["offers"][0].pop("provider")
+    elif mutation == "provider":
+        data["offers"][0]["provider"] = "Not a provider"
     elif mutation == "offer":
         data["offers"][1]["name"] = "quick"
     elif mutation == "limits":
         data["offers"][0]["time"]["default"] = "3h"
     elif mutation == "unbounded":
         data["offers"][0]["time"] = {"max": "2h"}
-    elif mutation == "reference":
-        data["offers"][0]["connection"] = "missing"
-    elif mutation == "connection_extra":
-        data["connections"]["test"]["extra"] = 1
+    elif mutation == "catalog_extra":
+        data["connections"] = {}
     elif mutation.endswith("_extra"):
         data["offers"][0][mutation.removesuffix("_extra")]["extra"] = 1
     else:
@@ -1027,7 +997,7 @@ def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     (("version",), True),
     (("version",), 1.0),
     (("version",), "1"),
-    (("connections", "test", "namespace"), NAMESPACE.upper()),
+    (("connection_root",), 1),
     (("offers", 0, "resources", "cpus"), True),
     (("offers", 0, "resources", "cpus"), 4.0),
     (("offers", 0, "max_nodes"), 1.0),
@@ -1076,33 +1046,30 @@ def test_catalog_normalizes_units_and_startup_without_changing_offer_order(
 
 def test_catalog_keeps_provider_payloads_opaque(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
-    launch = {"future-setting": {"nested": [True, 2, None, "value"]}}
-    config = {"future-option": ["native", {"enabled": False}]}
-    data["connections"]["test"].update(provider="future-provider", launch=launch)
-    data["offers"][0]["config"] = config
+    config = {"future-option": ["native", {"enabled": False, "nested": [True, 2, None]}]}
+    data["offers"][0].update(provider="future-provider", config=config)
     catalog.write_text(yaml.safe_dump(data))
     loaded = Catalog.load(catalog)
-    assert loaded.connections["test"].provider == "future-provider"
-    assert loaded.connections["test"].launch == launch
+    assert loaded.offers[0].provider == "future-provider"
     assert loaded.offers[0].config == config
 
 
 def test_catalog_validation_errors_do_not_echo_provider_values(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
     secret = "private-provider-credential"
-    data["connections"]["test"]["launch"] = secret
+    data["offers"][0]["config"] = secret
     catalog.write_text(yaml.safe_dump(data))
     result = CliRunner().invoke(main, ["compute", "resources", "--json"])
     assert result.exit_code == 1
     error = json.loads(result.output)["error"]
-    assert "connections.test.launch" in error
+    assert "offers.0.config" in error
     assert secret not in error
 
 
 @pytest.mark.parametrize("document", [
-    "version: 1\nversion: 1\nconnections: {}\noffers: []\n",
-    "connections: {test: {launch: {option: 1, option: 2}}}\n",
-    "connections: {test: {launch: {1: value}}}\n",
+    "version: 1\nversion: 1\noffers: []\n",
+    "offers: [{config: {option: 1, option: 2}}]\n",
+    "offers: [{config: {1: value}}]\n",
 ])
 def test_duplicate_or_nonstring_yaml_keys_are_rejected(catalog: Path, document: str) -> None:
     catalog.write_text(document)
@@ -1119,12 +1086,13 @@ def test_invalid_catalog_encoding_is_a_structured_error(catalog: Path) -> None:
     assert "cannot read compute catalog" in json.loads(result.output)["error"]
 
 
-@pytest.mark.parametrize("setting", ["connection_root", "scratch_root", "python"])
-def test_local_catalog_path_types_fail_without_a_traceback(catalog: Path, setting: str) -> None:
+@pytest.mark.parametrize("setting", ["scratch_root", "python"])
+def test_local_offer_path_types_fail_without_a_traceback(catalog: Path, setting: str) -> None:
     data = yaml.safe_load(catalog.read_text())
     data["local"] = {"enabled": True}
-    data["connections"]["test"]["provider"] = "local"
-    data["connections"]["test"]["launch"] = {setting: None}
+    for offer in data["offers"]:
+        offer["provider"] = "local"
+    data["offers"][0]["config"] = {setting: None}
     catalog.write_text(yaml.safe_dump(data))
     result = CliRunner().invoke(
         main, ["compute", "launch", "--cpus", "4", "--memory", "8", "--dry-run", "--json"]
@@ -1156,7 +1124,7 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
     assert result.exit_code == 0, result.output
     plan = json.loads(result.output)["plan"]
     assert plan["offer"] == "quick"
-    assert plan["connection"] == "test"
+    assert plan["provider"] == "fake"
     assert plan["resources"] == {"cpus": 4, "memory": 8, "accelerators": None}
     assert plan["time_seconds"] == 1800
     assert plan["startup"] == "fast"
@@ -1271,7 +1239,7 @@ def test_cli_partial_failure_and_ambiguous_submit(catalog: Path, provider: Magic
     runner = CliRunner()
     result = runner.invoke(main, ["compute", "status", "--json"])
     assert result.exit_code == 1
-    assert json.loads(result.output)["errors"] == {"test": "unavailable"}
+    assert json.loads(result.output)["errors"] == {"fake": "unavailable"}
     provider.discover.side_effect = None
     provider.launch.side_effect = ComputeError("uncertain", submission_token="token")
     result = runner.invoke(main, ["compute", "launch", "--cpus", "4", "--memory", "8", "--json"])

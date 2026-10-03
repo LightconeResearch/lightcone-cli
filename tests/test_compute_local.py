@@ -30,7 +30,6 @@ from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.local import LocalProvider
 from lightcone.engine.compute.model import (
     ComputeError,
-    Connection,
     Identity,
     Offer,
     Request,
@@ -51,26 +50,30 @@ pytestmark = pytest.mark.usefixtures("local_allocation_scope")
 
 @pytest.fixture
 def provider(tmp_path: Path) -> LocalProvider:
-    return LocalProvider(
-        Connection(
-            namespace=str(uuid4()),
-            provider="local",
-            launch={
-                "connection_root": str(tmp_path / "connections"),
-                "scratch_root": str(tmp_path / "scratch"),
-            },
-        )
+    return LocalProvider(tmp_path / "connections")
+
+
+def _scratch(provider: LocalProvider) -> Path:
+    """Scratch for test launches, beside the provider's configured connection root."""
+    return provider.root.parent.with_name("scratch")
+
+
+def _offer(
+    provider: LocalProvider, *, idle: str | None = None, scratch: Path | None = None,
+) -> Offer:
+    return Offer(
+        name="small", provider="local", resources=Resources(cpus=1, memory_gib=0.5),
+        max_nodes=1,
+        time=TimeLimits(default="1m", max="1m") if idle is None else TimeLimits(idle=idle),
+        config={"scratch_root": str(scratch or _scratch(provider))},
     )
 
 
 def _launch(
     provider: LocalProvider, *, seconds: int | None = 60, idle: str | None = None,
+    scratch: Path | None = None,
 ) -> Identity:
-    offer = Offer(
-        name="small", connection="workstation", resources=Resources(cpus=1, memory_gib=0.5),
-        max_nodes=1,
-        time=TimeLimits(default="1m", max="1m") if idle is None else TimeLimits(idle=idle),
-    )
+    offer = _offer(provider, idle=idle, scratch=scratch)
     return provider.launch(
         provider.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2, seconds=seconds))
     )
@@ -82,25 +85,23 @@ def test_singleton_survives_cli_exit_and_spans_names_and_connection_roots(
     # An independent launcher counts only this session's owners, like the fixture.
     script = """
 import sys
+from pathlib import Path
 from lightcone.engine.compute import local
-from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+from lightcone.engine.compute.model import Offer, Request
 owners = local._running_owners
 local._running_owners = lambda: [o for o in owners() if o[1].is_relative_to(sys.argv[2])]
-p = local.LocalProvider(Connection.model_validate_json(sys.argv[1]))
-offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
-              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+p = local.LocalProvider(Path(sys.argv[1]))
+offer = Offer.model_validate_json(sys.argv[3])
 plan = p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)).replace(name='first')
 print(p.launch(plan).encode())
 """
     launched = subprocess.run(
-        [sys.executable, "-c", script, provider.connection.model_dump_json(),
-         str(local_allocation_scope)],
+        [sys.executable, "-c", script, str(provider.root.parent),
+         str(local_allocation_scope), _offer(provider).model_dump_json(by_alias=True)],
         capture_output=True, text=True, timeout=20, check=True,
     )
     identity = Identity.decode(launched.stdout.strip())
-    other = LocalProvider(provider.connection.replace(
-        namespace=str(uuid4()), launch={"connection_root": str(tmp_path / "other")},
-    ))
+    other = LocalProvider(tmp_path / "other")
     identities = [(provider, identity)]
     try:
         _ready(provider, identity)
@@ -112,7 +113,7 @@ print(p.launch(plan).encode())
             _launch(other)
         assert identity.encode() in str(conflict.value)
         assert conflict.value.cluster_id is None
-        assert str(provider.root) in str(conflict.value)
+        assert str(provider.root.parent) in str(conflict.value)
         provider.terminate(identity)
         _ended(provider, identity)
         replacement = _launch(other)
@@ -201,12 +202,11 @@ def test_launch_survives_closed_standard_descriptors(
 import json, os, sys
 from pathlib import Path
 from lightcone.engine.compute import local
-from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+from lightcone.engine.compute.model import Offer, Request
 owners = local._running_owners
 local._running_owners = lambda: [o for o in owners() if o[1].is_relative_to(sys.argv[2])]
-p = local.LocalProvider(Connection.model_validate_json(sys.argv[1]))
-offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
-              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+p = local.LocalProvider(Path(sys.argv[1]))
+offer = Offer.model_validate_json(sys.argv[5])
 plan = p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))
 for descriptor in json.loads(sys.argv[4]):
     os.close(descriptor)
@@ -215,8 +215,9 @@ Path(sys.argv[3]).write_text(identity.encode())
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script, provider.connection.model_dump_json(),
-             str(local_allocation_scope), str(result_path), json.dumps(closed)],
+            [sys.executable, "-c", script, str(provider.root.parent),
+             str(local_allocation_scope), str(result_path), json.dumps(closed),
+             _offer(provider).model_dump_json(by_alias=True)],
             capture_output=True, text=True, timeout=15,
         )
         assert result.returncode == 0, result.stderr
@@ -276,22 +277,20 @@ def test_allocation_survives_launcher_and_borrowed_client_exit(
     provider: LocalProvider, local_allocation_scope: Path,
 ) -> None:
     script = """
-import json, sys
+import sys
+from pathlib import Path
 from lightcone.engine.compute import local
 from lightcone.engine.compute.local import LocalProvider
-from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+from lightcone.engine.compute.model import Offer, Request
 owners = local._running_owners
 local._running_owners = lambda: [o for o in owners() if o[1].is_relative_to(sys.argv[2])]
-p = LocalProvider(Connection(**json.loads(sys.argv[1])))
-offer = Offer(
-    name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
-    max_nodes=1, time=TimeLimits(default='1m', max='1m'),
-)
+p = LocalProvider(Path(sys.argv[1]))
+offer = Offer.model_validate_json(sys.argv[3])
 print(p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))).encode())
 """
     launched = subprocess.run(
-        [sys.executable, "-c", script, json.dumps(provider.connection.model_dump()),
-         str(local_allocation_scope)],
+        [sys.executable, "-c", script, str(provider.root.parent),
+         str(local_allocation_scope), _offer(provider).model_dump_json(by_alias=True)],
         check=True,
         capture_output=True,
         text=True,
@@ -320,17 +319,17 @@ print(p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))).encod
                 pid not in (os.getpid(), int(identity.native_id)) for pid in worker_pids.values()
             )
         second = """
-import json, sys
+import sys
+from pathlib import Path
 from lightcone.engine.compute.local import LocalProvider
-from lightcone.engine.compute.model import Connection, Identity
-p = LocalProvider(Connection(**json.loads(sys.argv[1])))
+from lightcone.engine.compute.model import Identity
+p = LocalProvider(Path(sys.argv[1]))
 with p.connect(Identity.decode(sys.argv[2])) as client:
     print(client.submit(sum, [10, 11]).result(timeout=5))
 """
         result = subprocess.run(
             [
-                sys.executable, "-c", second,
-                json.dumps(provider.connection.model_dump()), identity.encode(),
+                sys.executable, "-c", second, str(provider.root.parent), identity.encode(),
             ],
             check=True,
             capture_output=True,
@@ -378,7 +377,7 @@ with connect(sys.argv[1]) as client:
         )
         assert result.stdout.strip() == "9"
         assert not (tmp_path / ".lightcone" / "compute.yaml").exists()
-        builtin = LocalProvider(Compute().catalog.connections["local"])
+        builtin = LocalProvider(Path(Compute().catalog.connection_root))
         with monkeypatch.context() as other_catalog:
             other_catalog.setenv("LC_COMPUTE_CONFIG", str(tmp_path / "other.yaml"))
             with pytest.raises(ComputeError, match="already running") as conflict:
@@ -448,19 +447,14 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
         "version": 1,
-        "connections": {
-            "workstation": {
-                "provider": "local",
-                "namespace": provider.connection.namespace,
-                "launch": provider.connection.launch,
-            },
-        },
+        "connection_root": str(provider.root.parent),
         "offers": [{
             "name": "small",
-            "connection": "workstation",
+            "provider": "local",
             "resources": {"cpus": 1, "memory": 0.5},
             "max_nodes": 1,
             "time": {"default": "1m", "max": "1m"},
+            "config": {"scratch_root": str(_scratch(provider))},
         }],
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
@@ -473,7 +467,9 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
         assert first.name == "analysis"
         assert Identity.decode(first.encode()) == first
         # A new adapter reconstructs the name from the existing native locator.
-        assert [item.identity for item in LocalProvider(provider.connection).discover()] == [first]
+        assert [item.identity for item in LocalProvider(provider.root.parent).discover()] == [
+            first,
+        ]
         assert Compute().status("analysis", wait=True, timeout=20).identity == first
         with monkeypatch.context() as other_catalog:
             other_catalog.setenv("LC_COMPUTE_CONFIG", str(tmp_path / "other.yaml"))
@@ -515,19 +511,14 @@ def test_an_unused_allocation_idles_out_despite_status_polling_and_frees_its_nam
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
         "version": 1,
-        "connections": {
-            "workstation": {
-                "provider": "local",
-                "namespace": provider.connection.namespace,
-                "launch": provider.connection.launch,
-            },
-        },
+        "connection_root": str(provider.root.parent),
         "offers": [{
             "name": "small",
-            "connection": "workstation",
+            "provider": "local",
             "resources": {"cpus": 1, "memory": 0.5},
             "max_nodes": 1,
             "time": {"idle": "8s"},
+            "config": {"scratch_root": str(_scratch(provider))},
         }],
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
@@ -711,9 +702,7 @@ time.sleep(120)
     assert owner.stdout is not None
     child = psutil.Process(int(owner.stdout.readline()))
     process = psutil.Process(owner.pid)
-    identity = Identity(
-        namespace=provider.connection.namespace, native_id=str(owner.pid), token=uuid4().hex,
-    )
+    identity = Identity(provider="local", native_id=str(owner.pid), token=uuid4().hex)
     monkeypatch.setattr(provider, "_record", lambda _identity: (tmp_path, {}))
     monkeypatch.setattr(
         provider, "_process", lambda *_args: process if owner.poll() is None else None,
@@ -752,7 +741,7 @@ def test_command_line_access_denial_requires_confirmed_exit(
     )
     monkeypatch.setattr("lightcone.engine.compute.local.psutil.Process", lambda _pid: process)
     monkeypatch.setattr("lightcone.engine.compute.local._boot_identity", lambda: "test-boot")
-    identity = Identity(namespace=provider.connection.namespace, native_id="123", token=uuid4().hex)
+    identity = Identity(provider="local", native_id="123", token=uuid4().hex)
     record = {"created": 123, "boot": "test-boot"}
     if exited:
         assert provider._process(identity, provider.root, record) is None
@@ -775,7 +764,7 @@ def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
         with pytest.raises(ComputeError, match="cannot execute"):
             _launch(provider)
     assert list(provider.root.iterdir()) == []
-    assert list(Path(provider.connection.launch["scratch_root"]).iterdir()) == []
+    assert list(_scratch(provider).iterdir()) == []
     identity = _launch(provider)
     try:
         _ready(provider, identity)
@@ -800,7 +789,7 @@ def test_failed_initial_launch_write_removes_unpublished_files(
     with pytest.raises(ComputeError, match="cannot start.*storage is full"):
         _launch(provider)
     assert list(provider.root.iterdir()) == []
-    assert list(Path(provider.connection.launch["scratch_root"]).iterdir()) == []
+    assert list(_scratch(provider).iterdir()) == []
 
 
 def test_interrupted_launch_kills_the_unreturned_owner(
@@ -845,7 +834,7 @@ def test_owner_exits_when_launcher_is_killed_before_startup_commit(
 import json, sys, time
 from pathlib import Path
 from lightcone.engine.compute import local
-from lightcone.engine.compute.model import Connection, Offer, Request, Resources, TimeLimits
+from lightcone.engine.compute.model import Offer, Request
 owners = local._running_owners
 local._running_owners = lambda: [o for o in owners() if o[1].is_relative_to(sys.argv[2])]
 write = local.write_private_json
@@ -861,14 +850,14 @@ def pause(path, value):
         time.sleep(60)
     write(path, value)
 local.write_private_json = pause
-p = local.LocalProvider(Connection.model_validate_json(sys.argv[1]))
-offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
-              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+p = local.LocalProvider(Path(sys.argv[1]))
+offer = Offer.model_validate_json(sys.argv[5])
 p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)))
 """
     launcher = subprocess.Popen(
-        [sys.executable, "-c", script, provider.connection.model_dump_json(),
-         str(local_allocation_scope), str(marker), publication],
+        [sys.executable, "-c", script, str(provider.root.parent),
+         str(local_allocation_scope), str(marker), publication,
+         _offer(provider).model_dump_json(by_alias=True)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     owner: psutil.Process | None = None
@@ -1112,10 +1101,7 @@ def test_private_material_rejects_symlinks_broad_modes_and_hardlinks(tmp_path: P
 def test_local_plan_is_one_node_bounded_cooperative_and_does_not_allocate(
     provider: LocalProvider,
 ) -> None:
-    offer = Offer(
-        name="small", connection="workstation", resources=Resources(cpus=1, memory_gib=0.5),
-        max_nodes=1, time=TimeLimits(default="1m", max="1m"),
-    )
+    offer = _offer(provider)
     plan = provider.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))
     assert not provider.root.exists()
     assert "cooperative" in plan.details["resource_enforcement"]
@@ -1131,18 +1117,13 @@ def test_local_allocation_reopens_through_symlinked_configured_roots(
     physical = private_directory(tmp_path / "physical-home", create=True)
     alias = tmp_path / "home-alias"
     alias.symlink_to(physical, target_is_directory=True)
-    connection = provider.connection.replace(
-        launch={
-            "connection_root": str(alias / ".lightcone" / "compute"),
-            "scratch_root": str(alias / "scratch"),
-        },
-    )
-    launcher = LocalProvider(connection)
-    identity = _launch(launcher)
+    root = alias / ".lightcone" / "compute"
+    launcher = LocalProvider(root)
+    identity = _launch(launcher, scratch=alias / "scratch")
     try:
         scheduler = _ready(launcher, identity)
-        reopened = LocalProvider(connection)
-        assert reopened.root == physical / ".lightcone" / "compute" / connection.namespace
+        reopened = LocalProvider(root)
+        assert reopened.root == physical / ".lightcone" / "compute" / "local"
         assert [snapshot.identity for snapshot in reopened.discover()] == [identity]
         with reopened.connect(identity) as client:
             assert client.scheduler_info()["id"] == scheduler["id"]
@@ -1151,24 +1132,21 @@ def test_local_allocation_reopens_through_symlinked_configured_roots(
         assert metadata["scratch"] == str(physical / "scratch" / f"lc-{identity.token}")
         assert private_directory(Path(metadata["scratch"])).is_dir()
     finally:
-        LocalProvider(connection).terminate(identity)
+        LocalProvider(root).terminate(identity)
     _ended(launcher, identity)
 
 
-def test_local_managed_namespace_symlink_is_still_refused(
+def test_local_managed_provider_directory_symlink_is_still_refused(
     provider: LocalProvider, tmp_path: Path,
 ) -> None:
     root = private_directory(tmp_path / "configured-root", create=True)
     alias = tmp_path / "root-alias"
     alias.symlink_to(root, target_is_directory=True)
-    other = private_directory(tmp_path / "other-namespace", create=True)
-    (root / provider.connection.namespace).symlink_to(other, target_is_directory=True)
-    connection = provider.connection.replace(
-        launch={**provider.connection.launch, "connection_root": str(alias)},
-    )
-    configured = LocalProvider(connection)
+    other = private_directory(tmp_path / "other-directory", create=True)
+    (root / "local").symlink_to(other, target_is_directory=True)
+    configured = LocalProvider(alias)
     with pytest.raises(ComputeError, match="plain directory"):
-        _launch(configured)
+        _launch(configured, scratch=_scratch(provider))
     with pytest.raises(ComputeError, match="plain directory"):
         configured.discover()
     assert list(other.iterdir()) == []
@@ -1182,23 +1160,18 @@ def test_default_and_configured_scratch_aliases_are_resolved_without_resolving_p
     alias = tmp_path / "os-temp"
     alias.symlink_to(physical, target_is_directory=True)
     monkeypatch.setattr("lightcone.engine.compute.local.tempfile.gettempdir", lambda: str(alias))
-    connection = provider.connection.replace(
-        launch={"connection_root": str(tmp_path / "connections")},
-    )
     offer = Offer(
-        name="small", connection="workstation", resources=Resources(cpus=1, memory_gib=0.5),
+        name="small", provider="local", resources=Resources(cpus=1, memory_gib=0.5),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
     request = Request(cpus=1, memory_bytes=512 * 1024**2)
-    plan = LocalProvider(connection).plan(offer, request)
+    plan = provider.plan(offer, request)
     assert plan.details["scratch_root"] == str(physical)
     private_directory(Path(plan.details["scratch_root"]) / "default", create=True)
     python = tmp_path / "python"
     python.symlink_to(sys.executable)
-    configured = connection.replace(launch={
-        **connection.launch, "scratch_root": str(alias), "python": str(python),
-    })
-    plan = LocalProvider(configured).plan(offer, request)
+    configured = offer.replace(config={"scratch_root": str(alias), "python": str(python)})
+    plan = provider.plan(configured, request)
     assert plan.details["scratch_root"] == str(physical)
     assert plan.details["python"] == str(python)
     private_directory(Path(plan.details["scratch_root"]) / "configured", create=True)
@@ -1222,10 +1195,7 @@ def test_local_provider_allows_interactive_nodes_but_refuses_login_nodes_before_
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setattr(socket, "gethostname", lambda: "nid200021")
-    offer = Offer(
-        name="small", connection="workstation", resources=Resources(cpus=1, memory_gib=0.5),
-        max_nodes=1, time=TimeLimits(default="1m", max="1m"),
-    )
+    offer = _offer(provider)
     plan = provider.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))
     assert plan.resources == offer.resources
     monkeypatch.setattr(socket, "gethostname", lambda: "login01")
@@ -1253,11 +1223,12 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
     probe = MagicMock(side_effect=AssertionError("local GPU planning must not probe hardware"))
     monkeypatch.setattr(local.subprocess, "run", probe)
     offer = Offer(
-        name="gpu", connection="workstation",
+        name="gpu", provider="local",
         resources=Resources.from_bytes(
             cpus=1, memory_bytes=512 * 1024**2, gpus=gpus, accelerator_name="A100",
         ),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
+        config={"scratch_root": str(_scratch(provider))},
     )
     plan = provider.plan(offer, Request.parse("1", "0.5", gpus=f"GPU:{gpus}" if gpus else "0"))
     assert plan.details["cuda_visible_devices"] == (mask if gpus else "")
@@ -1308,7 +1279,7 @@ def test_local_gpu_offers_require_an_explicit_nonempty_native_mask(
     else:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     offer = Offer(
-        name="gpu", connection="workstation",
+        name="gpu", provider="local",
         resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
@@ -1323,18 +1294,15 @@ def test_unconfigured_local_gpu_mask_does_not_hide_a_later_slurm_offer(
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     local_offer = Offer(
-        name="local-gpu", connection="workstation",
+        name="local-gpu", provider="local",
         resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
     service = Compute.__new__(Compute)
     service.catalog = Catalog(
         version=1,
-        connections={
-            "workstation": provider.connection,
-            "hpc": Connection(namespace=str(uuid4()), provider="slurm"),
-        },
-        offers=[local_offer, local_offer.replace(name="batch-gpu", connection="hpc")],
+        connection_root=str(provider.root.parent),
+        offers=[local_offer, local_offer.replace(name="batch-gpu", provider="slurm")],
     )
     plan = service.plan(Request.parse("1", "0.5", gpus="GPU:1"))
     assert plan.offer.name == "batch-gpu"
@@ -1347,7 +1315,7 @@ def test_local_gpu_offers_are_unavailable_outside_linux(
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     offer = Offer(
-        name="gpu", connection="workstation",
+        name="gpu", provider="local",
         resources=Resources.from_bytes(
             cpus=1, memory_bytes=512 * 1024**2, gpus=1,
         ),

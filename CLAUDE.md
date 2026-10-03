@@ -1704,8 +1704,8 @@ refusal point.
 the ambient venue ladder. `lc compute resources/launch/status/down` manages local
 and Slurm allocations through `engine.compute.Provider`. `run` and `materialize`
 require a cluster name or full ID as their first positional argument; neither creates compute.
-`materialize --check` remains cluster-free. Catalog offers expose resource shapes;
-connections supply stable native namespaces. Native jobs and validated local OS
+`materialize --check` remains cluster-free. Catalog offers expose resource shapes
+and name their provider; each provider reaches one native authority. Native jobs and validated local OS
 identities are the allocation authority; standard Dask supplies execution state.
 No Lightcone server, lifecycle database, custom Dask worker, or implicit allocation.
 
@@ -1732,9 +1732,9 @@ timeout. Loading the catalog writes no catalog and starts no cluster.
 the name to `local`. `--wait` returns when the accepted allocation is ready; timeout
 or startup failure retains its ID without resubmitting or terminating it.
 Configured remote offers precede the built-in local offer in selection order.
-Explicit local connections supply their own offers instead. `local.resources`
+A catalog's own local offers replace it. `local.resources`
 and `local.time` override the built-in CPU/RAM budget and time limits and cannot
-accompany explicit local connections.
+accompany explicit local offers.
 `local.enabled: false` blocks local launch and execution while preserving inspection
 and termination. Recognized NERSC login nodes disable local compute automatically;
 other sites can disable it in their catalogs. Native permissions remain the
@@ -1746,8 +1746,8 @@ devices exclusively against other host programs or allocations.
 Missing explicit paths and invalid files are errors. Execution still requires an
 explicitly launched cluster's name or ID.
 
-**A Slurm connection needs no launch settings (2026-09).** Every `launch` key
-defaults, and the defaults assume a home directory shared by login and compute
+**A Slurm offer needs no launch settings (2026-09).** Every launch key in an
+offer's `config` defaults, and the defaults assume a home directory shared by login and compute
 nodes, which is also what SkyPilot's Slurm backend assumes. Workers run
 `sys.executable`, the driver's own installation, so client, scheduler and workers
 match exactly with no resolution and no network on compute nodes. Launching the
@@ -1755,7 +1755,7 @@ bootstrap through `uv run --with` at job time was considered and rejected: it
 re-resolves the Dask closure away from the driver's, and it needs package-index
 access from compute nodes. SkyPilot installs its runtime per node only because its
 client is off-cluster; lc submits from the login node, where its installation
-already is. `connection_root` defaults to `~/.lightcone/compute`
+already is. The catalog's top-level `connection_root` defaults to `~/.lightcone/compute`
 (`runtime.DEFAULT_CONNECTION_ROOT`, shared with local). An unset `scratch_root`
 is chosen by the bootstrap on each node (`tempfile.gettempdir()`), never frozen
 from the driver's temporary directory.
@@ -1774,13 +1774,13 @@ still require all expected workers. Serial per-output Git/annex commits remain
 the driver's responsibility; changing that persistence/provenance model is deferred.
 
 **Compute uses one shared Pydantic model family.** `Catalog` loads directly into
-the `Connection`, `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
+the `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
 providers; do not introduce parallel configuration classes. Memory units are explicit:
 `Resources.memory_gib` / `memory_bytes`, `Resources.from_bytes(...)`, and
 `Request.memory_bytes`. Duration strings expose derived seconds through `TimeLimits`.
-Connection names live only in the catalog's mapping keys. Use validated `replace`
+Use validated `replace`
 for updates and the explicit `as_dict` allowlists for public output. Preserve
-duplicate-key rejection in YAML; providers validate their own `launch` and `config`.
+duplicate-key rejection in YAML; providers validate their own offers' `config`.
 
 **Allocation syntax follows SkyPilot without depending on SkyPilot.** Compute
 CPU/memory requests support exact quantities or `+` minimums. Compute memory
@@ -1794,7 +1794,7 @@ Named Slurm offers must map their public label to the site's GRES type through
 evidence in observations.
 
 **Configured compute roots may be filesystem aliases.** Resolve connection and
-scratch roots before appending managed namespace, submission, or attempt paths.
+scratch roots before appending managed provider, submission, or attempt paths.
 Keep symlink rejection within those managed paths and enforce private directory
 and credential permissions. Do not resolve Python executables: virtualenv paths
 must retain their environment identity. Never change existing ancestor permissions.
@@ -2127,6 +2127,25 @@ unlinks before writing; a new tampering test should too.
 
 ### Recorded decisions
 
+- **Offers name their provider; there are no connections (2026-10).** A
+  catalog used to be `connections` — a UUID `namespace`, a `provider`, a
+  `context`, `launch` settings — plus offers referencing one by name. lc runs
+  inside one Slurm environment, so `context` (`--clusters`) went, and with it
+  every provider reaches exactly one native authority: this host, or the
+  cluster the Slurm client reaches by default. That left the connection a pure
+  indirection. Offers carry `provider`; worker launch settings joined each
+  offer's `config` (`task_slots_per_node` was already validated per offer);
+  `connection_root`, the one setting read outside `plan`, is the catalog's one
+  top-level key; and the cluster ID encodes the provider instead of the
+  namespace, so a full ID routes with no catalog lookup. The UUID was worse
+  than redundant: Slurm discovery never filtered on it, so two catalogs with
+  different UUIDs gave one job two IDs, and the second looked for its TLS
+  material in the wrong directory. Discovery queries `Catalog.providers` —
+  those the offers name, plus local always — so removing a provider's last
+  offer hides its jobs from name lookup and the listing, never from a full
+  ID. Re-add a per-authority concept only with a venue that genuinely has two
+  authorities of one provider.
+
 - **Guard NERSC login nodes by default (2026-09).** This reverses the earlier
   no-login-node-guard decision: an unconfigured first launch must not allocate a
   whole shared login node. Detect the documented NERSC environment marker and
@@ -2166,8 +2185,8 @@ unlinks before writing; a new tampering test should too.
 - **Local compute accompanies remote catalogs (2026-09).** The built-in offer
   uses the host's usable CPU/RAM capacity and follows configured offers, replacing
   the previous one-CPU/1-GiB fallback that disappeared when a catalog existed.
-  `local.resources` sets a smaller budget; explicit local connections use their
-  own offers. Login-node catalogs disable local launch and execution through
+  `local.resources` sets a smaller budget; a catalog's own local offers
+  replace it. Login-node catalogs disable local launch and execution through
   `local.enabled: false`. Inspection and termination stay available. One local
   allocation per user per machine is enforced across catalogs and connection
   roots by scanning the process table for a live owner before launch

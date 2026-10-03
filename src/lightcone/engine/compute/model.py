@@ -8,8 +8,8 @@ import re
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from decimal import Decimal, localcontext
+from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Self
-from uuid import UUID
 
 from pydantic import (
     AfterValidator,
@@ -109,15 +109,6 @@ def _name(value: str) -> str:
     return value
 
 
-def _namespace(value: str) -> str:
-    try:
-        if str(UUID(value)) == value:
-            return value
-    except ValueError:
-        pass
-    raise ValueError("must be a canonical UUID")
-
-
 def _count(value: object) -> int:
     try:
         return positive_int(value, "count")
@@ -143,7 +134,7 @@ def _duration(value: str) -> str:
 
 Text = Annotated[str, Field(pattern=r"^[^\x00-\x1f]*$")]
 Name = Annotated[Text, AfterValidator(_name)]
-Namespace = Annotated[str, AfterValidator(_namespace)]
+ProviderName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")]
 PositiveInt = Annotated[int, Field(gt=0, strict=True)]
 Count = Annotated[int, BeforeValidator(_count, json_schema_input_type=int | str)]
 GiB = Annotated[
@@ -297,15 +288,6 @@ class Request(ComputeModel):
         }
 
 
-class Connection(ComputeModel):
-    """One native authority, independent of the offers that reference it."""
-
-    namespace: Namespace
-    provider: Name
-    context: Text = ""
-    launch: dict[str, Any] = Field(default_factory=dict)
-
-
 class TimeLimits(ComputeModel):
     """How an allocation ends: a hard walltime, an idle timeout, or both.
 
@@ -358,7 +340,7 @@ class Offer(ComputeModel):
     """A fixed resource shape with user-supplied limits and native bindings."""
 
     name: Name
-    connection: Name
+    provider: ProviderName
     resources: Resources
     max_nodes: Count
     time: TimeLimits
@@ -369,7 +351,7 @@ class Offer(ComputeModel):
 class Identity(ComputeModel):
     """A self-contained native identity; its encoding is not a credential."""
 
-    namespace: Namespace
+    provider: ProviderName
     native_id: Name
     token: Name
     host: Text = ""
@@ -384,7 +366,7 @@ class Identity(ComputeModel):
     def encode(self) -> str:
         """Encode identity without a local UUID-to-allocation database."""
         payload = json.dumps(
-            [1, self.namespace, self.native_id, self.token, self.host, self.name],
+            [1, self.provider, self.native_id, self.token, self.host, self.name],
             separators=(",", ":"),
         ).encode()
         return "clu_" + base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -399,16 +381,16 @@ class Identity(ComputeModel):
             data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_"))
             if not isinstance(data, list) or len(data) != 6 or type(data[0]) is not int:
                 raise ValueError
-            version, namespace, native_id, token, host, name = data
+            version, provider, native_id, token, host, name = data
             if version != 1 or not all(isinstance(item, str) for item in data[1:]):
                 raise ValueError
-            if str(UUID(namespace)) != namespace or not native_id or not token:
+            if not native_id or not token:
                 raise ValueError
             if any(ord(char) < 32 for item in data[1:] for char in item):
                 raise ValueError
             validate_name(name)
             identity = cls(
-                namespace=namespace, native_id=native_id, token=token, host=host, name=name
+                provider=provider, native_id=native_id, token=token, host=host, name=name
             )
             if identity.encode() != value:
                 raise ValueError
@@ -422,7 +404,6 @@ class Identity(ComputeModel):
 class LaunchPlan(ComputeModel):
     """Resolved immutable sizing and nonsecret provider launch parameters."""
 
-    connection: Connection
     offer: Offer
     request: Request
     seconds: PositiveInt | None
@@ -448,7 +429,7 @@ class LaunchPlan(ComputeModel):
             "name": self.name,
             "request": self.request.as_dict(),
             "offer": self.offer.name,
-            "connection": self.offer.connection,
+            "provider": self.offer.provider,
             "num_nodes": self.num_nodes,
             "resources": self.resources.as_dict(),
             "time_seconds": self.seconds,
@@ -506,4 +487,5 @@ class Provider(Protocol):
     def terminate(self, identity: Identity) -> None: ...
 
 
-ProviderFactory = Callable[[Connection], Provider]
+#: Builds a provider from the catalog's configured connection root.
+ProviderFactory = Callable[[Path], Provider]

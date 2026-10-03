@@ -7,10 +7,10 @@ It owns no service, registry, or saved current-cluster selection.
 | Symbol | Contract |
 |---|---|
 | `Request.parse(...)` | Exact/minimum CPU and memory requests, exact accelerator type/count, node count, walltime, startup class. |
-| `Catalog.load(path)` | Ordered fixed shapes and stable connection namespaces; apply local defaults or disable policy alongside configured offers. |
+| `Catalog.load(path)` | Ordered fixed shapes, each naming its provider; apply local defaults or disable policy alongside configured offers. |
 | `Compute.plan(request, *, name=None)` | Select an eligible offer and freeze its native launch settings and optional name without allocation. |
 | `Compute.launch(plan)` | Check names across native authorities, generate one if omitted, submit once, and return a self-contained `Identity`. |
-| `Compute.discover()` | Snapshots and per-connection errors, querying each authority once. |
+| `Compute.discover()` | Snapshots and per-provider errors, querying each provider in `Catalog.providers` once. |
 | `Compute.status(cluster_id, wait=False, timeout=300)` | Resolve a name or full ID; return native allocation state plus authenticated Dask readiness. Waiting backs off from one to 30 seconds between native queries. |
 | `Compute.down(cluster_id)` | Resolve a name or full ID, request native termination independent of scheduler health, and return the canonical `Identity`. |
 | `connect(cluster_id, timeout=10)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. Submits one no-op task, so a caller's preparation restarts the idle countdown. |
@@ -20,10 +20,10 @@ It owns no service, registry, or saved current-cluster selection.
 offer uses detected usable CPUs and RAM, one node, fast startup, and no walltime:
 it ends after 30 minutes without task activity. `local.resources` overrides its
 CPU/RAM budget and `local.time` its time limits;
-`local.enabled: false` blocks local launch and execution while retaining connections
-for inspection and termination. Remote catalogs retain the implicit local offer
-unless disabled. Explicit local connections supply their own offers instead and
-cannot be combined with `local.resources` or `local.time`. GPU offers require explicit configuration.
+`local.enabled: false` blocks local launch and execution while local discovery
+continues for inspection and termination. Remote catalogs retain the implicit local
+offer unless disabled. Explicit local offers replace it and cannot be combined
+with `local.resources` or `local.time`. GPU offers require explicit configuration.
 Loading creates no configuration file or allocation.
 The effective local policy also disables local offers on recognized NERSC login
 nodes: nonempty `NERSC_HOST` and a short hostname matching `login[0-9]+`.
@@ -31,20 +31,22 @@ Explicit enablement and Slurm job environment variables do not override this
 guard; interactive compute nodes remain eligible. Local planning, launch, and
 execution check the same policy, while status and termination remain available.
 Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
-files, and invalid catalogs remain errors. Stable connection namespaces let
-separate invocations discover and attach to the same local allocations.
+files, and invalid catalogs remain errors. `Catalog.providers` names the native
+authorities to query: those the offers use, and always `local`. Each provider
+keeps its allocations in one directory under the catalog's `connection_root`, so
+separate invocations discover and attach to the same allocations.
 
 `Compute.plan_local()` selects only local offers and defaults the name to `local`.
 CLI `launch --wait` waits through `Compute.status` using the accepted immutable ID;
 errors retain that ID without resubmission or termination.
 
-`model.py` defines the shared Pydantic models: `Connection`, `Offer`, `Resources`, `Accelerator`,
+`model.py` defines the shared Pydantic models: `Offer`, `Resources`, `Accelerator`,
 `TimeLimits`, `Startup`, `Request`, `Identity`, `LaunchPlan`, and `Snapshot`.
 `Catalog` validates YAML directly into these objects, which providers also use.
 Unknown common fields are rejected; schema errors identify paths such as
 `offers.0.resources.cpus` without echoing input values. The YAML loader rejects
-duplicate and non-string mapping keys before model validation. Provider-specific
-`launch` and `config` mappings remain the provider's responsibility.
+duplicate and non-string mapping keys before model validation. Each offer's
+provider-specific `config` mapping remains the provider's responsibility.
 
 Units are explicit. `Resources.memory_gib` stores exact decimal GiB (the YAML key
 is `memory`), and `memory_bytes` derives an exact integer. Native observations use
@@ -55,7 +57,8 @@ but requiring a `default` or an `idle`, and exposes `default_seconds`,
 resolved hard walltime as `seconds` and derives `idle_seconds` from its offer;
 either may be `None` for a local plan, while Slurm plans always have `seconds` and
 never `idle_seconds`. `Startup.class_` corresponds to YAML `class`.
-Connection names exist only as catalog mapping keys, referenced by `Offer.connection`.
+`Offer.provider` names a factory in `PROVIDERS`, which receives the catalog's
+`connection_root`.
 
 Compute memory accepts bare GiB quantities and SkyPilot-style binary units:
 `32`, `32GB`, and `32GiB` agree. CPU and memory requests accept a trailing `+`.
@@ -95,7 +98,7 @@ See [Dask's Nanny](https://distributed.dask.org/en/stable/worker.html#nanny),
 [Dask resilience](https://distributed.dask.org/en/stable/resilience.html), and
 [Slurm's `srun` options](https://slurm.schedmd.com/srun.html).
 
-Configured connection and scratch roots are resolved before managed paths are
+The configured `connection_root` and scratch roots are resolved before managed paths are
 appended, so filesystem aliases such as a symlinked home directory are supported.
 Managed directories and credential files retain strict symlink, ownership, and
 permission checks, including modes `0700` and `0600`, respectively.
@@ -106,19 +109,19 @@ not query or freeze the site's time policy. Every launch requests a finite nativ
 independent Lightcone deadline or guarantee of a finite overrun.
 
 `Snapshot` distinguishes native allocation evidence from scheduler observations.
-No live allocation size is filled from today's catalog. Connection namespaces
-persist independently of offers, and IDs encode native incarnation evidence
-without a UUID-to-job lookup database. Exceptions retain known cluster IDs and
+No live allocation size is filled from today's catalog. IDs encode their provider
+and native incarnation evidence, so a full ID routes without consulting the offers
+and without a UUID-to-job lookup database. Exceptions retain known cluster IDs and
 submission tokens for partial/ambiguous acceptance.
 
 `Identity.name` is a human-facing name; `Identity.encode()` is the immutable
 allocation reference. Generated names use `lc-` plus 12 hexadecimal characters
-from a standard-library UUID4. Launch checks every configured connection and
+from a standard-library UUID4. Launch checks every provider in `Catalog.providers` and
 rejects explicit duplicates or incomplete discovery before submission. Name
 resolution also requires complete discovery and exactly one current match.
 Concurrent launches can still race; ambiguous names are refused. Names can be
 reused after termination, while full IDs continue to identify the original
-allocation without discovering unrelated connections. Slurm carries the name
+allocation without discovering other providers. Slurm carries the name
 in `JobName=lc-v1-<name>` and the submission token in
 `Comment=lightcone:v1:kind=dask:token=<32hex>`; local private locators carry the
 encoded identity. Slurm discovery and lifecycle checks verify both native fields
@@ -227,7 +230,7 @@ command. A driver that exits before every task reports says so with
 materialization sends recipe output to stderr to leave stdout for its report.
 
 Local allocations are limited to one per user on each machine, independent of
-connection roots and namespaces. Before spawning, the launcher scans the process
+connection roots. Before spawning, the launcher scans the process
 table for a live owner of the same user: a session leader running `-P -m
 lightcone.engine.compute.local_runtime <directory>`, which excludes workers forked
 from it. The process table spans every catalog and connection root and needs no
