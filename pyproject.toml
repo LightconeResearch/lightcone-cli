@@ -47,12 +47,6 @@ dev = [
     "types-pyyaml>=6.0.12.20260906",
     "types-psutil>=7.2.2.20260906",
 ]
-docs = [
-    "zensical>=0.0.33",
-    # squidfunk's mike fork — required by zensical's versioning provider.
-    # Not on PyPI; install from git.
-    "mike @ git+https://github.com/squidfunk/mike.git ; python_version >= '3.10'",
-]
 
 
 [project.urls]

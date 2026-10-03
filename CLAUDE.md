@@ -36,8 +36,7 @@ spec:
 > (rationale, substrate tradeoffs, hermeticity enforcement, the v6
 > review). It stays in the sibling checkout and is **dropped when the
 > rebuild completes** (decision, 2026-08): the design records are not
-> imported into this repo's docs — the rewritten `docs/` carries the
-> current design, and this file carries the decisions.
+> imported into this repo — this file carries the decisions.
 
 The pre-rebuild codebase (Snakemake shim, authored Containerfiles,
 `container:` in `astra.yaml`, vendored dask executor plugin, WRROC export)
@@ -106,15 +105,6 @@ Each of these has been asked for in review at least once; none is optional.
 
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
-- **`docs/` is live again** (rewritten 2026-08, PRs #185–#188; the
-  freeze is over). The site is two tracks — user guide + developer
-  corner — and a change now lands with its docs: a new or changed verb
-  updates its `docs/cli/` page, an engine change updates its
-  `docs/api/` module page, and user-visible behavior updates the user
-  guide. The docs' own rules match this file's: document only what
-  exists, quote refusals from real runs, and verify every command
-  block by executing it. `check-docs.yml` reviews each merged PR for
-  drift.
 - **Port with intent.** Prior implementations (this repo's git history,
   and the `redesign_prototype` branch of the sibling `lightcone-cli`
   checkout) are references, not sources of truth. Neither is the spec by
@@ -206,14 +196,6 @@ evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
 
-## Documentation versioning (mike)
-
-The whole docs site is versioned with [mike](https://github.com/squidfunk/mike) — specifically squidfunk's fork, which Zensical's versioning provider depends on. Each release deploys a full copy of the site to a subdirectory of the `gh-pages` branch (`/0.0.9/`, `/latest/`, etc.). Mike is enabled via `[project.extra.version] provider = "mike"` in `zensical.toml`; the version dropdown in the header is rendered natively.
-
-Release flow: `.github/workflows/docs-deploy.yml` runs on every published release — it runs `mike deploy --push --update-aliases X.Y.Z latest` (version taken from the tag) followed by `mike set-default --push latest`, so the bare site root always redirects to `/latest/`. A **pre-release deploys nothing**: `release: published` fires for pre-releases too (`released` is the type that skips them), and moving `latest` onto an rc would serve as default what `pip install` deliberately withholds, so the job carries `if: ${{ !github.event.release.prerelease }}`. PyPI needs no equivalent — "pre-release" there is derived from the PEP 440 version alone (an rc tag ⇒ hatch-vcs ⇒ `0.5.0rc1`), never from the GitHub checkbox, so `pypi-publish.yaml` stays unconditional. For an intermediate redeploy of an existing version, trigger the workflow manually from the Actions tab. For local/manual operations, run the same mike commands directly (`uv run mike list`, `uv run mike deploy ...`, `uv run mike delete ...` — the docs dependency group installs mike).
-
-Hosting: mike pushes to `gh-pages`. GitHub Pages (which serves docs.lightconeresearch.org) must be configured to "Deploy from a branch" / `gh-pages` in the repo's Pages settings, not via the Actions artifact deploy. Without this, `mike deploy` runs successfully but the site doesn't pick up versioned URLs in production.
-
 ## Development Commands
 
 ```bash
@@ -227,12 +209,9 @@ uv build                         # wheel + sdist (CI runs this only to publish)
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
-around them. The docs build with `uv sync --group docs && uv run
-zensical build`. The other workflows are `eval.yml` (the agentic eval,
+around them. The other workflows are `eval.yml` (the agentic eval,
 on dispatch or the `run-eval` PR label; re-trigger by re-adding the
-label), `check-docs.yml` (doc-drift review on merged PRs),
-`pypi-publish.yaml`, and `docs-deploy.yml` (deploys on release, so the
-site tracks the released CLI).
+label) and `pypi-publish.yaml`.
 
 ## Key Invariants (layer 1)
 
@@ -612,7 +591,7 @@ repository's — `uv tool install lightcone-cli` links the git-annex
 wheel's entry points beside `lc` (verified), so `ambient` git-annex is
 on `PATH` for free and the whole question disappears. `uvx` is fine for
 running lc and cannot support the researcher's bare `git add`; that is
-what the docs and the troubleshooting entry say, and reporting it from
+what the docs say, and reporting it from
 `lc init`/`lc status` is an open follow-up, not a promise made here.
 `require_git_annex` stays a `PATH` check, deliberately — it gates lc's
 *own* `git annex` subprocesses, which dispatch from lc's environment,
@@ -2554,7 +2533,7 @@ written to" — a path the schema never defined. What changed, and why:
 
 | To... | Read | Key patterns |
 |---|---|---|
-| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above and the docs pages the layer touches |
+| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above |
 | Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES`, and a renderer only if the file needs a substituted value or a merge policy |
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
