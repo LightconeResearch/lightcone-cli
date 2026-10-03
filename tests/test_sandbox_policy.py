@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import struct
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -354,14 +355,86 @@ def test_the_env_the_seam_execs_is_one_the_policy_granted(
         assert built.grants(spawned, built.execute)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="the ELF loader tier is Linux-only")
-def test_the_elf_loader_is_in_the_exec_set(built: policy_module.Policy) -> None:
-    """Landlock checks EXECUTE on the loader's own open, so without this
-    every dynamically linked binary — bash and python included — fails
-    EACCES and the sandbox is unusable."""
-    loaders = policy_module.elf_loaders()
-    assert loaders, "no ELF loader found on this host"
-    assert all(loader in built.execute for loader in loaders)
+def _elf(path: Path, interpreter: str | None, *, ident: bytes = b"\x7fELF\x02\x01") -> Path:
+    """Write an executable little-endian ELF64 header and program table: a
+    `PT_LOAD`, then a `PT_INTERP` naming ``interpreter`` when one is
+    given. ``ident`` overrides the magic, class and byte order alone."""
+    name = interpreter.encode() + b"\0" if interpreter else b""
+    count = 2 if interpreter else 1
+    elf = ident + b"\x01" + bytes(9)
+    elf += struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, 64, 0, 0, 64, 56, count, 0, 0, 0)
+    elf += struct.pack("<IIQQQQQQ", 1, 0, 0, 0, 0, 0, 0, 1)
+    if interpreter:
+        elf += struct.pack("<IIQQQQQQ", 3, 0, 64 + 56 * count, 0, 0, len(name), len(name), 1)
+    path.write_bytes(elf + name)
+    path.chmod(0o755)
+    return path
+
+
+def test_the_loader_a_granted_binary_names_is_granted(tmp_path: Path) -> None:
+    """Landlock checks EXECUTE on the loader's own open, so a granted
+    binary whose loader is not granted fails EACCES before it starts.
+
+    The loader sits outside every FHS path on purpose: a binary may name
+    one anywhere — a NixOS binary names a glibc inside its own store
+    path, while `/lib64` holds a stub or nix-ld — and a policy that
+    looked for loaders at the FHS paths instead of reading them denied
+    every command on such a host."""
+    loader = tmp_path / "store" / "glibc" / "lib" / "ld-linux-x86-64.so.2"
+    loader.parent.mkdir(parents=True)
+    loader.write_bytes(b"")
+    project = tmp_path / "proj"
+    bin_dir = project / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    _elf(bin_dir / "tool", str(loader))
+
+    with scope(policy_module.exec_policy(project)) as built:
+        assert loader.resolve() in built.execute
+
+
+def test_only_a_dynamically_linked_elf_names_a_loader(tmp_path: Path) -> None:
+    """Scripts, static binaries and directories sit in the exec set too,
+    and a malformed file must not fail the policy build.
+
+    ELF32 and big-endian files are refused at the header rather than
+    misread through offsets laid out for little-endian ELF64 — no Linux
+    lc installs on is either, and a 32-bit tool left without its loader
+    is a denial, never an unsandboxed run."""
+    loader = tmp_path / "ld.so"
+    loader.write_bytes(b"")
+    script = tmp_path / "script"
+    script.write_text("#!/bin/sh\n")
+    truncated = tmp_path / "truncated"
+    truncated.write_bytes(_elf(tmp_path / "whole", str(loader)).read_bytes()[:70])
+    elf32 = _elf(tmp_path / "elf32", str(loader), ident=b"\x7fELF\x01\x01")
+    big_endian = _elf(tmp_path / "big-endian", str(loader), ident=b"\x7fELF\x02\x02")
+    static = _elf(tmp_path / "static", None)
+    for path in (script, static, truncated, elf32, big_endian, tmp_path):
+        assert policy_module._elf_interpreter(path) is None, path
+    assert policy_module._elf_interpreter(tmp_path / "whole") == loader.resolve()
+
+
+def test_a_malformed_loader_entry_grants_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loader path is read up to its first NUL, as the kernel reads
+    it, and granted only when it is absolute and names a file.
+
+    A binary cut off before its loader path reads an empty one, which
+    resolves to the working directory — and EXECUTE on a directory
+    reaches everything below it. The relative path names a real file
+    from the working directory, so only the absolute check refuses it."""
+    monkeypatch.chdir(tmp_path)
+    loader = tmp_path / "ld.so"
+    loader.write_bytes(b"")
+    cut = tmp_path / "cut"
+    cut.write_bytes(_elf(tmp_path / "whole", str(loader)).read_bytes()[: 64 + 56 * 2])
+    relative = _elf(tmp_path / "relative", "ld.so")
+    directory = _elf(tmp_path / "directory", str(tmp_path))
+    for path in (cut, relative, directory):
+        assert policy_module._elf_interpreter(path) is None, path
+    padded = _elf(tmp_path / "padded", f"{loader}\0junk")
+    assert policy_module._elf_interpreter(padded) == loader.resolve()
 
 
 def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> None:

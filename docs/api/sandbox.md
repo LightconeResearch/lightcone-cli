@@ -58,6 +58,13 @@ boundary. Container environment variables remain an explicit allowlist.
   green, because the allowlisted binaries are exactly the ones that
   were going to work. This shipped once (a venv on a system python);
   the rule and its test are the fix.
+- **The ELF loader is read from each granted binary, never looked
+  for.** Landlock checks EXECUTE on the loader's own open, so a binary
+  whose loader is not granted fails before it starts. A binary's
+  `PT_INTERP` may name a loader anywhere, and the FHS path may hold a
+  different file — a NixOS binary names a glibc inside its own store
+  path, while `/lib64` holds a stub or nix-ld — so looking for loaders
+  at the FHS paths denies `env`, the first exec of every run.
 - **SBPL is last-match-wins; Landlock unions.** The asymmetry decides
   where a rule can live: the macOS guard takes back writes the
   vendored defaults hand out, and the write tier is restated *after*
