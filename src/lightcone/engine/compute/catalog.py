@@ -1,4 +1,4 @@
-"""Ordered resource offers and stable native service namespaces."""
+"""Ordered resource offers, each naming the provider that supplies it."""
 
 from __future__ import annotations
 
@@ -14,17 +14,14 @@ from pydantic import Field, ValidationError, model_validator
 from .model import (
     ComputeError,
     ComputeModel,
-    Connection,
-    Name,
     Offer,
     Resources,
     Startup,
+    Text,
     TimeLimits,
     validation_message,
 )
-
-# Native boot/session evidence identifies the host, independently of its hostname.
-_LOCAL_NAMESPACE = "22c84e48-2f0a-4cd2-90a2-30ce2e909bd1"
+from .runtime import DEFAULT_CONNECTION_ROOT
 
 
 def local_disabled_reason(enabled: bool = True) -> str | None:
@@ -42,7 +39,7 @@ def local_disabled_reason(enabled: bool = True) -> str | None:
 
 
 class _UniqueLoader(yaml.SafeLoader):
-    """Do not silently replace a connection or limit through duplicate YAML keys."""
+    """Do not silently replace a setting or limit through duplicate YAML keys."""
 
 
 def _unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[str, Any]:
@@ -78,30 +75,28 @@ class Catalog(ComputeModel):
     """Configuration for new requests, never a registry of live clusters."""
 
     version: Annotated[int, Field(ge=1, le=1)]
-    connections: dict[Name, Connection] = Field(default_factory=dict)
+    connection_root: Annotated[Text, Field(min_length=1)] = DEFAULT_CONNECTION_ROOT
     offers: list[Offer] = Field(default_factory=list)
     local: LocalSettings = Field(default_factory=LocalSettings)
 
     @model_validator(mode="after")
-    def relationships(self) -> Self:
-        namespaces: set[str] = set()
-        contexts: set[tuple[str, str]] = set()
-        for connection in self.connections.values():
-            context = (connection.provider, connection.context)
-            if connection.namespace in namespaces or context in contexts:
-                raise ValueError("connections must have unique namespaces and native contexts")
-            namespaces.add(connection.namespace)
-            contexts.add(context)
+    def unique_offers(self) -> Self:
         names: set[str] = set()
         for offer in self.offers:
             if offer.name in names:
                 raise ValueError(f"duplicate offer name: {offer.name}")
             names.add(offer.name)
-            if offer.connection not in self.connections:
-                raise ValueError(
-                    f"offer {offer.name} references unknown connection {offer.connection}"
-                )
         return self
+
+    @property
+    def providers(self) -> list[str]:
+        """Name each native authority to query, local always among them.
+
+        A provider reaches the one authority where lc runs: this host, or
+        this Slurm environment. Local stays even when disabled, so its
+        allocations can still be inspected and stopped.
+        """
+        return list(dict.fromkeys([*(offer.provider for offer in self.offers), "local"]))
 
     @classmethod
     def load(cls, path: Path | None = None) -> Catalog:
@@ -133,53 +128,35 @@ class Catalog(ComputeModel):
             ) from exc
 
     def _with_local(self) -> Catalog:
-        """Keep explicit local connections, or add the stable built-in connection."""
-        connections = dict(self.connections)
+        """Keep explicit local offers, or add the built-in one."""
         offers = list(self.offers)
         local = self.local
         if local_disabled_reason(local.enabled) is not None:
             local = local.replace(enabled=False)
-        explicit = any(connection.provider == "local" for connection in connections.values())
+        explicit = any(offer.provider == "local" for offer in offers)
         if explicit and (local.resources is not None or local.time is not None):
             raise ComputeError(
                 "local.resources and local.time cannot be combined with explicit local "
-                "connections; set their offers' resources and time instead"
+                "offers; set those offers' resources and time instead"
             )
-        if not explicit:
-            if "local" in connections:
+        if not explicit and local.enabled:
+            if any(offer.name == "local" for offer in offers):
                 raise ComputeError(
-                    "connection name 'local' is reserved for the built-in local backend; "
-                    "rename the configured connection and its offer references"
+                    "offer name 'local' is reserved for the built-in local backend; "
+                    "rename the configured offer"
                 )
-            # Retain this authority even when disabled so existing allocations can be stopped.
-            connections["local"] = Connection(namespace=_LOCAL_NAMESPACE, provider="local")
-            if local.enabled:
-                if any(offer.name == "local" for offer in offers):
-                    raise ComputeError(
-                        "offer name 'local' is reserved for the built-in local backend; "
-                        "rename the configured offer"
-                    )
-                from dask.system import CPU_COUNT
-                from distributed.system import MEMORY_LIMIT
+            from dask.system import CPU_COUNT
+            from distributed.system import MEMORY_LIMIT
 
-                resources = local.resources or Resources.from_bytes(
-                    cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
-                )
-                # Interactive work comes and goes: end when idle, not at a fixed age.
-                offers.append(Offer(
-                    name="local", connection="local", resources=resources,
-                    max_nodes=1, time=local.time or TimeLimits(idle="30m"),
-                    startup=Startup(class_="fast"),
-                ))
+            resources = local.resources or Resources.from_bytes(
+                cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
+            )
+            # Interactive work comes and goes: end when idle, not at a fixed age.
+            offers.append(Offer(
+                name="local", provider="local", resources=resources,
+                max_nodes=1, time=local.time or TimeLimits(idle="30m"),
+                startup=Startup(class_="fast"),
+            ))
         if not local.enabled:
-            offers = [
-                offer for offer in offers if connections[offer.connection].provider != "local"
-            ]
-        return self.replace(connections=connections, offers=offers, local=local)
-
-    def connection_for(self, namespace: str) -> Connection:
-        """Find the configured authority without relying on current offers."""
-        for connection in self.connections.values():
-            if connection.namespace == namespace:
-                return connection
-        raise ComputeError("cluster's connection namespace is absent from the compute catalog")
+            offers = [offer for offer in offers if offer.provider != "local"]
+        return self.replace(offers=offers, local=local)

@@ -59,8 +59,8 @@ ends, launch again; the name `local` can be reused, but the immutable ID changes
 
 Compute configuration is `~/.lightcone/compute.yaml`, or the file selected by
 `LC_COMPUTE_CONFIG`. Its `local.resources` mapping can override the built-in CPU/RAM
-budget (for example, `{cpus: 4, memory: 8GiB}`). Explicit local connections use
-their own offers instead. Remote offers otherwise coexist with the default local
+budget (for example, `{cpus: 4, memory: 8GiB}`). A catalog that lists its own
+local offers uses those instead. Remote offers otherwise coexist with the default local
 offer. If `local.enabled: false` is configured, respect that policy: local launch
 and execution are disabled. Inspect `lc compute resources` and supply both
 `--cpus` and `--memory` to select a configured remote allocation; `--wait` works

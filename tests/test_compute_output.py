@@ -27,22 +27,14 @@ def detached_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     catalog = tmp_path / "compute.json"
     catalog.write_text(json.dumps({
         "version": 1,
-        "connections": {
-            "local": {
-                "provider": "local",
-                "namespace": str(uuid4()),
-                "launch": {
-                    "connection_root": str(tmp_path / "connections"),
-                    "scratch_root": str(tmp_path / "scratch"),
-                },
-            },
-        },
+        "connection_root": str(tmp_path / "connections"),
         "offers": [{
             "name": "small",
-            "connection": "local",
+            "provider": "local",
             "resources": {"cpus": 1, "memory": 1},
             "max_nodes": 1,
             "time": {"default": "2m", "max": "2m"},
+            "config": {"scratch_root": str(tmp_path / "scratch")},
         }],
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
