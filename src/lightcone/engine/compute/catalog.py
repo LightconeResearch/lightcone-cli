@@ -5,13 +5,15 @@ from __future__ import annotations
 import os
 import re
 import socket
+import sys
 from pathlib import Path
 from typing import Annotated, Any, Self
 
 import yaml
-from pydantic import Field, ValidationError, model_validator
+from pydantic import AfterValidator, Field, ValidationError, model_validator
 
 from .model import (
+    Accelerator,
     ComputeError,
     ComputeModel,
     Offer,
@@ -21,7 +23,7 @@ from .model import (
     TimeLimits,
     validation_message,
 )
-from .runtime import DEFAULT_CONNECTION_ROOT
+from .runtime import DEFAULT_CONNECTION_ROOT, configured_directory
 
 
 def local_disabled_reason(enabled: bool = True) -> str | None:
@@ -36,6 +38,29 @@ def local_disabled_reason(enabled: bool = True) -> str | None:
     if not enabled:
         return "local compute is disabled by the compute configuration"
     return None
+
+
+def cuda_device_count() -> int:
+    """Count the GPUs CUDA_VISIBLE_DEVICES exposes on Linux, reading it as CUDA does.
+
+    The mask is the allocation, so nothing probes hardware. CUDA stops at the
+    first entry that is neither an index nor a device UUID, so ``-1`` exposes none.
+    """
+    if sys.platform != "linux":
+        return 0
+    count = 0
+    for entry in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(","):
+        if not re.fullmatch(r"[0-9]+|(?:GPU|MIG)-\S+", entry.strip()):
+            break
+        count += 1
+    return count
+
+
+def _resolved_root(value: str) -> str:
+    try:
+        return str(configured_directory(Path(value)))
+    except ComputeError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -66,7 +91,7 @@ class LocalSettings(ComputeModel):
     def cpu_only(self) -> Self:
         if self.resources is not None and self.resources.gpus:
             raise ValueError(
-                "local.resources supports CPUs and memory; configure GPU offers explicitly"
+                "local.resources supports CPUs and memory; GPUs come from CUDA_VISIBLE_DEVICES"
             )
         return self
 
@@ -74,8 +99,10 @@ class LocalSettings(ComputeModel):
 class Catalog(ComputeModel):
     """Configuration for new requests, never a registry of live clusters."""
 
-    version: Annotated[int, Field(ge=1, le=1)]
-    connection_root: Annotated[Text, Field(min_length=1)] = DEFAULT_CONNECTION_ROOT
+    #: Resolved once here, so providers append managed paths to a physical root.
+    connection_root: Annotated[Text, Field(min_length=1), AfterValidator(_resolved_root)] = (
+        Field(DEFAULT_CONNECTION_ROOT, validate_default=True)
+    )
     offers: list[Offer] = Field(default_factory=list)
     local: LocalSettings = Field(default_factory=LocalSettings)
 
@@ -109,14 +136,16 @@ class Catalog(ComputeModel):
         path = path if path is not None else Path(
             os.environ.get("LC_COMPUTE_CONFIG", "~/.lightcone/compute.yaml")
         )
-        path = path.expanduser()
         try:
+            path = path.expanduser()
             raw = yaml.load(path.read_text(), Loader=_UniqueLoader)
+            # With no required keys, an empty document is the empty catalog.
+            raw = {} if raw is None else raw
         except FileNotFoundError as exc:
             if configured or path.is_symlink():
                 raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
-            raw = {"version": 1}
-        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raw = {}
+        except (OSError, RuntimeError, UnicodeError, yaml.YAMLError) as exc:
             raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
         try:
             catalog = cls.model_validate(raw)
@@ -128,7 +157,7 @@ class Catalog(ComputeModel):
             ) from exc
 
     def _with_local(self) -> Catalog:
-        """Keep explicit local offers, or add the built-in one."""
+        """Keep explicit local offers, or add the built-in one with the mask's GPUs."""
         offers = list(self.offers)
         local = self.local
         if local_disabled_reason(local.enabled) is not None:
@@ -151,6 +180,8 @@ class Catalog(ComputeModel):
             resources = local.resources or Resources.from_bytes(
                 cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
             )
+            if gpus := cuda_device_count():
+                resources = resources.replace(accelerators=Accelerator(name="GPU", count=gpus))
             # Interactive work comes and goes: end when idle, not at a fixed age.
             offers.append(Offer(
                 name="local", provider="local", resources=resources,

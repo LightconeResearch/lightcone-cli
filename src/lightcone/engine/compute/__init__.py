@@ -12,33 +12,17 @@ from uuid import uuid4
 
 from .catalog import Catalog, local_disabled_reason
 from .model import (
+    PROVIDERS,
     ComputeError,
     Identity,
     LaunchPlan,
     Offer,
     Provider,
-    ProviderFactory,
     Request,
     Snapshot,
     UnavailableOfferError,
     validate_name,
 )
-
-
-def _local(root: Path) -> Provider:
-    from .local import LocalProvider
-
-    return LocalProvider(root)
-
-
-def _slurm(root: Path) -> Provider:
-    from .slurm import SlurmProvider
-
-    return SlurmProvider(root)
-
-
-# The lifecycle seam is intentionally small: execution never dispatches on a provider.
-PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}
 
 #: What a driver leaving early must say: closing a client cannot prove that a
 #: remote subprocess has stopped.
@@ -61,13 +45,16 @@ class Compute:
 
     def __init__(self) -> None:
         self.catalog = Catalog.load()
+        self._providers: dict[str, Provider] = {}
 
     def provider(self, name: str) -> Provider:
-        """Construct the adapter for one native authority."""
-        factory = PROVIDERS.get(name)
-        if factory is None:
-            raise ComputeError(f"unsupported compute provider: {name}")
-        return factory(Path(self.catalog.connection_root))
+        """Construct the adapter for one native authority, once per command."""
+        if name not in self._providers:
+            factory = PROVIDERS.get(name)
+            if factory is None:
+                raise ComputeError(f"unsupported compute provider: {name}")
+            self._providers[name] = factory(Path(self.catalog.connection_root))
+        return self._providers[name]
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
         """Route an immutable ID, or resolve one unambiguous name from native state."""
@@ -102,7 +89,6 @@ class Compute:
     def resources(self) -> dict[str, Any]:
         """Describe configured policy, without inventing live free capacity."""
         return {
-            "schema_version": 1,
             "units": {
                 "cpus": "logical CPUs per node", "memory": "GiB per node",
                 "accelerators": "type and count per node",
@@ -171,9 +157,13 @@ class Compute:
 
     def plan_local(
         self, *, name: str | None = None, time: str | None = None,
-        gpus: str = "0", num_nodes: int = 1, startup: str | None = None,
+        gpus: str | None = None, num_nodes: int = 1, startup: str | None = None,
     ) -> LaunchPlan:
-        """Plan the first usable local offer, without considering remote backends."""
+        """Plan the first usable local offer, without considering remote backends.
+
+        Without ``gpus``, each offer is taken whole, GPUs included; ``"0"`` takes
+        it without them, since a local allocation never reserves its GPUs.
+        """
         if reason := local_disabled_reason(self.catalog.local.enabled):
             raise ComputeError(reason)
         name = "local" if name is None else name
@@ -182,10 +172,15 @@ class Compute:
         for offer in self.catalog.offers:
             if offer.provider != "local":
                 continue
+            if gpus == "0":
+                offer = offer.replace(resources=offer.resources.replace(accelerators=None))
             request = Request.parse(
                 str(offer.resources.cpus), f"{offer.resources.memory_bytes}B",
-                gpus=gpus, num_nodes=num_nodes, time=time, startup=startup,
+                gpus="0" if gpus is None else gpus,
+                num_nodes=num_nodes, time=time, startup=startup,
             )
+            if gpus is None:
+                request = request.replace(accelerators=offer.resources.accelerators)
             try:
                 plan = self._plan_offer(offer, request, name)
                 if plan is not None:
@@ -245,18 +240,11 @@ class Compute:
         # Native schedulers ask users not to poll in a tight loop: back off
         # from one second, so a long queue wait costs a few dozen queries.
         delay = 1.0
+        unreachable = ""
         while True:
             snapshot = provider.inspect(identity)
-            if snapshot.phase == "active":
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    if not wait:
-                        return snapshot
-                    raise ComputeError(
-                        f"cluster did not become ready within {timeout:g}s; "
-                        "allocation is unchanged",
-                        cluster_id=identity.encode(),
-                    )
+            remaining = deadline - time.monotonic()
+            if snapshot.phase == "active" and remaining > 0:
                 try:
                     with provider.connect(identity, timeout=min(10, remaining)) as client:
                         info = client.scheduler_info()
@@ -265,16 +253,18 @@ class Compute:
                     snapshot.ready = (
                         snapshot.num_nodes is not None and snapshot.workers >= snapshot.num_nodes
                     )
+                    unreachable = ""
                 except ComputeError as exc:
                     snapshot.observation = "unreachable"
                     snapshot.ready = False
-                    snapshot.reason = str(exc)
+                    snapshot.reason = unreachable = str(exc)
+                remaining = deadline - time.monotonic()
             if not wait or snapshot.ready or snapshot.phase in ("ended", "stopping"):
                 return snapshot
-            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ComputeError(
-                    f"cluster did not become ready within {timeout:g}s; allocation is unchanged",
+                    f"cluster did not become ready within {timeout:g}s; allocation is unchanged"
+                    + (f"; last connection attempt: {unreachable}" if unreachable else ""),
                     cluster_id=identity.encode(),
                 )
             time.sleep(min(delay, remaining))

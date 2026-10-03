@@ -181,7 +181,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── run.py              # what `lc run` is: the probe + the uv hop
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
-    │   ├── model.py        # the shared Pydantic models and the Provider protocol
+    │   ├── model.py        # the shared Pydantic models, the Provider protocol, PROVIDERS
     │   ├── catalog.py      # compute.yaml with local defaults and policy
     │   ├── runtime.py      # private files, TLS material, the scheduler config
     │   ├── local.py        # local provider: validated OS process identities
@@ -1717,13 +1717,21 @@ Resolve names through fresh discovery and refuse missing, ambiguous, or incomple
 observations. Check existing names before submission, but do not claim atomic global
 reservation across native backends. A name can be reused after termination; use the
 full ID to address an exact incarnation or bypass unrelated discovery failures.
-Slurm uses `JobName=lc-v1-<name>` and
-`Comment=lightcone:v1:kind=dask:token=<32hex>`. Verify the owner and both native
+Slurm uses `JobName=lc-<name>` and
+`Comment=lightcone:kind=dask:token=<32hex>`. Verify the owner and both native
 fields before attachment or cancellation. Missing live comments make discovery
-incomplete; missing historical comments leave identity unknown. Historical
+incomplete; missing historical comments leave identity unknown, so a user's own
+job named `lc-…` blocks name checks until it is renamed or ends — loudly,
+naming the job, never by adopting it. Historical
 comment retention requires Slurm's `AccountingStoreFlags` to include `job_comment`.
 Resolve the Slurm command user's UID through `id -u` on the same command runner,
 and use it for every native ownership check and filter.
+
+**Compute formats carry no version (2026-10).** Cluster IDs, native labels,
+allocation records, the catalog and compute JSON output are unversioned:
+allocations are ephemeral, so a format change strands only allocations that
+end on their own, and new ones are made under the new format. Manifests are
+different — committed, they keep `schema_version`.
 
 **Local compute needs no setup.** The built-in local offer provides detected usable
 logical CPUs and RAM, one node, fast startup, no walltime and a 30-minute idle
@@ -1739,10 +1747,16 @@ accompany explicit local offers.
 and termination. Recognized NERSC login nodes disable local compute automatically;
 other sites can disable it in their catalogs. Native permissions remain the
 enforcement boundary.
-GPU offers require an explicit catalog and, for local launches, a nonempty
-`CUDA_VISIBLE_DEVICES` mask on Linux. No GPU auto-discovery. Local GPU capacity and
-model labels are configured, not hardware-verified; allocations do not reserve
-devices exclusively against other host programs or allocations.
+The built-in local offer takes its GPUs from the `CUDA_VISIBLE_DEVICES` mask on
+Linux, counted as CUDA reads it (up to the first entry that is neither an index nor
+a device UUID, so `-1` is none), labelled generic `GPU`; without a mask it is
+CPU-only. Remote GPU offers still require an explicit catalog, and an explicit
+local GPU offer plans only when the mask exposes at least its count. No GPU
+auto-discovery: the mask is the allocation, never probed against hardware, so local
+GPU capacity and model labels are configured, not hardware-verified; allocations do
+not reserve devices exclusively against other host programs or allocations. The
+local shortcut takes an offer whole, GPUs included; `--gpus 0` takes it without
+them, since local GPUs are never reserved.
 Missing explicit paths and invalid files are errors. Execution still requires an
 explicitly launched cluster's name or ID.
 
@@ -1795,6 +1809,8 @@ evidence in observations.
 
 **Configured compute roots may be filesystem aliases.** Resolve connection and
 scratch roots before appending managed provider, submission, or attempt paths.
+The catalog resolves `connection_root` once, at load, so an unusable root is a
+catalog error naming the field; providers append to it and never resolve it again.
 Keep symlink rejection within those managed paths and enforce private directory
 and credential permissions. Do not resolve Python executables: virtualenv paths
 must retain their environment identity. Never change existing ancestor permissions.
@@ -2139,8 +2155,16 @@ unlinks before writing; a new tampering test should too.
   top-level key; and the cluster ID encodes the provider instead of the
   namespace, so a full ID routes with no catalog lookup. The UUID was worse
   than redundant: Slurm discovery never filtered on it, so two catalogs with
-  different UUIDs gave one job two IDs, and the second looked for its TLS
-  material in the wrong directory. Discovery queries `Catalog.providers` —
+  different UUIDs gave one job two IDs. What a full ID does *not* free from
+  the catalog is connection material, which lives under the launching
+  catalog's `connection_root`, for Slurm as for local: native inspection and
+  `down` work from any catalog, connecting does not. Launch creates the
+  submission's directory (`<root>/slurm/<token>`, its log and each
+  attempt's TLS material) before submitting, so a running job without one
+  is refused as launched under another root rather than told to wait.
+  `PROVIDERS` lives beside the `Provider` protocol in `model.py`, and an
+  offer naming anything else is a catalog error — a typo once loaded and
+  then failed every discovery, blocking every launch. Discovery queries `Catalog.providers` —
   those the offers name, plus local always — so removing a provider's last
   offer hides its jobs from name lookup and the listing, never from a full
   ID. Re-add a per-authority concept only with a venue that genuinely has two

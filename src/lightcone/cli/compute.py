@@ -30,7 +30,6 @@ def _errors(as_json: bool) -> Iterator[None]:
         click.echo(
             json.dumps(
                 {
-                    "schema_version": 1,
                     "error": str(exc),
                     "id": exc.cluster_id,
                     "submission_token": exc.submission_token,
@@ -63,7 +62,8 @@ def compute() -> None:
 
     Read LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml. A built-in local
     offer follows configured offers unless local compute is disabled or
-    the catalog supplies its own local offers; by default it ends
+    the catalog supplies its own local offers. It offers this host's CPUs and
+    memory, plus the GPUs CUDA_VISIBLE_DEVICES lists; by default it ends
     after 30 minutes without task activity rather than at a fixed age. Local
     compute is automatically disabled on recognized NERSC login nodes.
     """
@@ -110,8 +110,9 @@ def resources(as_json: bool) -> None:
 @click.option("--cpus", help="Logical CPUs per node; suffix + requests a minimum.")
 @click.option("--memory",
               help="Memory per node, e.g. 16 or 16GB; suffix + requests a minimum.")
-@click.option("--gpus", default="0", show_default=True,
-              help="Accelerator NAME[:COUNT] per node, e.g. A100:4 or GPU:1; 0 requests CPU only.")
+@click.option("--gpus",
+              help="Accelerator NAME[:COUNT] per node, e.g. A100:4 or GPU:1; 0 requests CPU "
+                   "only, the default except for local compute, which takes the offer's GPUs.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
 @click.option(
     "--time", "walltime",
@@ -129,7 +130,7 @@ def launch(
     name: str | None,
     cpus: str | None,
     memory: str | None,
-    gpus: str,
+    gpus: str | None,
     num_nodes: int,
     walltime: str | None,
     startup: str | None,
@@ -159,11 +160,12 @@ def launch(
         else:
             plan = service.plan(
                 Request.parse(
-                    cpus, memory, gpus=gpus, num_nodes=num_nodes, time=walltime, startup=startup,
+                    cpus, memory, gpus="0" if gpus is None else gpus, num_nodes=num_nodes,
+                    time=walltime, startup=startup,
                 ),
                 name=name,
             )
-        data: dict[str, Any] = {"schema_version": 1, "plan": plan.as_dict()}
+        data: dict[str, Any] = {"plan": plan.as_dict()}
         if dry_run:
             if as_json:
                 click.echo(json.dumps(data))
@@ -248,7 +250,6 @@ def status(
             click.echo(
                 json.dumps(
                     {
-                        "schema_version": 1,
                         "clusters": [item.as_dict() for item in snapshots],
                         "errors": errors,
                     }
@@ -277,7 +278,6 @@ def down(cluster_id: str, as_json: bool) -> None:
         if as_json:
             click.echo(
                 json.dumps({
-                    "schema_version": 1,
                     "id": identity.encode(),
                     "name": identity.name,
                     "termination_requested": True,

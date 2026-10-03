@@ -26,7 +26,6 @@ pytestmark = pytest.mark.usefixtures("local_allocation_scope")
 def detached_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     catalog = tmp_path / "compute.json"
     catalog.write_text(json.dumps({
-        "version": 1,
         "connection_root": str(tmp_path / "connections"),
         "offers": [{
             "name": "small",

@@ -55,7 +55,7 @@ def provider(tmp_path: Path) -> LocalProvider:
 
 def _scratch(provider: LocalProvider) -> Path:
     """Scratch for test launches, beside the provider's configured connection root."""
-    return provider.root.parent.with_name("scratch")
+    return provider.root.with_name("scratch")
 
 
 def _offer(
@@ -96,7 +96,7 @@ plan = p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)).replace(name='
 print(p.launch(plan).encode())
 """
     launched = subprocess.run(
-        [sys.executable, "-c", script, str(provider.root.parent),
+        [sys.executable, "-c", script, str(provider.root),
          str(local_allocation_scope), _offer(provider).model_dump_json(by_alias=True)],
         capture_output=True, text=True, timeout=20, check=True,
     )
@@ -107,13 +107,13 @@ print(p.launch(plan).encode())
         _ready(provider, identity)
         # The owner is found by its command, never by its Dask worker processes.
         assert local._running_owners() == [
-            (int(identity.native_id), provider.root / identity.token),
+            (int(identity.native_id), provider.allocations / identity.token),
         ]
         with pytest.raises(ComputeError, match="already running") as conflict:
             _launch(other)
         assert identity.encode() in str(conflict.value)
         assert conflict.value.cluster_id is None
-        assert str(provider.root.parent) in str(conflict.value)
+        assert str(provider.root) in str(conflict.value)
         provider.terminate(identity)
         _ended(provider, identity)
         replacement = _launch(other)
@@ -215,7 +215,7 @@ Path(sys.argv[3]).write_text(identity.encode())
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script, str(provider.root.parent),
+            [sys.executable, "-c", script, str(provider.root),
              str(local_allocation_scope), str(result_path), json.dumps(closed),
              _offer(provider).model_dump_json(by_alias=True)],
             capture_output=True, text=True, timeout=15,
@@ -289,7 +289,7 @@ offer = Offer.model_validate_json(sys.argv[3])
 print(p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2))).encode())
 """
     launched = subprocess.run(
-        [sys.executable, "-c", script, str(provider.root.parent),
+        [sys.executable, "-c", script, str(provider.root),
          str(local_allocation_scope), _offer(provider).model_dump_json(by_alias=True)],
         check=True,
         capture_output=True,
@@ -329,7 +329,7 @@ with p.connect(Identity.decode(sys.argv[2])) as client:
 """
         result = subprocess.run(
             [
-                sys.executable, "-c", second, str(provider.root.parent), identity.encode(),
+                sys.executable, "-c", second, str(provider.root), identity.encode(),
             ],
             check=True,
             capture_output=True,
@@ -400,7 +400,7 @@ def test_cpu_allocation_without_gpu_fields_remains_discoverable_and_stoppable(
     identity = _launch(provider)
     try:
         _ready(provider, identity)
-        path = provider.root / identity.token / "identity.json"
+        path = provider.allocations / identity.token / "identity.json"
         record = read_private_json(path)
         del record["gpus"], record["accelerator_name"]
         write_private_json(path, record)
@@ -446,8 +446,7 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
 
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
-        "version": 1,
-        "connection_root": str(provider.root.parent),
+        "connection_root": str(provider.root),
         "offers": [{
             "name": "small",
             "provider": "local",
@@ -467,7 +466,7 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
         assert first.name == "analysis"
         assert Identity.decode(first.encode()) == first
         # A new adapter reconstructs the name from the existing native locator.
-        assert [item.identity for item in LocalProvider(provider.root.parent).discover()] == [
+        assert [item.identity for item in LocalProvider(provider.root).discover()] == [
             first,
         ]
         assert Compute().status("analysis", wait=True, timeout=20).identity == first
@@ -510,8 +509,7 @@ def test_an_unused_allocation_idles_out_despite_status_polling_and_frees_its_nam
 ) -> None:
     catalog = tmp_path / "compute.yaml"
     catalog.write_text(json.dumps({
-        "version": 1,
-        "connection_root": str(provider.root.parent),
+        "connection_root": str(provider.root),
         "offers": [{
             "name": "small",
             "provider": "local",
@@ -589,7 +587,7 @@ def test_an_ended_allocation_keeps_its_record_but_not_its_secrets_or_scratch(
     provider: LocalProvider, ending: str,
 ) -> None:
     identity = _launch(provider, seconds=2 if ending == "walltime" else 60)
-    directory = provider.root / identity.token
+    directory = provider.allocations / identity.token
     scratch = Path(str(read_private_json(directory / "launch.json")["scratch"]))
     try:
         if ending == "down":
@@ -763,14 +761,14 @@ def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
         patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
         with pytest.raises(ComputeError, match="cannot execute"):
             _launch(provider)
-    assert list(provider.root.iterdir()) == []
+    assert list(provider.allocations.iterdir()) == []
     assert list(_scratch(provider).iterdir()) == []
     identity = _launch(provider)
     try:
         _ready(provider, identity)
         # A launcher interrupted before identity publication can also leave a
         # directory. This is not a published allocation or a discovery error.
-        interrupted = private_directory(provider.root / uuid4().hex, create=True)
+        interrupted = private_directory(provider.allocations / uuid4().hex, create=True)
         write_private_json(interrupted / "launch.json", {"identity": ""})
         assert [snapshot.identity for snapshot in provider.discover()] == [identity]
     finally:
@@ -788,7 +786,7 @@ def test_failed_initial_launch_write_removes_unpublished_files(
     monkeypatch.setattr(local, "write_private_json", fail)
     with pytest.raises(ComputeError, match="cannot start.*storage is full"):
         _launch(provider)
-    assert list(provider.root.iterdir()) == []
+    assert list(provider.allocations.iterdir()) == []
     assert list(_scratch(provider).iterdir()) == []
 
 
@@ -855,7 +853,7 @@ offer = Offer.model_validate_json(sys.argv[5])
 p.launch(p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)))
 """
     launcher = subprocess.Popen(
-        [sys.executable, "-c", script, str(provider.root.parent),
+        [sys.executable, "-c", script, str(provider.root),
          str(local_allocation_scope), str(marker), publication,
          _offer(provider).model_dump_json(by_alias=True)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -892,7 +890,7 @@ def test_reused_pid_and_boot_identity_are_never_signalled(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     identity = _launch(provider)
-    path = provider.root / identity.token / "identity.json"
+    path = provider.allocations / identity.token / "identity.json"
     original = read_private_json(path)
     try:
         with monkeypatch.context() as patch:
@@ -917,7 +915,7 @@ def test_reused_pid_and_boot_identity_are_never_signalled(
                     psutil.Process, "cmdline",
                     lambda _process: [
                         sys.executable, "-P", "-m", "lightcone.engine.compute.local_runtime",
-                        str(provider.root / uuid4().hex),
+                        str(provider.allocations / uuid4().hex),
                     ],
                 )
                 assert provider.inspect(identity).phase == "ended"
@@ -1031,7 +1029,7 @@ def test_connection_files_are_private_and_scheduler_identity_is_authenticated(
     identity = _launch(provider)
     try:
         _ready(provider, identity)
-        directory = provider.root / identity.token
+        directory = provider.allocations / identity.token
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
         for name in ("identity.json", "connection.json", "scheduler.json", "tls-key.pem"):
             assert stat.S_IMODE((directory / name).stat().st_mode) == 0o600
@@ -1052,7 +1050,7 @@ def test_missing_credentials_preserve_native_discovery_and_termination(
     identity = _launch(provider)
     try:
         _ready(provider, identity)
-        (provider.root / identity.token / "tls-key.pem").unlink()
+        (provider.allocations / identity.token / "tls-key.pem").unlink()
         assert provider.inspect(identity).phase == "active"
         assert provider.discover()[0].identity == identity
         with pytest.raises(ComputeError):
@@ -1064,7 +1062,7 @@ def test_missing_credentials_preserve_native_discovery_and_termination(
 
 def test_a_starting_allocation_says_to_wait(provider: LocalProvider) -> None:
     identity = _launch(provider)
-    connection = provider.root / identity.token / "connection.json"
+    connection = provider.allocations / identity.token / "connection.json"
     try:
         _ready(provider, identity)
         # The owner publishes this file once its scheduler is up.
@@ -1117,18 +1115,19 @@ def test_local_allocation_reopens_through_symlinked_configured_roots(
     physical = private_directory(tmp_path / "physical-home", create=True)
     alias = tmp_path / "home-alias"
     alias.symlink_to(physical, target_is_directory=True)
-    root = alias / ".lightcone" / "compute"
+    # The catalog resolves the configured alias before any provider sees it.
+    root = Path(Catalog(connection_root=str(alias / ".lightcone" / "compute")).connection_root)
     launcher = LocalProvider(root)
     identity = _launch(launcher, scratch=alias / "scratch")
     try:
         scheduler = _ready(launcher, identity)
         reopened = LocalProvider(root)
-        assert reopened.root == physical / ".lightcone" / "compute" / "local"
+        assert reopened.allocations == physical / ".lightcone" / "compute" / "local"
         assert [snapshot.identity for snapshot in reopened.discover()] == [identity]
         with reopened.connect(identity) as client:
             assert client.scheduler_info()["id"] == scheduler["id"]
             assert client.submit(sum, [2, 3]).result(timeout=5) == 5
-        metadata = read_private_json(reopened.root / identity.token / "launch.json")
+        metadata = read_private_json(reopened.allocations / identity.token / "launch.json")
         assert metadata["scratch"] == str(physical / "scratch" / f"lc-{identity.token}")
         assert private_directory(Path(metadata["scratch"])).is_dir()
     finally:
@@ -1144,7 +1143,7 @@ def test_local_managed_provider_directory_symlink_is_still_refused(
     alias.symlink_to(root, target_is_directory=True)
     other = private_directory(tmp_path / "other-directory", create=True)
     (root / "local").symlink_to(other, target_is_directory=True)
-    configured = LocalProvider(alias)
+    configured = LocalProvider(Path(Catalog(connection_root=str(alias)).connection_root))
     with pytest.raises(ComputeError, match="plain directory"):
         _launch(configured, scratch=_scratch(provider))
     with pytest.raises(ComputeError, match="plain directory"):
@@ -1213,7 +1212,7 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
     order: str | None,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    # Mask interpretation and agreement with the catalog belong to the operator.
+    # CUDA reads a device UUID and an index alike; neither is checked against hardware.
     mask = "GPU-opaque,3"
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     if order is None:
@@ -1259,7 +1258,7 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
     assert popen.call_args.kwargs["env"].get("CUDA_DEVICE_ORDER") == order
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "an-ambient-mask"
     assert os.environ["CUDA_DEVICE_ORDER"] == "changed-after-planning"
-    record = read_private_json(provider.root / identity.token / "identity.json")
+    record = read_private_json(provider.allocations / identity.token / "identity.json")
     assert record["gpus"] == gpus
     monkeypatch.setattr(provider, "_process", lambda *_: None)
     snapshot = provider.inspect(identity)
@@ -1268,8 +1267,8 @@ def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelop
     probe.assert_not_called()
 
 
-@pytest.mark.parametrize("mask", [None, ""])
-def test_local_gpu_offers_require_an_explicit_nonempty_native_mask(
+@pytest.mark.parametrize("mask", [None, "", "-1", "0", "0,-1,2", "0,,1"])
+def test_local_gpu_offers_need_as_many_devices_as_the_mask_exposes(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
     mask: str | None,
 ) -> None:
@@ -1280,11 +1279,12 @@ def test_local_gpu_offers_require_an_explicit_nonempty_native_mask(
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     offer = Offer(
         name="gpu", provider="local",
-        resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
+        resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=2),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
-    request = Request.parse("1", "0.5", gpus="GPU:1")
-    with pytest.raises(ComputeError, match="nonempty CUDA_VISIBLE_DEVICES"):
+    request = Request.parse("1", "0.5", gpus="GPU:2")
+    # CUDA stops at the first invalid entry, so none of these exposes two devices.
+    with pytest.raises(UnavailableOfferError, match="has 2 GPUs, but CUDA_VISIBLE_DEVICES"):
         provider.plan(offer, request)
     assert not provider.root.exists()
 
@@ -1298,13 +1298,12 @@ def test_unconfigured_local_gpu_mask_does_not_hide_a_later_slurm_offer(
         resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
-    service = Compute.__new__(Compute)
-    service.catalog = Catalog(
-        version=1,
-        connection_root=str(provider.root.parent),
+    catalog = Catalog(
+        connection_root=str(provider.root),
         offers=[local_offer, local_offer.replace(name="batch-gpu", provider="slurm")],
     )
-    plan = service.plan(Request.parse("1", "0.5", gpus="GPU:1"))
+    monkeypatch.setattr(Catalog, "load", lambda *args: catalog)
+    plan = Compute().plan(Request.parse("1", "0.5", gpus="GPU:1"))
     assert plan.offer.name == "batch-gpu"
     assert not provider.root.exists()
 

@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 
 import psutil
 
-from lightcone.engine.compute.catalog import local_disabled_reason
+from lightcone.engine.compute.catalog import cuda_device_count, local_disabled_reason
 from lightcone.engine.compute.model import (
     ComputeError,
     Identity,
@@ -31,6 +31,7 @@ from lightcone.engine.compute.model import (
     Resources,
     Snapshot,
     UnavailableOfferError,
+    config_text,
     positive_int,
     validate_name,
 )
@@ -158,7 +159,9 @@ class LocalProvider:
     """Allocate one cooperative Dask execution node on the current host."""
 
     def __init__(self, root: Path) -> None:
-        self.root = configured_directory(root) / "local"
+        # The catalog resolves the connection root; allocations live under local/.
+        self.root = root
+        self.allocations = root / "local"
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Validate a one-node local offer without creating allocation files."""
@@ -175,9 +178,7 @@ class LocalProvider:
             )
         for name in ("python", "scratch_root"):
             if name in config:
-                value = config[name]
-                if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
-                    raise ComputeError(f"local {name} must be a nonempty path string")
+                config_text(config[name], f"local {name}")
         slots = positive_int(
             config.get("task_slots_per_node", offer.resources.cpus), "task_slots_per_node",
         )
@@ -192,16 +193,20 @@ class LocalProvider:
         if offer.resources.gpus:
             if sys.platform != "linux":
                 raise UnavailableOfferError("local GPU allocations require Linux")
-            mask = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-            if not mask:
+            if (visible := cuda_device_count()) < offer.resources.gpus:
                 raise UnavailableOfferError(
-                    "local GPU offers require an explicit nonempty CUDA_VISIBLE_DEVICES mask"
+                    f"the local offer has {offer.resources.gpus} GPUs, but "
+                    f"CUDA_VISIBLE_DEVICES exposes {visible} on this host"
                 )
+            mask = os.environ["CUDA_VISIBLE_DEVICES"]
         seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
         limit = offer.time.max_seconds
         if seconds is not None and limit is not None and seconds > limit:
             raise ComputeError("the requested time exceeds the local offer's maximum")
-        python = Path(config.get("python", sys.executable)).expanduser()
+        try:
+            python = Path(config.get("python", sys.executable)).expanduser()
+        except RuntimeError as exc:
+            raise ComputeError(f"cannot expand the configured local Python: {exc}") from exc
         scratch = configured_directory(Path(config.get("scratch_root", tempfile.gettempdir())))
         if not python.is_absolute() or not python.is_file() or not os.access(python, os.X_OK):
             raise ComputeError("the configured local Python must be an executable absolute path")
@@ -252,7 +257,7 @@ class LocalProvider:
         else:
             environment["CUDA_DEVICE_ORDER"] = plan.details["cuda_device_order"]
         try:
-            directory = private_directory(self.root / token, create=True)
+            directory = private_directory(self.allocations / token, create=True)
             scratch = private_directory(
                 Path(plan.details["scratch_root"]) / f"lc-{token}", create=True,
             )
@@ -344,7 +349,7 @@ class LocalProvider:
             or not re.fullmatch(r"[1-9][0-9]*", identity.native_id)
         ):
             raise ComputeError("this cluster ID does not identify a local allocation")
-        return private_directory(self.root / identity.token)
+        return private_directory(self.allocations / identity.token)
 
     def _record(self, identity: Identity) -> tuple[Path, dict[str, Any]]:
         directory = self._directory(identity)
@@ -418,12 +423,12 @@ class LocalProvider:
 
     def discover(self) -> Sequence[Snapshot]:
         """Find active local owners by checking their private locators against the OS."""
-        if not self.root.exists():
+        if not self.allocations.exists():
             return []
-        private_directory(self.root)
+        private_directory(self.allocations)
         boot = _boot_identity()
         snapshots = []
-        for directory in sorted(self.root.iterdir()):
+        for directory in sorted(self.allocations.iterdir()):
             if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
                 continue
             if (directory / _RETIRED).exists():

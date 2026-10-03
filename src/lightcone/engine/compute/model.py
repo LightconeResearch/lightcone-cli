@@ -86,6 +86,13 @@ def positive_int(value: object, name: str) -> int:
     return int(str(value))
 
 
+def config_text(value: object, name: str) -> str:
+    """Accept a nonempty offer setting without control characters."""
+    if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+        raise ComputeError(f"{name} must be a nonempty string without control characters")
+    return value
+
+
 def validate_name(value: str) -> None:
     """Keep cluster names portable across native providers and safe in commands."""
     if not re.fullmatch(r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
@@ -340,12 +347,19 @@ class Offer(ComputeModel):
     """A fixed resource shape with user-supplied limits and native bindings."""
 
     name: Name
-    provider: ProviderName
+    provider: str
     resources: Resources
     max_nodes: Count
     time: TimeLimits
     startup: Startup = Field(default_factory=lambda: Startup(class_="unknown"))
     config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider")
+    @classmethod
+    def supported_provider(cls, value: str) -> str:
+        if value not in PROVIDERS:
+            raise ValueError(f"must name a supported provider: {', '.join(PROVIDERS)}")
+        return value
 
 
 class Identity(ComputeModel):
@@ -366,7 +380,7 @@ class Identity(ComputeModel):
     def encode(self) -> str:
         """Encode identity without a local UUID-to-allocation database."""
         payload = json.dumps(
-            [1, self.provider, self.native_id, self.token, self.host, self.name],
+            [self.provider, self.native_id, self.token, self.host, self.name],
             separators=(",", ":"),
         ).encode()
         return "clu_" + base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -379,14 +393,14 @@ class Identity(ComputeModel):
                 raise ValueError
             raw = value[4:]
             data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_"))
-            if not isinstance(data, list) or len(data) != 6 or type(data[0]) is not int:
+            if not isinstance(data, list) or len(data) != 5:
                 raise ValueError
-            version, provider, native_id, token, host, name = data
-            if version != 1 or not all(isinstance(item, str) for item in data[1:]):
+            if not all(isinstance(item, str) for item in data):
                 raise ValueError
+            provider, native_id, token, host, name = data
             if not native_id or not token:
                 raise ValueError
-            if any(ord(char) < 32 for item in data[1:] for char in item):
+            if any(ord(char) < 32 for item in data for char in item):
                 raise ValueError
             validate_name(name)
             identity = cls(
@@ -425,7 +439,6 @@ class LaunchPlan(ComputeModel):
     def as_dict(self) -> dict[str, Any]:
         """Allowlist the plan's public contract; details must contain no credentials."""
         return {
-            "schema_version": 1,
             "name": self.name,
             "request": self.request.as_dict(),
             "offer": self.offer.name,
@@ -459,7 +472,6 @@ class Snapshot(ComputeModel):
     def as_dict(self) -> dict[str, Any]:
         """Keep endpoint credentials and native response objects private."""
         return {
-            "schema_version": 1,
             "id": self.identity.encode(),
             "name": self.identity.name,
             "phase": self.phase,
@@ -487,5 +499,21 @@ class Provider(Protocol):
     def terminate(self, identity: Identity) -> None: ...
 
 
-#: Builds a provider from the catalog's configured connection root.
+#: Builds a provider from the catalog's resolved connection root.
 ProviderFactory = Callable[[Path], Provider]
+
+
+def _local(root: Path) -> Provider:
+    from .local import LocalProvider
+
+    return LocalProvider(root)
+
+
+def _slurm(root: Path) -> Provider:
+    from .slurm import SlurmProvider
+
+    return SlurmProvider(root)
+
+
+# The lifecycle seam is intentionally small: execution never dispatches on a provider.
+PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}

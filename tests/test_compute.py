@@ -52,16 +52,18 @@ def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "expanduser", expand)
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
     monkeypatch.delenv("NERSC_HOST", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     return tmp_path
 
 
 @pytest.fixture
-def catalog(default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def catalog(
+    default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: MagicMock,
+) -> Path:
     path = tmp_path / "compute.yaml"
     path.write_text(
         yaml.safe_dump(
             {
-                "version": 1,
                 "local": {"enabled": False},
                 "offers": [
                     {
@@ -300,7 +302,7 @@ def test_configured_catalogs_can_disable_local_and_obey_path_precedence(
     assert configured.providers == ["fake", "local"]
     assert [offer.name for offer in configured.offers] == ["quick", "large"]
     # Disabled local compute remains available for inspection and termination.
-    default.write_text("version: 1\nlocal: {enabled: false}\noffers: []\n")
+    default.write_text("local: {enabled: false}\noffers: []\n")
     assert Catalog.load().offers == []
     assert Catalog.load().providers == ["local"]
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
@@ -325,10 +327,10 @@ def test_only_an_absent_implicit_catalog_uses_the_builtin(
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load()
     default.unlink()
-    default.write_text("version: [\n")
+    default.write_text("offers: [\n")
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load()
-    default.write_text("version: 1\noffers: []\n")
+    default.write_text("offers: []\n")
 
     def unreadable(_path: Path, *args: object, **kwargs: object) -> str:
         raise PermissionError("catalog is not readable")
@@ -459,18 +461,50 @@ def test_accelerator_selection_honors_type_and_exact_count(
         compute.Compute().plan(Request.parse("4", "8", gpus="A100:4"))
 
 
-def test_builtin_catalog_stays_cpu_only_without_probing_native_gpus(
-    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("mask, gpus", [
+    (None, 0), ("", 0), ("-1", 0), ("0,1", 2), ("GPU-8932f937,MIG-1c2d", 2), ("3,-1,0", 1),
+])
+def test_builtin_offer_takes_the_gpus_its_mask_exposes_without_probing_hardware(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch, mask: str | None, gpus: int,
 ) -> None:
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setattr("sys.platform", "linux")
+    if mask is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     probe = MagicMock(side_effect=AssertionError("catalog loading must not probe GPU hardware"))
     monkeypatch.setattr(subprocess, "run", probe)
-    loaded = Catalog.load()
-    assert [(offer.name, offer.resources.gpus) for offer in loaded.offers] == [
-        ("local", 0),
-    ]
+    (offer,) = Catalog.load().offers
+    assert (offer.name, offer.resources.gpus) == ("local", gpus)
+    assert offer.resources.accelerator_name == ("GPU" if gpus else None)
     probe.assert_not_called()
     assert not list(default_home.iterdir())
+
+
+def test_builtin_offer_has_no_gpus_outside_linux(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert Catalog.load().offers[0].resources.gpus == 0
+
+
+def test_local_shortcut_takes_the_offer_whole_unless_cpu_only_is_asked(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    service = compute.Compute()
+    whole = service.plan_local()
+    assert whole.resources.gpus == 2
+    assert whole.details["cuda_visible_devices"] == "0,1"
+    assert service.plan_local(gpus="GPU:2").resources.gpus == 2
+    cpu = service.plan_local(gpus="0")
+    assert cpu.resources.gpus == 0
+    assert cpu.details["cuda_visible_devices"] == ""
+    with pytest.raises(ComputeError, match="no local offer"):
+        service.plan_local(gpus="GPU:1")
+    result = CliRunner().invoke(main, ["compute", "launch", "--dry-run", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["plan"]["resources"]["accelerators"] == {"GPU": 2}
 
 
 def test_local_shortcut_uses_detected_capacity_without_writing_files(
@@ -572,13 +606,13 @@ def test_local_config_overrides_default_and_survives_disabling(
     monkeypatch.setattr("dask.system.CPU_COUNT", 8)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
     path = default_home / "compute.yaml"
-    path.write_text("version: 1\nlocal:\n  resources: {cpus: 2, memory: 3}\n")
+    path.write_text("local:\n  resources: {cpus: 2, memory: 3}\n")
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
     service = compute.Compute()
     plan = service.plan_local(name="sandbox", time="1h")
     assert (plan.name, plan.resources.cpus, plan.resources.memory_bytes) == ("sandbox", 2, 3 * GIB)
     assert plan.seconds == 3600
-    path.write_text("version: 1\nlocal: {enabled: false}\n")
+    path.write_text("local: {enabled: false}\n")
     disabled = compute.Compute()
     assert not disabled.resources()["offers"]
     assert disabled.catalog.providers == ["local"]
@@ -625,7 +659,7 @@ def test_local_time_replaces_the_builtin_idle_timeout(
     monkeypatch.setattr("dask.system.CPU_COUNT", 8)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
     path = default_home / "compute.yaml"
-    path.write_text("version: 1\nlocal:\n  time: {idle: 1h, max: 8h}\n")
+    path.write_text("local:\n  time: {idle: 1h, max: 8h}\n")
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
     service = compute.Compute()
     plan = service.plan_local()
@@ -687,7 +721,7 @@ def test_configured_local_budget_still_must_fit_host_capacity(
 @pytest.mark.parametrize("settings, message", [
     ({"enabled": "false"}, "local.enabled"),
     ({"resources": {"cpus": 0, "memory": 1}}, "local.resources.cpus"),
-    ({"resources": {"cpus": 1, "memory": 1, "accelerators": "GPU:1"}}, "GPU offers"),
+    ({"resources": {"cpus": 1, "memory": 1, "accelerators": "GPU:1"}}, "CUDA_VISIBLE_DEVICES"),
 ])
 def test_local_policy_validation(catalog: Path, settings: object, message: str) -> None:
     data = yaml.safe_load(catalog.read_text())
@@ -897,7 +931,8 @@ def test_live_allocation_is_not_automatically_ready(catalog: Path, provider: Mag
     assert result.phase == "active"
     assert result.ready is False
     assert result.observation == "unreachable"
-    with pytest.raises(ComputeError, match="allocation is unchanged"):
+    # A wait that runs out names why the scheduler could not be reached.
+    with pytest.raises(ComputeError, match="last connection attempt: scheduler unavailable"):
         compute.Compute().status(IDENTITY.encode(), wait=True, timeout=0.01)
     provider.terminate.assert_not_called()
 
@@ -965,14 +1000,12 @@ def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> No
 
 
 @pytest.mark.parametrize("mutation", [
-    "version_missing", "provider_missing", "provider", "offer", "limits", "unbounded",
+    "provider_missing", "provider", "offer", "limits", "unbounded",
     "unknown", "resources_extra", "time_extra", "startup_extra", "catalog_extra",
 ])
 def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     data = yaml.safe_load(catalog.read_text())
-    if mutation == "version_missing":
-        data.pop("version")
-    elif mutation == "provider_missing":
+    if mutation == "provider_missing":
         data["offers"][0].pop("provider")
     elif mutation == "provider":
         data["offers"][0]["provider"] = "Not a provider"
@@ -994,9 +1027,6 @@ def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
 
 
 @pytest.mark.parametrize("field,value", [
-    (("version",), True),
-    (("version",), 1.0),
-    (("version",), "1"),
     (("connection_root",), 1),
     (("offers", 0, "resources", "cpus"), True),
     (("offers", 0, "resources", "cpus"), 4.0),
@@ -1047,11 +1077,61 @@ def test_catalog_normalizes_units_and_startup_without_changing_offer_order(
 def test_catalog_keeps_provider_payloads_opaque(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
     config = {"future-option": ["native", {"enabled": False, "nested": [True, 2, None]}]}
-    data["offers"][0].update(provider="future-provider", config=config)
+    data["offers"][0].update(config=config)
     catalog.write_text(yaml.safe_dump(data))
-    loaded = Catalog.load(catalog)
-    assert loaded.offers[0].provider == "future-provider"
-    assert loaded.offers[0].config == config
+    assert Catalog.load(catalog).offers[0].config == config
+
+
+def test_a_misspelled_provider_is_a_catalog_error_not_a_discovery_failure(
+    catalog: Path,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["offers"][1]["provider"] = "slurmm"
+    catalog.write_text(yaml.safe_dump(data))
+    result = CliRunner().invoke(main, ["compute", "status", "--json"])
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert "invalid compute catalog" in error
+    assert "offers.1.provider: Value error, must name a supported provider" in error
+
+
+@pytest.mark.parametrize("root, message", [
+    ("relative/compute", "compute root must be an absolute path"),
+    ("/tmp/../compute", "compute root must be an absolute path"),
+    ("~nosuchuser42/compute", "cannot resolve compute root"),
+])
+def test_an_unusable_connection_root_is_a_catalog_error(
+    catalog: Path, root: str, message: str,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["connection_root"] = root
+    catalog.write_text(yaml.safe_dump(data))
+    result = CliRunner().invoke(main, ["compute", "status", "--json"])
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert "invalid compute catalog" in error
+    assert f"connection_root: Value error, {message}" in error
+
+
+def test_the_connection_root_is_resolved_once_and_handed_to_one_provider_per_name(
+    catalog: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    (tmp_path / "alias").symlink_to(physical, target_is_directory=True)
+    data = yaml.safe_load(catalog.read_text())
+    data["connection_root"] = str(tmp_path / "alias" / "compute")
+    catalog.write_text(yaml.safe_dump(data))
+    roots: list[Path] = []
+    factory = compute.PROVIDERS["fake"]
+    monkeypatch.setitem(
+        compute.PROVIDERS, "fake", lambda root: roots.append(root) or factory(root),
+    )
+    service = compute.Compute()
+    assert service.catalog.connection_root == str(physical / "compute")
+    service.discover()
+    service.launch(service.plan(Request.parse("4", "8")))
+    assert roots == [physical / "compute"]
 
 
 def test_catalog_validation_errors_do_not_echo_provider_values(catalog: Path) -> None:
@@ -1067,7 +1147,7 @@ def test_catalog_validation_errors_do_not_echo_provider_values(catalog: Path) ->
 
 
 @pytest.mark.parametrize("document", [
-    "version: 1\nversion: 1\noffers: []\n",
+    "offers: []\noffers: []\n",
     "offers: [{config: {option: 1, option: 2}}]\n",
     "offers: [{config: {1: value}}]\n",
 ])
@@ -1078,7 +1158,7 @@ def test_duplicate_or_nonstring_yaml_keys_are_rejected(catalog: Path, document: 
 
 
 def test_invalid_catalog_encoding_is_a_structured_error(catalog: Path) -> None:
-    catalog.write_bytes(b"version: 1\n\xff")
+    catalog.write_bytes(b"offers: []\n\xff")
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load(catalog)
     result = CliRunner().invoke(main, ["compute", "resources", "--json"])
@@ -1098,7 +1178,7 @@ def test_local_offer_path_types_fail_without_a_traceback(catalog: Path, setting:
         main, ["compute", "launch", "--cpus", "4", "--memory", "8", "--dry-run", "--json"]
     )
     assert result.exit_code == 1
-    assert "path string" in json.loads(result.output)["error"]
+    assert f"local {setting} must be a nonempty string" in json.loads(result.output)["error"]
 
 
 @pytest.mark.parametrize("timeout", ["nan", "inf"])

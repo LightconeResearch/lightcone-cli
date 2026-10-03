@@ -43,6 +43,8 @@ def local_allocation_scope(
         local, "_running_owners", lambda: [o for o in owners() if o[1].is_relative_to(root)],
     )
     monkeypatch.delenv("NERSC_HOST", raising=False)
+    # The built-in local offer takes its GPUs from this mask.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     return root
 
 

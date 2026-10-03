@@ -30,7 +30,7 @@ from lightcone.engine.compute.model import (
     TimeLimits,
 )
 from lightcone.engine.compute.runtime import (
-    DEFAULT_CONNECTION_ROOT,
+    configured_directory,
     open_client,
     private_directory,
     read_private_json,
@@ -39,8 +39,8 @@ from lightcone.engine.compute.runtime import (
 
 TOKEN = "c82a7b8d0ccf40a4be0e57e784edb989"
 IDENTITY = Identity(provider="slurm", native_id="123", token=TOKEN)
-NAME = f"lc-v1-{IDENTITY.name}"
-COMMENT = f"lightcone:v1:kind=dask:token={TOKEN}"
+NAME = f"lc-{IDENTITY.name}"
+COMMENT = f"lightcone:kind=dask:token={TOKEN}"
 
 
 @pytest.fixture
@@ -73,8 +73,8 @@ def _live(
     *, job_id: str = "123", token: str = TOKEN, uid: int | None = None,
     state: str = "RUNNING", name: str = IDENTITY.name, comment: str | None = None,
 ) -> str:
-    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
-    return f"{job_id}|lc-v1-{name}|{os.getuid() if uid is None else uid}|{state}|{comment}\n"
+    comment = comment if comment is not None else f"lightcone:kind=dask:token={token}"
+    return f"{job_id}|lc-{name}|{os.getuid() if uid is None else uid}|{state}|{comment}\n"
 
 
 def _control(
@@ -82,9 +82,9 @@ def _control(
     name: str = IDENTITY.name, comment: str | None = None,
 ) -> str:
     owner = os.getuid() if uid is None else uid
-    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
+    comment = comment if comment is not None else f"lightcone:kind=dask:token={token}"
     return (
-        f"JobId=123 JobName=lc-v1-{name} UserId=alice({owner}) JobState={state}\n"
+        f"JobId=123 JobName=lc-{name} UserId=alice({owner}) JobState={state}\n"
         f"   Comment={comment} \n"
         f"   NumNodes=2 NumCPUs=512 CPUs/Task=256 MinMemoryNode=480G Restarts={restarts} "
         "ReqTRES=cpu=512,mem=960G,node=2 "
@@ -97,9 +97,9 @@ def _history(
     job_id: str = "123", submitted: str = "2026-09-27T10:00:00", comment: str | None = None,
     uid: int | None = None,
 ) -> str:
-    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
+    comment = comment if comment is not None else f"lightcone:kind=dask:token={token}"
     owner = os.getuid() if uid is None else uid
-    return f"{job_id}|lc-v1-{name}|{owner}|{state}|{submitted}|{comment}\n"
+    return f"{job_id}|lc-{name}|{owner}|{state}|{submitted}|{comment}\n"
 
 
 def _native(
@@ -126,7 +126,7 @@ def _native(
 
 def _metadata(provider: slurm.SlurmProvider, *, restarts: int = 0, **changes: Any) -> Path:
     directory = private_directory(
-        slurm.attempt_directory(provider.root, IDENTITY, restarts), create=True
+        slurm.allocation_directory(provider.root, TOKEN) / f"attempt-{restarts}", create=True
     )
     write_private_json(
         directory / "identity.json",
@@ -217,7 +217,7 @@ def test_default_launch_assumes_a_shared_home_and_node_local_scratch(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = _native(monkeypatch, {"sbatch": "123\n"})
-    provider = slurm.SlurmProvider(Path(DEFAULT_CONNECTION_ROOT))
+    provider = slurm.SlurmProvider(Path(Catalog().connection_root))
     native = {"submit", "account", "qos", "constraint"}
     offer = offer.replace(config={key: offer.config[key] for key in native})
     plan = provider.plan(offer, Request.parse("256", "480"))
@@ -230,7 +230,8 @@ def test_default_launch_assumes_a_shared_home_and_node_local_scratch(
     payload = shlex.split(script.splitlines()[-1])
     assert payload[payload.index("--connection-root") + 1] == root
     assert "--scratch-root" not in payload
-    assert slurm.attempt_directory(provider.root, identity, 0).is_relative_to(root)
+    # The submission's directory exists before sbatch runs, beside no other provider's.
+    assert slurm.allocation_directory(provider.root, identity.token).is_dir()
 
 
 def test_plan_resolves_configured_roots_but_preserves_virtualenv_python(
@@ -246,7 +247,8 @@ def test_plan_resolves_configured_roots_but_preserves_virtualenv_python(
     offer = offer.replace(
         config={**offer.config, "python": str(python), "scratch_root": str(alias / "scratch")},
     )
-    plan = slurm.SlurmProvider(alias / "private").plan(offer, Request.parse("256", "480"))
+    root = Path(Catalog(connection_root=str(alias / "private")).connection_root)
+    plan = slurm.SlurmProvider(root).plan(offer, Request.parse("256", "480"))
     assert plan.details["connection_root"] == str(actual / "private")
     assert plan.details["scratch_root"] == str(actual / "scratch")
     assert plan.details["python"] == str(python)
@@ -473,9 +475,9 @@ def test_named_launch_keeps_the_full_submission_token_in_native_metadata(
     assert launched == IDENTITY.replace(name=name)
     argv = (next(argv for argv, _ in calls if argv[0] == "sbatch")
             if submit == "sbatch" else popen.call_args.args[0])
-    assert f"--job-name=lc-v1-{name}" in argv
+    assert f"--job-name=lc-{name}" in argv
     assert f"--comment={COMMENT}" in argv
-    assert len(f"lc-v1-{name}") <= 69
+    assert len(f"lc-{name}") <= 66
 
 
 @pytest.mark.parametrize("name", ["", "Upper", "two words", "-leading", "trailing-", "a" * 64])
@@ -507,7 +509,7 @@ def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
     assert provider.inspect(identity).phase == "ended"
 
     accounting = next(argv for argv, _ in calls if argv[0] == "sacct")
-    assert f"--name=lc-v1-{name}" in accounting
+    assert f"--name=lc-{name}" in accounting
     assert f"--uid={target_uid}" in accounting
     assert "--format=JobIDRaw,JobName%128,UID,State,Submit,Comment%128" in accounting
     assert sum(argv[0] == "sbatch" for argv, _ in calls) == 1
@@ -521,7 +523,7 @@ def test_recovery_does_not_accept_a_different_name_with_the_same_nonce(
         "sbatch": "garbled", "squeue": _live(name="other"), "sacct": _history(name="other"),
     })
     plan = provider.plan(offer, Request.parse("256", "480")).replace(name="requested")
-    with pytest.raises(ComputeError, match=f"lc-v1-requested and comment token {TOKEN}") as raised:
+    with pytest.raises(ComputeError, match=f"lc-requested and comment token {TOKEN}") as raised:
         provider.launch(plan)
     assert raised.value.submission_token == TOKEN
 
@@ -537,7 +539,7 @@ def test_named_jobs_are_discovered_and_cancelled_from_native_names(
     assert snapshot.identity == IDENTITY.replace(name=name)
     assert snapshot.identity.name == name
     provider.terminate(snapshot.identity)
-    assert f"--name=lc-v1-{name}" in calls[-1][0]
+    assert f"--name=lc-{name}" in calls[-1][0]
     assert "--format=%i|%128j|%U|%T|%128k" in next(
         argv for argv, _ in calls if argv[0] == "squeue"
     )
@@ -625,7 +627,7 @@ def test_existing_native_name_cannot_be_hidden_from_duplicate_name_checks(
         "scontrol": _control(name="analysis", comment=comment),
     })
     compute = Compute.__new__(Compute)
-    compute.catalog = Catalog(version=1, offers=[offer])
+    compute.catalog = Catalog(offers=[offer])
     local = MagicMock()
     local.discover.return_value = []
     monkeypatch.setattr(compute, "provider", {"slurm": provider, "local": local}.__getitem__)
@@ -905,9 +907,11 @@ def test_connect_resolves_only_the_configured_root(
     actual.mkdir()
     alias = tmp_path / "home"
     alias.symlink_to(actual, target_is_directory=True)
-    provider = slurm.SlurmProvider(alias / "private")
+    provider = slurm.SlurmProvider(
+        Path(Catalog(connection_root=str(alias / "private")).connection_root)
+    )
     directory = _metadata(provider)
-    assert directory == actual / "private" / "slurm" / f"123-{TOKEN}" / "attempt-0"
+    assert directory == actual / "private" / "slurm" / TOKEN / "attempt-0"
     if managed_symlink:
         moved = directory.with_name("moved")
         directory.rename(moved)
@@ -944,10 +948,24 @@ def test_connect_refuses_wrong_or_untyped_identity_metadata(
 def test_a_running_job_without_its_scheduler_yet_says_to_wait(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    private_directory(slurm.allocation_directory(provider.root, TOKEN), create=True)
     _native(monkeypatch, {"scontrol": _control()})
     with pytest.raises(ComputeError, match="has not started yet") as raised:
         with provider.connect(IDENTITY):
             pytest.fail("a job without a scheduler must not connect")
+    assert raised.value.cluster_id == IDENTITY.encode()
+
+
+def test_a_job_launched_under_another_connection_root_says_so_rather_than_to_wait(
+    provider: slurm.SlurmProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _metadata(provider)
+    _native(monkeypatch, {"scontrol": _control()})
+    elsewhere = slurm.SlurmProvider(tmp_path / "another-root")
+    with pytest.raises(ComputeError, match="launched with another connection_root") as raised:
+        with elsewhere.connect(IDENTITY):
+            pytest.fail("another root's job must not connect")
+    assert "has not started" not in str(raised.value)
     assert raised.value.cluster_id == IDENTITY.encode()
 
 def test_status_can_observe_a_reachable_but_degraded_scheduler(
@@ -1077,7 +1095,7 @@ def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
     directory = private_directory(
-        slurm.attempt_directory(Path(args.connection_root), IDENTITY, 0), create=True,
+        slurm.allocation_directory(Path(args.connection_root), TOKEN) / "attempt-0", create=True,
     )
     write_private_json(directory / "identity.json", {
         "native_id": "123", "token": TOKEN, "uid": os.getuid(),
@@ -1166,7 +1184,10 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         # CPU-only submissions can omit the optional GPU count.
         if value is not None and key != "gpus":
             argv += ["--" + key.replace("_", "-"), str(value)]
-    directory = slurm.attempt_directory(Path(args.connection_root), IDENTITY, 0)
+    directory = (
+        slurm.allocation_directory(configured_directory(Path(args.connection_root)), TOKEN)
+        / "attempt-0"
+    )
     processes = []
     client = None
     environment = dict(os.environ)
