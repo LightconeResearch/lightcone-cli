@@ -1092,18 +1092,12 @@ raised anywhere inside astra's validation or resolution was reported as a
 bad target — a rerun misdiagnosing itself, at the one place nobody is
 watching.
 
-**Known violation, unfixed: a malformed `astra.yaml` tracebacks out of
-`lc status` and `lc materialize --check`** as a raw
-`yaml.scanner.ScannerError`. `plan._validate` is the gate that turns a
-bad spec into ASTRA's own errors, but it only catches what *validation*
-reports — a spec that does not parse raises inside
-`validate_analysis_schema` → `astra.helpers.load_yaml` before there is
-anything to validate. (`lc materialize` usually masks it by refusing a
-dirty tree first, which is not a fix.) The shape of the fix is a
-`yaml.YAMLError` catch in `_validate` naming the file and the line, the
-same way the validator's own errors are rendered. Pre-existing and
-independent of the one-output-one-file change; written down here because
-it contradicts the invariant directly above it.
+**Malformed YAML is a validation refusal.** `plan._validate` catches
+`yaml.YAMLError` from ASTRA's validators and includes the parser's own
+diagnostic in the existing `ProjectError`, preserving the source file,
+line and column where available. The same gate covers `astra.yaml` and
+universe files, so `lc status` and `lc materialize --check` report the
+fault cleanly. Normal `lc materialize` still refuses a dirty tree first.
 
 **`git_sha` in a manifest is the commit the run *started* at**, not the
 commit the run went on to create. It is the code that produced the output.
