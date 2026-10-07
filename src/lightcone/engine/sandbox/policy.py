@@ -24,12 +24,11 @@ which Landlock cannot do at all.
 
 from __future__ import annotations
 
-import functools
 import os
 import shutil
+import struct
 import tempfile
 from collections.abc import Iterable, Sequence
-from fnmatch import fnmatch
 from pathlib import Path
 
 from lightcone.engine.project import ProjectError
@@ -140,18 +139,8 @@ _WRITE_BASELINE = (
     "/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/pts", "/dev/ptmx",
 )  # fmt: skip
 
-#: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,
-#: so without these every dynamically linked binary — bash and python
-#: included — fails EACCES and the sandbox is unusable. Globbed rather
-#: than hardcoded: the path differs
-#: across glibc/musl and architectures.
-_ELF_LOADER_GLOBS = (
-    "/lib64/ld-linux-*.so.*",
-    "/lib/ld-linux*.so.*",
-    "/lib/ld-musl-*.so.*",
-    "/usr/lib/ld-linux*.so.*",
-    "/usr/lib64/ld-linux-*.so.*",
-)
+#: The ELF program header type naming a binary's loader.
+_PT_INTERP = 3
 
 #: Prefixes shared with the rest of the host. An interpreter installed
 #: into one of these does not bring its own tree with it, so only the
@@ -391,7 +380,7 @@ def _stdlib_root(python: Path | None) -> list[Path]:
 
 
 def _exec_set(env_dir: Path, python: Path | None) -> list[Path]:
-    """The two exec tiers: the environment, and the utility allowlist.
+    """The two exec tiers, the environment and the utility allowlist, plus their loaders.
 
     Grants are per *file* for the utilities, never per directory:
     ``/usr/bin`` holds ``bash`` and ``latex`` alike, so a directory grant
@@ -436,48 +425,57 @@ def _exec_set(env_dir: Path, python: Path | None) -> list[Path]:
         found = utility(name)
         if found is not None:
             paths.append(found)
-    paths.extend(elf_loaders())
+    loaders = [_elf_interpreter(path) for path in paths]
+    paths.extend(loader for loader in loaders if loader is not None)
     return paths
 
 
-@functools.cache
-def elf_loaders() -> tuple[Path, ...]:
-    """Find the dynamic loaders present on this host.
+def _elf_interpreter(binary: Path) -> Path | None:
+    """The realpath of the loader an ELF binary names, if it names one.
 
-    Landlock checks EXECUTE on the loader's open, so without these every
-    dynamically linked binary fails ``EACCES``. Scans each distinct
-    directory once rather than globbing five patterns — on a merged-
-    ``/usr`` system all five resolve to the same directory, and globbing
-    re-lists ~8000 entries per pattern, which measured as 95% of the
-    policy build.
+    Landlock checks EXECUTE on the loader's own open, so a granted binary
+    whose loader is not granted fails ``EACCES`` before it starts — bash
+    and python included. The loader is read from the binary rather than
+    looked for at the FHS paths, because a binary may name one anywhere
+    and the FHS path may hold a different file — a NixOS binary names a
+    glibc inside its own store path, while ``/lib64`` holds a stub or
+    nix-ld.
+
+    Only little-endian ELF64 is read: on Linux lc installs only for x86_64
+    and aarch64. A 32-bit tool on such a host gets no loader grant, so it
+    fails with a denial rather than running unsandboxed.
+
+    The path is read up to its first NUL, as the kernel reads it, and kept
+    only when it is absolute and resolves to a file. A malformed entry
+    must never grant a directory.
 
     Returns:
-        The realpath'd loaders. Cached: the answer cannot change while
-        the process runs.
+        ``None`` for anything else: a script, a static binary, a Mach-O,
+        a directory, a malformed loader entry.
     """
-    found: set[Path] = set()
-    for directory, patterns in _loader_patterns().items():
-        try:
-            entries = list(os.scandir(directory))
-        except OSError:
-            continue
-        for entry in entries:
-            # Cheap prefix reject before fnmatch: almost nothing in a
-            # library directory starts with `ld-`.
-            if entry.name.startswith("ld-") and any(
-                fnmatch(entry.name, pattern) for pattern in patterns
-            ):
-                found.add(Path(entry.path).resolve())
-    return tuple(sorted(found))
-
-
-def _loader_patterns() -> dict[str, set[str]]:
-    """The loader globs, grouped by the real directory they name."""
-    grouped: dict[str, set[str]] = {}
-    for pattern in _ELF_LOADER_GLOBS:
-        directory, _, name = pattern.rpartition("/")
-        grouped.setdefault(os.path.realpath(directory), set()).add(name)
-    return grouped
+    try:
+        with binary.open("rb") as f:
+            header = f.read(64)
+            if header[:6] != b"\x7fELF\x02\x01":
+                return None
+            (table_offset,) = struct.unpack_from("<Q", header, 32)
+            entry_size, count = struct.unpack_from("<HH", header, 54)
+            f.seek(table_offset)
+            table = f.read(entry_size * count)
+            for index in range(count):
+                kind, _, offset, _, _, size = struct.unpack_from(
+                    "<IIQQQQ", table, index * entry_size
+                )
+                if kind == _PT_INTERP:
+                    f.seek(offset)
+                    name = f.read(size).split(b"\0", 1)[0]
+                    if not name.startswith(b"/"):
+                        return None
+                    loader = Path(os.fsdecode(name)).resolve()
+                    return loader if loader.is_file() else None
+    except (OSError, struct.error):
+        return None
+    return None
 
 
 def _declared(paths: Iterable[Path]) -> tuple[Path, ...]:
