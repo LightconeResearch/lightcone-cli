@@ -59,7 +59,10 @@
             runCommand "lightcone-${version}"
               {
                 nativeBuildInputs = [ makeWrapper ];
-                passthru = { inherit uv git; };
+                passthru = {
+                  inherit uv git;
+                  dist = wheel.dist;
+                };
                 meta.mainProgram = "lc";
               }
               ''
@@ -69,7 +72,7 @@
                 for exe in lc astra git-annex git-annex-shell git-remote-annex git-remote-tor-annex; do
                   makeWrapper ${lib.getExe uv} $out/bin/$exe \
                     --prefix PATH : $out/bin \
-                    --add-flags "tool run --quiet --exclude-newer ${excludeNewer} --from $whl $exe"
+                    --add-flags "tool run --quiet --managed-python --exclude-newer ${excludeNewer} --from $whl $exe"
                 done
               ''
           ) { };
