@@ -36,8 +36,7 @@ spec:
 > (rationale, substrate tradeoffs, hermeticity enforcement, the v6
 > review). It stays in the sibling checkout and is **dropped when the
 > rebuild completes** (decision, 2026-08): the design records are not
-> imported into this repo's docs — the rewritten `docs/` carries the
-> current design, and this file carries the decisions.
+> imported into this repo — this file carries the decisions.
 
 The pre-rebuild codebase (Snakemake shim, authored Containerfiles,
 `container:` in `astra.yaml`, vendored dask executor plugin, WRROC export)
@@ -106,15 +105,6 @@ Each of these has been asked for in review at least once; none is optional.
 
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
-- **`docs/` is live again** (rewritten 2026-08, PRs #185–#188; the
-  freeze is over). The site is two tracks — user guide + developer
-  corner — and a change now lands with its docs: a new or changed verb
-  updates its `docs/cli/` page, an engine change updates its
-  `docs/api/` module page, and user-visible behavior updates the user
-  guide. The docs' own rules match this file's: document only what
-  exists, quote refusals from real runs, and verify every command
-  block by executing it. `check-docs.yml` reviews each merged PR for
-  drift.
 - **Port with intent.** Prior implementations (this repo's git history,
   and the `redesign_prototype` branch of the sibling `lightcone-cli`
   checkout) are references, not sources of truth. Neither is the spec by
@@ -181,7 +171,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── run.py              # what `lc run` is: the probe + the uv hop
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
-    │   ├── model.py        # the shared Pydantic models and the Provider protocol
+    │   ├── model.py        # the shared Pydantic models, the Provider protocol, PROVIDERS
     │   ├── catalog.py      # compute.yaml with local defaults and policy
     │   ├── runtime.py      # private files, TLS material, the scheduler config
     │   ├── local.py        # local provider: validated OS process identities
@@ -206,14 +196,6 @@ evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
 
-## Documentation versioning (mike)
-
-The whole docs site is versioned with [mike](https://github.com/squidfunk/mike) — specifically squidfunk's fork, which Zensical's versioning provider depends on. Each release deploys a full copy of the site to a subdirectory of the `gh-pages` branch (`/0.0.9/`, `/latest/`, etc.). Mike is enabled via `[project.extra.version] provider = "mike"` in `zensical.toml`; the version dropdown in the header is rendered natively.
-
-Release flow: `.github/workflows/docs-deploy.yml` runs on every published release — it runs `mike deploy --push --update-aliases X.Y.Z latest` (version taken from the tag) followed by `mike set-default --push latest`, so the bare site root always redirects to `/latest/`. A **pre-release deploys nothing**: `release: published` fires for pre-releases too (`released` is the type that skips them), and moving `latest` onto an rc would serve as default what `pip install` deliberately withholds, so the job carries `if: ${{ !github.event.release.prerelease }}`. PyPI needs no equivalent — "pre-release" there is derived from the PEP 440 version alone (an rc tag ⇒ hatch-vcs ⇒ `0.5.0rc1`), never from the GitHub checkbox, so `pypi-publish.yaml` stays unconditional. For an intermediate redeploy of an existing version, trigger the workflow manually from the Actions tab. For local/manual operations, run the same mike commands directly (`uv run mike list`, `uv run mike deploy ...`, `uv run mike delete ...` — the docs dependency group installs mike).
-
-Hosting: mike pushes to `gh-pages`. GitHub Pages (which serves docs.lightconeresearch.org) must be configured to "Deploy from a branch" / `gh-pages` in the repo's Pages settings, not via the Actions artifact deploy. Without this, `mike deploy` runs successfully but the site doesn't pick up versioned URLs in production.
-
 ## Development Commands
 
 ```bash
@@ -227,12 +209,9 @@ uv build                         # wheel + sdist (CI runs this only to publish)
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
-around them. The docs build with `uv sync --group docs && uv run
-zensical build`. The other workflows are `eval.yml` (the agentic eval,
+around them. The other workflows are `eval.yml` (the agentic eval,
 on dispatch or the `run-eval` PR label; re-trigger by re-adding the
-label), `check-docs.yml` (doc-drift review on merged PRs),
-`pypi-publish.yaml`, and `docs-deploy.yml` (deploys on release, so the
-site tracks the released CLI).
+label) and `pypi-publish.yaml`.
 
 ## Key Invariants (layer 1)
 
@@ -612,7 +591,7 @@ repository's — `uv tool install lightcone-cli` links the git-annex
 wheel's entry points beside `lc` (verified), so `ambient` git-annex is
 on `PATH` for free and the whole question disappears. `uvx` is fine for
 running lc and cannot support the researcher's bare `git add`; that is
-what the docs and the troubleshooting entry say, and reporting it from
+what the docs say, and reporting it from
 `lc init`/`lc status` is an open follow-up, not a promise made here.
 `require_git_annex` stays a `PATH` check, deliberately — it gates lc's
 *own* `git annex` subprocesses, which dispatch from lc's environment,
@@ -1704,8 +1683,8 @@ refusal point.
 the ambient venue ladder. `lc compute resources/launch/status/down` manages local
 and Slurm allocations through `engine.compute.Provider`. `run` and `materialize`
 require a cluster name or full ID as their first positional argument; neither creates compute.
-`materialize --check` remains cluster-free. Catalog offers expose resource shapes;
-connections supply stable native namespaces. Native jobs and validated local OS
+`materialize --check` remains cluster-free. Catalog offers expose resource shapes
+and name their provider; each provider reaches one native authority. Native jobs and validated local OS
 identities are the allocation authority; standard Dask supplies execution state.
 No Lightcone server, lifecycle database, custom Dask worker, or implicit allocation.
 
@@ -1717,13 +1696,21 @@ Resolve names through fresh discovery and refuse missing, ambiguous, or incomple
 observations. Check existing names before submission, but do not claim atomic global
 reservation across native backends. A name can be reused after termination; use the
 full ID to address an exact incarnation or bypass unrelated discovery failures.
-Slurm uses `JobName=lc-v1-<name>` and
-`Comment=lightcone:v1:kind=dask:token=<32hex>`. Verify the owner and both native
+Slurm uses `JobName=lc-<name>` and
+`Comment=lightcone:kind=dask:token=<32hex>`. Verify the owner and both native
 fields before attachment or cancellation. Missing live comments make discovery
-incomplete; missing historical comments leave identity unknown. Historical
+incomplete; missing historical comments leave identity unknown, so a user's own
+job named `lc-…` blocks name checks until it is renamed or ends — loudly,
+naming the job, never by adopting it. Historical
 comment retention requires Slurm's `AccountingStoreFlags` to include `job_comment`.
 Resolve the Slurm command user's UID through `id -u` on the same command runner,
 and use it for every native ownership check and filter.
+
+**Compute formats carry no version (2026-10).** Cluster IDs, native labels,
+allocation records, the catalog and compute JSON output are unversioned:
+allocations are ephemeral, so a format change strands only allocations that
+end on their own, and new ones are made under the new format. Manifests are
+different — committed, they keep `schema_version`.
 
 **Local compute needs no setup.** The built-in local offer provides detected usable
 logical CPUs and RAM, one node, fast startup, no walltime and a 30-minute idle
@@ -1732,22 +1719,27 @@ timeout. Loading the catalog writes no catalog and starts no cluster.
 the name to `local`. `--wait` returns when the accepted allocation is ready; timeout
 or startup failure retains its ID without resubmitting or terminating it.
 Configured remote offers precede the built-in local offer in selection order.
-Explicit local connections supply their own offers instead. `local.resources`
-and `local.time` override the built-in CPU/RAM budget and time limits and cannot
-accompany explicit local connections.
-`local.enabled: false` blocks local launch and execution while preserving inspection
-and termination. Recognized NERSC login nodes disable local compute automatically;
+A catalog's own local offers replace it, which is the one way to change the
+local CPU/RAM budget or time limits: there is no separate local settings block.
+`allow_local: false`, the catalog's only local key, blocks local launch and
+execution while preserving inspection and termination. Recognized NERSC login nodes disable local compute automatically;
 other sites can disable it in their catalogs. Native permissions remain the
 enforcement boundary.
-GPU offers require an explicit catalog and, for local launches, a nonempty
-`CUDA_VISIBLE_DEVICES` mask on Linux. No GPU auto-discovery. Local GPU capacity and
-model labels are configured, not hardware-verified; allocations do not reserve
-devices exclusively against other host programs or allocations.
+The built-in local offer takes its GPUs from the `CUDA_VISIBLE_DEVICES` mask on
+Linux, counted as CUDA reads it (up to the first entry that is neither an index nor
+a device UUID, so `-1` is none), labelled generic `GPU`; without a mask it is
+CPU-only. Remote GPU offers still require an explicit catalog, and an explicit
+local GPU offer plans only when the mask exposes at least its count. No GPU
+auto-discovery: the mask is the allocation, never probed against hardware, so local
+GPU capacity and model labels are configured, not hardware-verified; allocations do
+not reserve devices exclusively against other host programs or allocations. The
+local shortcut takes an offer whole, GPUs included; `--gpus 0` takes it without
+them, since local GPUs are never reserved.
 Missing explicit paths and invalid files are errors. Execution still requires an
 explicitly launched cluster's name or ID.
 
-**A Slurm connection needs no launch settings (2026-09).** Every `launch` key
-defaults, and the defaults assume a home directory shared by login and compute
+**A Slurm offer needs no launch settings (2026-09).** Every launch key in an
+offer's `config` defaults, and the defaults assume a home directory shared by login and compute
 nodes, which is also what SkyPilot's Slurm backend assumes. Workers run
 `sys.executable`, the driver's own installation, so client, scheduler and workers
 match exactly with no resolution and no network on compute nodes. Launching the
@@ -1755,7 +1747,7 @@ bootstrap through `uv run --with` at job time was considered and rejected: it
 re-resolves the Dask closure away from the driver's, and it needs package-index
 access from compute nodes. SkyPilot installs its runtime per node only because its
 client is off-cluster; lc submits from the login node, where its installation
-already is. `connection_root` defaults to `~/.lightcone/compute`
+already is. The catalog's top-level `connection_root` defaults to `~/.lightcone/compute`
 (`runtime.DEFAULT_CONNECTION_ROOT`, shared with local). An unset `scratch_root`
 is chosen by the bootstrap on each node (`tempfile.gettempdir()`), never frozen
 from the driver's temporary directory.
@@ -1774,13 +1766,13 @@ still require all expected workers. Serial per-output Git/annex commits remain
 the driver's responsibility; changing that persistence/provenance model is deferred.
 
 **Compute uses one shared Pydantic model family.** `Catalog` loads directly into
-the `Connection`, `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
+the `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
 providers; do not introduce parallel configuration classes. Memory units are explicit:
 `Resources.memory_gib` / `memory_bytes`, `Resources.from_bytes(...)`, and
 `Request.memory_bytes`. Duration strings expose derived seconds through `TimeLimits`.
-Connection names live only in the catalog's mapping keys. Use validated `replace`
+Use validated `replace`
 for updates and the explicit `as_dict` allowlists for public output. Preserve
-duplicate-key rejection in YAML; providers validate their own `launch` and `config`.
+duplicate-key rejection in YAML; providers validate their own offers' `config`.
 
 **Allocation syntax follows SkyPilot without depending on SkyPilot.** Compute
 CPU/memory requests support exact quantities or `+` minimums. Compute memory
@@ -1794,7 +1786,9 @@ Named Slurm offers must map their public label to the site's GRES type through
 evidence in observations.
 
 **Configured compute roots may be filesystem aliases.** Resolve connection and
-scratch roots before appending managed namespace, submission, or attempt paths.
+scratch roots before appending managed provider, submission, or attempt paths.
+The catalog resolves `connection_root` once, at load, so an unusable root is a
+catalog error naming the field; providers append to it and never resolve it again.
 Keep symlink rejection within those managed paths and enforce private directory
 and credential permissions. Do not resolve Python executables: virtualenv paths
 must retain their environment identity. Never change existing ancestor permissions.
@@ -1883,7 +1877,7 @@ instead of holding it for Dask's default hour.
 
 **Block local compute on recognized NERSC login nodes (2026-09).** A nonempty
 `NERSC_HOST` plus a short hostname matching `login[0-9]+` disables local launch
-and execution, including explicit local offers and `local.enabled: true`.
+and execution, including explicit local offers and `allow_local: true`.
 Interactive compute nodes remain eligible; inherited `SLURM_JOB_ID` never exempts
 a login node. Apply this policy at runtime without writing a configuration file.
 Keep inspection, termination, and Slurm execution available. Both execution
@@ -2127,6 +2121,33 @@ unlinks before writing; a new tampering test should too.
 
 ### Recorded decisions
 
+- **Offers name their provider; there are no connections (2026-10).** A
+  catalog used to be `connections` — a UUID `namespace`, a `provider`, a
+  `context`, `launch` settings — plus offers referencing one by name. lc runs
+  inside one Slurm environment, so `context` (`--clusters`) went, and with it
+  every provider reaches exactly one native authority: this host, or the
+  cluster the Slurm client reaches by default. That left the connection a pure
+  indirection. Offers carry `provider`; worker launch settings joined each
+  offer's `config` (`task_slots_per_node` was already validated per offer);
+  `connection_root`, the one setting read outside `plan`, is the catalog's one
+  top-level key; and the cluster ID encodes the provider instead of the
+  namespace, so a full ID routes with no catalog lookup. The UUID was worse
+  than redundant: Slurm discovery never filtered on it, so two catalogs with
+  different UUIDs gave one job two IDs. What a full ID does *not* free from
+  the catalog is connection material, which lives under the launching
+  catalog's `connection_root`, for Slurm as for local: native inspection and
+  `down` work from any catalog, connecting does not. Launch creates the
+  submission's directory (`<root>/slurm/<token>`, its log and each
+  attempt's TLS material) before submitting, so a running job without one
+  is refused as launched under another root rather than told to wait.
+  `PROVIDERS` lives beside the `Provider` protocol in `model.py`, and an
+  offer naming anything else is a catalog error — a typo once loaded and
+  then failed every discovery, blocking every launch. Discovery queries `Catalog.providers` —
+  those the offers name, plus local always — so removing a provider's last
+  offer hides its jobs from name lookup and the listing, never from a full
+  ID. Re-add a per-authority concept only with a venue that genuinely has two
+  authorities of one provider.
+
 - **Guard NERSC login nodes by default (2026-09).** This reverses the earlier
   no-login-node-guard decision: an unconfigured first launch must not allocate a
   whole shared login node. Detect the documented NERSC environment marker and
@@ -2166,9 +2187,11 @@ unlinks before writing; a new tampering test should too.
 - **Local compute accompanies remote catalogs (2026-09).** The built-in offer
   uses the host's usable CPU/RAM capacity and follows configured offers, replacing
   the previous one-CPU/1-GiB fallback that disappeared when a catalog existed.
-  `local.resources` sets a smaller budget; explicit local connections use their
-  own offers. Login-node catalogs disable local launch and execution through
-  `local.enabled: false`. Inspection and termination stay available. One local
+  A catalog's own local offers replace it, including to set a smaller budget
+  (a `local.resources`/`local.time` block once did that too, a second way to
+  say what an offer already says, so it went). Login-node catalogs disable
+  local launch and execution through `allow_local: false`. Inspection and
+  termination stay available. One local
   allocation per user per machine is enforced across catalogs and connection
   roots by scanning the process table for a live owner before launch
   (`local._running_owners`: a session leader of this user running
@@ -2510,7 +2533,7 @@ written to" — a path the schema never defined. What changed, and why:
 
 | To... | Read | Key patterns |
 |---|---|---|
-| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above and the docs pages the layer touches |
+| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above |
 | Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES`, and a renderer only if the file needs a substituted value or a merge policy |
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |

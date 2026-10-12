@@ -8,8 +8,8 @@ import re
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from decimal import Decimal, localcontext
+from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Self
-from uuid import UUID
 
 from pydantic import (
     AfterValidator,
@@ -86,9 +86,20 @@ def positive_int(value: object, name: str) -> int:
     return int(str(value))
 
 
+def config_text(value: object, name: str) -> str:
+    """Accept a nonempty offer setting without control characters."""
+    if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+        raise ComputeError(f"{name} must be a nonempty string without control characters")
+    return value
+
+
+#: A cluster name: portable across native providers and safe in commands.
+NAME_PATTERN = r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+
+
 def validate_name(value: str) -> None:
     """Keep cluster names portable across native providers and safe in commands."""
-    if not re.fullmatch(r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+    if not re.fullmatch(NAME_PATTERN, value):
         raise ComputeError(
             "cluster names must be 1–63 lowercase letters, digits, or hyphens; "
             "start with a letter and end with a letter or digit"
@@ -107,15 +118,6 @@ def _name(value: str) -> str:
     if not value.strip():
         raise ValueError("must be a nonempty string")
     return value
-
-
-def _namespace(value: str) -> str:
-    try:
-        if str(UUID(value)) == value:
-            return value
-    except ValueError:
-        pass
-    raise ValueError("must be a canonical UUID")
 
 
 def _count(value: object) -> int:
@@ -141,9 +143,15 @@ def _duration(value: str) -> str:
     return value
 
 
+def _provider(value: str) -> str:
+    if value not in PROVIDERS:
+        raise ValueError(f"must name a supported provider: {', '.join(PROVIDERS)}")
+    return value
+
+
 Text = Annotated[str, Field(pattern=r"^[^\x00-\x1f]*$")]
 Name = Annotated[Text, AfterValidator(_name)]
-Namespace = Annotated[str, AfterValidator(_namespace)]
+ProviderName = Annotated[str, AfterValidator(_provider)]
 PositiveInt = Annotated[int, Field(gt=0, strict=True)]
 Count = Annotated[int, BeforeValidator(_count, json_schema_input_type=int | str)]
 GiB = Annotated[
@@ -261,17 +269,17 @@ class Request(ComputeModel):
         cpus: str,
         memory: str,
         *,
-        gpus: str = "0",
+        gpus: str | None = None,
         num_nodes: int = 1,
         time: str | None = None,
         startup: str | None = None,
     ) -> Request:
-        """Parse the CLI's exact or minimum per-node quantities."""
+        """Parse the CLI's exact or minimum per-node quantities; no ``gpus`` is CPU only."""
         try:
             return cls.model_validate({
                 "cpus": positive_int(cpus.removesuffix("+"), "cpus"),
                 "memory_bytes": memory_bytes(memory.removesuffix("+")),
-                "accelerators": None if gpus == "0" else gpus,
+                "accelerators": None if gpus in (None, "0") else gpus,
                 "num_nodes": positive_int(num_nodes, "num_nodes"),
                 "min_cpus": cpus.endswith("+"),
                 "min_memory": memory.endswith("+"),
@@ -295,15 +303,6 @@ class Request(ComputeModel):
             "time_seconds": self.seconds,
             "startup": self.startup,
         }
-
-
-class Connection(ComputeModel):
-    """One native authority, independent of the offers that reference it."""
-
-    namespace: Namespace
-    provider: Name
-    context: Text = ""
-    launch: dict[str, Any] = Field(default_factory=dict)
 
 
 class TimeLimits(ComputeModel):
@@ -358,7 +357,7 @@ class Offer(ComputeModel):
     """A fixed resource shape with user-supplied limits and native bindings."""
 
     name: Name
-    connection: Name
+    provider: ProviderName
     resources: Resources
     max_nodes: Count
     time: TimeLimits
@@ -369,7 +368,7 @@ class Offer(ComputeModel):
 class Identity(ComputeModel):
     """A self-contained native identity; its encoding is not a credential."""
 
-    namespace: Namespace
+    provider: ProviderName
     native_id: Name
     token: Name
     host: Text = ""
@@ -384,7 +383,7 @@ class Identity(ComputeModel):
     def encode(self) -> str:
         """Encode identity without a local UUID-to-allocation database."""
         payload = json.dumps(
-            [1, self.namespace, self.native_id, self.token, self.host, self.name],
+            [self.provider, self.native_id, self.token, self.host, self.name],
             separators=(",", ":"),
         ).encode()
         return "clu_" + base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -397,18 +396,13 @@ class Identity(ComputeModel):
                 raise ValueError
             raw = value[4:]
             data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_"))
-            if not isinstance(data, list) or len(data) != 6 or type(data[0]) is not int:
+            if not isinstance(data, list) or len(data) != 5:
                 raise ValueError
-            version, namespace, native_id, token, host, name = data
-            if version != 1 or not all(isinstance(item, str) for item in data[1:]):
-                raise ValueError
-            if str(UUID(namespace)) != namespace or not native_id or not token:
-                raise ValueError
-            if any(ord(char) < 32 for item in data[1:] for char in item):
-                raise ValueError
+            provider, native_id, token, host, name = data
             validate_name(name)
+            # The fields' own strict types refuse the rest; ValidationError is a ValueError.
             identity = cls(
-                namespace=namespace, native_id=native_id, token=token, host=host, name=name
+                provider=provider, native_id=native_id, token=token, host=host, name=name
             )
             if identity.encode() != value:
                 raise ValueError
@@ -422,7 +416,6 @@ class Identity(ComputeModel):
 class LaunchPlan(ComputeModel):
     """Resolved immutable sizing and nonsecret provider launch parameters."""
 
-    connection: Connection
     offer: Offer
     request: Request
     seconds: PositiveInt | None
@@ -444,11 +437,10 @@ class LaunchPlan(ComputeModel):
     def as_dict(self) -> dict[str, Any]:
         """Allowlist the plan's public contract; details must contain no credentials."""
         return {
-            "schema_version": 1,
             "name": self.name,
             "request": self.request.as_dict(),
             "offer": self.offer.name,
-            "connection": self.offer.connection,
+            "provider": self.offer.provider,
             "num_nodes": self.num_nodes,
             "resources": self.resources.as_dict(),
             "time_seconds": self.seconds,
@@ -478,7 +470,6 @@ class Snapshot(ComputeModel):
     def as_dict(self) -> dict[str, Any]:
         """Keep endpoint credentials and native response objects private."""
         return {
-            "schema_version": 1,
             "id": self.identity.encode(),
             "name": self.identity.name,
             "phase": self.phase,
@@ -506,4 +497,21 @@ class Provider(Protocol):
     def terminate(self, identity: Identity) -> None: ...
 
 
-ProviderFactory = Callable[[Connection], Provider]
+#: Builds a provider from the catalog's resolved connection root.
+ProviderFactory = Callable[[Path], Provider]
+
+
+def _local(root: Path) -> Provider:
+    from .local import LocalProvider
+
+    return LocalProvider(root)
+
+
+def _slurm(root: Path) -> Provider:
+    from .slurm import SlurmProvider
+
+    return SlurmProvider(root)
+
+
+# The lifecycle seam is intentionally small: execution never dispatches on a provider.
+PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}

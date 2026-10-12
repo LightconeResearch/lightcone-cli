@@ -43,13 +43,16 @@ def configured_directory(path: Path) -> Path:
     Raises:
         ComputeError: If the root is relative, contains ``..``, or cannot resolve.
     """
-    path = path.expanduser()
-    if not path.is_absolute() or ".." in path.parts:
-        raise ComputeError(f"compute root must be an absolute path without '..': {path}")
     try:
-        return path.resolve()
-    except (OSError, RuntimeError) as exc:
+        expanded = path.expanduser()
+    except RuntimeError as exc:
         raise ComputeError(f"cannot resolve compute root {path}: {exc}") from exc
+    if not expanded.is_absolute() or ".." in expanded.parts:
+        raise ComputeError(f"compute root must be an absolute path without '..': {expanded}")
+    try:
+        return expanded.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ComputeError(f"cannot resolve compute root {expanded}: {exc}") from exc
 
 
 def private_directory(path: Path, *, create: bool = False) -> Path:

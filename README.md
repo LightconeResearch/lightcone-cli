@@ -21,7 +21,7 @@ uv tool install lightcone-cli
 ```
 
 Create an ASTRA project and launch the built-in local compute offer; no compute
-configuration is needed. [Configure resource offers](docs/user/cluster.md) for
+configuration is needed. [Configure resource offers](https://docs.lightconeresearch.org) for
 larger local allocations or Slurm:
 
 ```bash
@@ -40,8 +40,6 @@ lc compute down "$CLUSTER"
 
 ASTRA specs are plain, structured YAML — they work well hand-written or
 drafted with any AI coding assistant.
-
-→ [Full getting-started guide](https://docs.lightconeresearch.org/user/getting-started/)
 
 ## Capabilities
 

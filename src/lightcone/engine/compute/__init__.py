@@ -6,39 +6,23 @@ import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from .catalog import Catalog, local_disabled_reason
 from .model import (
+    PROVIDERS,
     ComputeError,
-    Connection,
     Identity,
     LaunchPlan,
     Offer,
     Provider,
-    ProviderFactory,
     Request,
     Snapshot,
     UnavailableOfferError,
     validate_name,
 )
-
-
-def _local(connection: Connection) -> Provider:
-    from .local import LocalProvider
-
-    return LocalProvider(connection)
-
-
-def _slurm(connection: Connection) -> Provider:
-    from .slurm import SlurmProvider
-
-    return SlurmProvider(connection)
-
-
-# The lifecycle seam is intentionally small: execution never dispatches on a provider.
-PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}
 
 #: What a driver leaving early must say: closing a client cannot prove that a
 #: remote subprocess has stopped.
@@ -61,13 +45,13 @@ class Compute:
 
     def __init__(self) -> None:
         self.catalog = Catalog.load()
+        self._providers: dict[str, Provider] = {}
 
-    def provider(self, connection: Connection) -> Provider:
-        """Construct an adapter for an explicitly configured native authority."""
-        factory = PROVIDERS.get(connection.provider)
-        if factory is None:
-            raise ComputeError(f"unsupported compute provider: {connection.provider}")
-        return factory(connection)
+    def provider(self, name: str) -> Provider:
+        """Construct the adapter for one native authority, once per command."""
+        if name not in self._providers:
+            self._providers[name] = PROVIDERS[name](Path(self.catalog.connection_root))
+        return self._providers[name]
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
         """Route an immutable ID, or resolve one unambiguous name from native state."""
@@ -97,12 +81,11 @@ class Compute:
                     f"cluster name {cluster_id!r} is ambiguous; use a full cluster ID: {ids}"
                 )
             identity = matches.pop()
-        return self.provider(self.catalog.connection_for(identity.namespace)), identity
+        return self.provider(identity.provider), identity
 
     def resources(self) -> dict[str, Any]:
         """Describe configured policy, without inventing live free capacity."""
         return {
-            "schema_version": 1,
             "units": {
                 "cpus": "logical CPUs per node", "memory": "GiB per node",
                 "accelerators": "type and count per node",
@@ -144,7 +127,6 @@ class Compute:
         self, offer: Offer, request: Request, name: str | None,
     ) -> LaunchPlan | None:
         """Match one shape and validate its provider without allocating anything."""
-        connection = self.catalog.connections[offer.connection]
         if request.num_nodes > offer.max_nodes:
             return None
         if request.startup is not None and request.startup != offer.startup.class_:
@@ -168,26 +150,33 @@ class Compute:
             matches = request.accelerators.matches(offer.resources.accelerators)
         if not matches:
             return None
-        return self.provider(connection).plan(offer, request).replace(name=name)
+        return self.provider(offer.provider).plan(offer, request).replace(name=name)
 
     def plan_local(
         self, *, name: str | None = None, time: str | None = None,
-        gpus: str = "0", num_nodes: int = 1, startup: str | None = None,
+        gpus: str | None = None, num_nodes: int = 1, startup: str | None = None,
     ) -> LaunchPlan:
-        """Plan the first usable local offer, without considering remote backends."""
-        if reason := local_disabled_reason(self.catalog.local.enabled):
+        """Plan the first usable local offer, without considering remote backends.
+
+        Without ``gpus``, each offer is taken whole, GPUs included; ``"0"`` takes
+        it without them, since a local allocation never reserves its GPUs.
+        """
+        if reason := local_disabled_reason(self.catalog.allow_local):
             raise ComputeError(reason)
         name = "local" if name is None else name
         validate_name(name)
         unavailable: list[str] = []
         for offer in self.catalog.offers:
-            connection = self.catalog.connections[offer.connection]
-            if connection.provider != "local":
+            if offer.provider != "local":
                 continue
+            if gpus == "0":
+                offer = offer.replace(resources=offer.resources.replace(accelerators=None))
             request = Request.parse(
                 str(offer.resources.cpus), f"{offer.resources.memory_bytes}B",
                 gpus=gpus, num_nodes=num_nodes, time=time, startup=startup,
             )
+            if gpus is None:
+                request = request.replace(accelerators=offer.resources.accelerators)
             try:
                 plan = self._plan_offer(offer, request, name)
                 if plan is not None:
@@ -202,8 +191,8 @@ class Compute:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Choose an unused name from native observations, then submit exactly once."""
-        if plan.connection.provider == "local" and (
-            reason := local_disabled_reason(self.catalog.local.enabled)
+        if plan.offer.provider == "local" and (
+            reason := local_disabled_reason(self.catalog.allow_local)
         ):
             raise ComputeError(reason)
         if plan.name is not None:
@@ -225,15 +214,15 @@ class Compute:
                 raise ComputeError("could not generate an unused cluster name; no allocation made")
         elif name in names:
             raise ComputeError(f"cluster name {name!r} is already in use; choose another name")
-        return self.provider(plan.connection).launch(plan.replace(name=name))
+        return self.provider(plan.offer.provider).launch(plan.replace(name=name))
 
     def discover(self) -> tuple[list[Snapshot], dict[str, str]]:
         """Query each native authority once, retaining partial discovery failures."""
         snapshots: list[Snapshot] = []
         errors: dict[str, str] = {}
-        for name, connection in self.catalog.connections.items():
+        for name in self.catalog.providers:
             try:
-                snapshots.extend(self.provider(connection).discover())
+                snapshots.extend(self.provider(name).discover())
             except ComputeError as exc:
                 errors[name] = str(exc)
         return snapshots, errors
@@ -247,18 +236,11 @@ class Compute:
         # Native schedulers ask users not to poll in a tight loop: back off
         # from one second, so a long queue wait costs a few dozen queries.
         delay = 1.0
+        unreachable = ""
         while True:
             snapshot = provider.inspect(identity)
-            if snapshot.phase == "active":
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    if not wait:
-                        return snapshot
-                    raise ComputeError(
-                        f"cluster did not become ready within {timeout:g}s; "
-                        "allocation is unchanged",
-                        cluster_id=identity.encode(),
-                    )
+            remaining = deadline - time.monotonic()
+            if snapshot.phase == "active" and remaining > 0:
                 try:
                     with provider.connect(identity, timeout=min(10, remaining)) as client:
                         info = client.scheduler_info()
@@ -267,16 +249,18 @@ class Compute:
                     snapshot.ready = (
                         snapshot.num_nodes is not None and snapshot.workers >= snapshot.num_nodes
                     )
+                    unreachable = ""
                 except ComputeError as exc:
                     snapshot.observation = "unreachable"
                     snapshot.ready = False
-                    snapshot.reason = str(exc)
+                    snapshot.reason = unreachable = str(exc)
+                remaining = deadline - time.monotonic()
             if not wait or snapshot.ready or snapshot.phase in ("ended", "stopping"):
                 return snapshot
-            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ComputeError(
-                    f"cluster did not become ready within {timeout:g}s; allocation is unchanged",
+                    f"cluster did not become ready within {timeout:g}s; allocation is unchanged"
+                    + (f"; last connection attempt: {unreachable}" if unreachable else ""),
                     cluster_id=identity.encode(),
                 )
             time.sleep(min(delay, remaining))
@@ -296,9 +280,8 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
         raise ComputeError("timeout must be finite and positive")
     service = Compute()
     provider, identity = service.resolve(cluster_id)
-    connection = service.catalog.connection_for(identity.namespace)
-    if connection.provider == "local" and (
-        reason := local_disabled_reason(service.catalog.local.enabled)
+    if identity.provider == "local" and (
+        reason := local_disabled_reason(service.catalog.allow_local)
     ):
         raise ComputeError(reason, cluster_id=identity.encode())
     snapshot = provider.inspect(identity)

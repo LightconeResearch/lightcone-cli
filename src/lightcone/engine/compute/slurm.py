@@ -16,19 +16,19 @@ from pathlib import Path
 from typing import Any
 
 from lightcone.engine.compute.model import (
+    NAME_PATTERN,
     ComputeError,
-    Connection,
     Identity,
     LaunchPlan,
     Offer,
     Request,
     Resources,
     Snapshot,
+    config_text,
     positive_int,
     validate_name,
 )
 from lightcone.engine.compute.runtime import (
-    DEFAULT_CONNECTION_ROOT,
     NOT_STARTED,
     configured_directory,
     open_client,
@@ -36,10 +36,10 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
 )
 
-_PREFIX = "lc-v1-"
-_COMMENT_PREFIX = "lightcone:v1:kind=dask:token="
+_PREFIX = "lc-"
+_COMMENT_PREFIX = "lightcone:kind=dask:token="
 _TOKEN = re.compile(r"[0-9a-f]{32}")
-_JOB_NAME = re.compile(r"lc-v1-([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)")
+_JOB_NAME = re.compile(f"{re.escape(_PREFIX)}({NAME_PATTERN})")
 _QUERY_TIMEOUT = 10.0
 _SUBMIT_TIMEOUT = 60.0
 _ACCEPT_TIMEOUT = 10.0
@@ -70,17 +70,19 @@ def native_environment() -> dict[str, str]:
     }
 
 
-def attempt_directory(connection: Connection, identity: Identity, restarts: int) -> Path:
-    """Locate connection material for one native allocation incarnation and attempt."""
-    root = configured_directory(
-        Path(str(connection.launch.get("connection_root", DEFAULT_CONNECTION_ROOT)))
-    )
-    return (
-        root
-        / connection.namespace
-        / f"{identity.native_id}-{identity.token}"
-        / f"attempt-{restarts}"
-    )
+def allocation_directory(root: Path, token: str) -> Path:
+    """Locate one submission's private directory under a resolved connection root.
+
+    It holds the submission's log and each attempt's connection material. Launch
+    creates it before submitting, so a running job without one was launched
+    under another connection root.
+    """
+    return root / "slurm" / token
+
+
+def attempt_directory(root: Path, token: str, restarts: int) -> Path:
+    """Locate one native attempt's connection material; the bootstrap writes, connect reads."""
+    return allocation_directory(root, token) / f"attempt-{restarts}"
 
 
 def _phase(state: str) -> str:
@@ -92,12 +94,6 @@ def _phase(state: str) -> str:
     return {"RUNNING": "active", "SUSPENDED": "pending", "COMPLETING": "stopping"}.get(
         state, "unknown"
     )
-
-
-def _value(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
-        raise ComputeError(f"Slurm {name} must be a nonempty string without control characters")
-    return value
 
 
 def _native_gpus(row: Mapping[str, str]) -> tuple[str, int] | None:
@@ -141,10 +137,11 @@ def _native_gpus(row: Mapping[str, str]) -> tuple[str, int] | None:
 
 
 class SlurmProvider:
-    """Submit, observe, and cancel allocations using the selected Slurm authority."""
+    """Submit, observe, and cancel allocations in the Slurm environment lc runs in."""
 
-    def __init__(self, connection: Connection) -> None:
-        self.connection = connection
+    def __init__(self, root: Path) -> None:
+        # The catalog resolves the connection root; allocations live under slurm/.
+        self.root = root
 
     @cached_property
     def _uid(self) -> int:
@@ -153,14 +150,6 @@ class SlurmProvider:
         if not re.fullmatch(r"[0-9]+", value):
             raise ComputeError("id -u did not return a numeric Slurm command user ID")
         return int(value)
-
-    def _scope(self) -> list[str]:
-        context = self.connection.context
-        if not context:
-            return []
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context) or context == "all":
-            raise ComputeError("Slurm context must name one native cluster")
-        return [f"--clusters={context}"]
 
     def _command(
         self, argv: list[str], *, payload: str | None = None, timeout: float = _QUERY_TIMEOUT
@@ -185,38 +174,6 @@ class SlurmProvider:
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Freeze one fixed, homogeneous allocation and its standard Dask launcher."""
-        launch = self.connection.launch
-        allowed = {
-            "python",
-            "connection_root",
-            "scratch_root",
-            "task_slots_per_node",
-            "interface",
-            "cwd",
-        }
-        if extra := launch.keys() - allowed:
-            raise ComputeError(f"unknown Slurm launch settings: {', '.join(sorted(extra))}")
-        # The defaults assume a home directory shared by login and compute
-        # nodes: workers run the driver's own installation, so they match it
-        # exactly, and rendezvous under its home. Scratch left unset is chosen
-        # by each node, whose temporary directory may not be the driver's.
-        defaults = {
-            "python": sys.executable,
-            "connection_root": DEFAULT_CONNECTION_ROOT,
-            "cwd": str(Path.home()),
-        }
-        paths: dict[str, str | None] = {}
-        for name in ("python", "connection_root", "scratch_root", "cwd"):
-            if name not in launch and name not in defaults:
-                paths[name] = None
-                continue
-            value = launch.get(name, defaults.get(name))
-            path = Path(_value(value, name))
-            if name in {"connection_root", "scratch_root"}:
-                path = configured_directory(path)
-            elif not path.is_absolute() or ".." in path.parts:
-                raise ComputeError(f"Slurm {name} must be an absolute path without '..'")
-            paths[name] = str(path)
         config = offer.config
         if extra := config.keys() - {
             "submit",
@@ -226,8 +183,26 @@ class SlurmProvider:
             "constraint",
             "reservation",
             "gpu_type",
+            "python",
+            "scratch_root",
+            "task_slots_per_node",
+            "interface",
+            "cwd",
         }:
             raise ComputeError(f"unknown Slurm offer settings: {', '.join(sorted(extra))}")
+        # The defaults assume a home directory shared by login and compute
+        # nodes: workers run the driver's own installation, so they match it
+        # exactly, and rendezvous under its home. Scratch left unset is chosen
+        # by each node, whose temporary directory may not be the driver's.
+        paths: dict[str, str | None] = {"connection_root": str(self.root), "scratch_root": None}
+        if "scratch_root" in config:
+            scratch = config_text(config["scratch_root"], "Slurm scratch_root")
+            paths["scratch_root"] = str(configured_directory(Path(scratch)))
+        for name, default in (("python", sys.executable), ("cwd", str(Path.home()))):
+            path = Path(config_text(config.get(name, default), f"Slurm {name}"))
+            if not path.is_absolute() or ".." in path.parts:
+                raise ComputeError(f"Slurm {name} must be an absolute path without '..'")
+            paths[name] = str(path)
         submit = config.get("submit", "sbatch")
         if submit not in {"sbatch", "salloc"}:
             raise ComputeError("Slurm submit must be sbatch or salloc")
@@ -249,15 +224,15 @@ class SlurmProvider:
         if memory % _MIB:
             raise ComputeError("Slurm offer memory must be an exact whole number of MiB")
         slots = positive_int(
-            launch.get("task_slots_per_node", max(1, cpus - 1)), "task_slots_per_node"
+            config.get("task_slots_per_node", max(1, cpus - 1)), "task_slots_per_node"
         )
         if slots > cpus:
             raise ComputeError(
                 "Slurm task_slots_per_node cannot exceed the allocation CPU envelope"
             )
-        interface = launch.get("interface")
+        interface = config.get("interface")
         if interface is not None:
-            interface = _value(interface, "interface")
+            interface = config_text(interface, "Slurm interface")
         seconds = request.seconds or offer.time.default_seconds
         if seconds is None or offer.time.idle is not None:
             raise ComputeError(
@@ -266,12 +241,12 @@ class SlurmProvider:
             )
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds_part = divmod(remainder, 60)
-        args = self._scope()
+        args: list[str] = []
         for name in ("account", "qos", "constraint", "reservation"):
             if name in config:
-                args.append(f"--{name}={_value(config[name], name)}")
+                args.append(f"--{name}={config_text(config[name], f'Slurm {name}')}")
         if "partition" in config:
-            partition = _value(config["partition"], "partition")
+            partition = config_text(config["partition"], "Slurm partition")
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", partition):
                 raise ComputeError("Slurm partition must name one native partition")
             args.append(f"--partition={partition}")
@@ -286,7 +261,6 @@ class SlurmProvider:
         if offer.resources.gpus:
             args.append(f"--gres={gres}")
         return LaunchPlan(
-            connection=self.connection,
             offer=offer,
             request=request,
             seconds=seconds,
@@ -319,10 +293,8 @@ class SlurmProvider:
             "lightcone.engine.compute.slurm_bootstrap",
             "--submission",
             token,
-            "--namespace",
-            self.connection.namespace,
             "--connection-root",
-            details["connection_root"],
+            str(self.root),
             "--num-nodes",
             str(plan.num_nodes),
             "--cpus",
@@ -342,16 +314,12 @@ class SlurmProvider:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Submit once; preserve the nonce when native acceptance is uncertain."""
-        if plan.connection != self.connection:
-            raise ComputeError("Slurm launch plan belongs to another connection")
         token = uuid.uuid4().hex
         name = plan.name if plan.name is not None else f"lc-{token[:12]}"
         validate_name(name)
         job_name = f"{_PREFIX}{name}"
         details = plan.details
-        logs = private_directory(
-            Path(details["connection_root"]) / "submissions" / token, create=True
-        )
+        logs = private_directory(allocation_directory(self.root, token), create=True)
         common = [
             *details["native_args"],
             f"--job-name={job_name}",
@@ -363,15 +331,12 @@ class SlurmProvider:
             script = "#!/bin/bash\nset -euo pipefail\numask 077\nexec " + shlex.join(payload) + "\n"
             try:
                 result = self._command(argv, payload=script, timeout=_SUBMIT_TIMEOUT)
-                match = re.fullmatch(r"([0-9]+)(?:;([^;\s]+))?", result.stdout.strip())
-                if match and (
-                    not self.connection.context or match[2] in (None, self.connection.context)
-                ):
+                native_id = result.stdout.strip()
+                if re.fullmatch(r"[0-9]+", native_id):
                     return Identity(
-                        namespace=self.connection.namespace, native_id=match[1], token=token,
-                        name=name,
+                        provider="slurm", native_id=native_id, token=token, name=name,
                     )
-                reason = "sbatch did not return an unambiguous allocation ID"
+                reason = f"sbatch printed {native_id!r}, not one numeric allocation ID"
             except ComputeError as exc:
                 reason = str(exc)
             return self._recover_or_raise(token, name, reason)
@@ -427,14 +392,13 @@ class SlurmProvider:
     def _live(self, native_id: str | None = None) -> list[dict[str, str]]:
         argv = [
             "squeue",
-            *self._scope(),
             "--noheader",
             f"--user={self._uid}",
             "--format=%i|%128j|%U|%T|%128k",
         ]
         rows = []
         for line in self._command(argv).stdout.splitlines():
-            if not line.strip() or line.startswith("CLUSTER:"):
+            if not line.strip():
                 continue
             fields = [value.strip() for value in line.split("|", 4)]
             if len(fields) != 5:
@@ -455,7 +419,6 @@ class SlurmProvider:
     ) -> list[dict[str, str]]:
         argv = [
             "sacct",
-            *self._scope(),
             "--noheader",
             "--parsable2",
             "--allocations",
@@ -491,10 +454,7 @@ class SlurmProvider:
         rows = self._live()
         job_name = f"{_PREFIX}{name}"
         matches = {
-            Identity(
-                namespace=self.connection.namespace, native_id=row["JobId"], token=token,
-                name=name,
-            )
+            Identity(provider="slurm", native_id=row["JobId"], token=token, name=name)
             for row in rows
             if row["JobName"] == job_name and row["UID"] == str(self._uid)
             and row["Comment"] == _COMMENT_PREFIX + token
@@ -503,10 +463,7 @@ class SlurmProvider:
             return list(matches)
         return list(
             {
-                Identity(
-                    namespace=self.connection.namespace, native_id=row["JobId"], token=token,
-                    name=name,
-                )
+                Identity(provider="slurm", native_id=row["JobId"], token=token, name=name)
                 for row in self._history(job_name=job_name)
                 if row["JobName"] == job_name and row["UID"] == str(self._uid)
                 and row["Comment"] == _COMMENT_PREFIX + token
@@ -515,14 +472,14 @@ class SlurmProvider:
 
     def _validate_identity(self, identity: Identity) -> None:
         if (
-            identity.namespace != self.connection.namespace
+            identity.provider != "slurm"
             or identity.host
             or not re.fullmatch(r"[0-9]+", identity.native_id)
             or not _TOKEN.fullmatch(identity.token)
             or not _JOB_NAME.fullmatch(_PREFIX + identity.name)
         ):
             raise ComputeError(
-                "cluster ID does not identify an allocation on this Slurm connection"
+                "cluster ID does not identify a Slurm allocation"
             )
 
     def _validate_row(self, identity: Identity, row: Mapping[str, str]) -> None:
@@ -538,9 +495,7 @@ class SlurmProvider:
             )
 
     def _control(self, identity: Identity) -> dict[str, str]:
-        result = self._command(
-            ["scontrol", *self._scope(), "show", "job", identity.native_id]
-        )
+        result = self._command(["scontrol", "show", "job", identity.native_id])
         rows = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         if sum(row.startswith("JobId=") for row in rows) != 1:
             raise ComputeError("Slurm did not return exactly one allocation record")
@@ -599,10 +554,7 @@ class SlurmProvider:
                     f"Slurm job {row['JobId']} ({row['JobName']}) has a missing or malformed "
                     "submission token in Comment; its allocation identity is unknown"
                 )
-            identity = Identity(
-                namespace=self.connection.namespace, native_id=row["JobId"], token=token,
-                name=name,
-            )
+            identity = Identity(provider="slurm", native_id=row["JobId"], token=token, name=name)
             self._validate_row(identity, row)
             snapshots.append(self._snapshot(identity, self._control(identity)))
         return snapshots
@@ -658,12 +610,17 @@ class SlurmProvider:
         if not restart_text.isdigit():
             raise ComputeError("Slurm did not identify the current allocation attempt")
         restarts = int(restart_text)
-        directory = attempt_directory(self.connection, identity, restarts)
+        directory = attempt_directory(self.root, identity.token, restarts)
+        if not directory.parent.is_dir():
+            raise ComputeError(
+                f"this allocation has no directory under connection_root {self.root}: it was "
+                "launched with another connection_root, or its directory was removed",
+                cluster_id=identity.encode(),
+            )
         if not (directory / "identity.json").exists():
             raise ComputeError(NOT_STARTED, cluster_id=identity.encode())
         metadata = read_private_json(directory / "identity.json")
         expected = {
-            "namespace": identity.namespace,
             "native_id": identity.native_id,
             "token": identity.token,
             "uid": self._uid,
@@ -712,7 +669,6 @@ class SlurmProvider:
             [
                 "scancel",
                 "--ctld",
-                *self._scope(),
                 f"--user={self._uid}",
                 f"--name={_PREFIX}{identity.name}",
                 identity.native_id,

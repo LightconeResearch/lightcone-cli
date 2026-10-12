@@ -12,9 +12,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from uuid import UUID
 
-from lightcone.engine.compute.model import ComputeError, Connection, Identity
+from lightcone.engine.compute.model import ComputeError, Identity
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
     configured_directory,
@@ -33,8 +32,6 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
     """Reject missing or conflicting native placement before creating any endpoint."""
     if not re.fullmatch(r"[0-9a-f]{32}", args.submission):
         raise ComputeError("invalid submission token")
-    if str(UUID(args.namespace)) != args.namespace:
-        raise ComputeError("invalid connection namespace")
     native_id = os.environ.get("SLURM_JOB_ID", "")
     if not re.fullmatch(r"[0-9]+", native_id):
         raise ComputeError("Dask bootstrap requires a native Slurm allocation")
@@ -72,7 +69,7 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
     if not restarts.isdigit():
         raise ComputeError("invalid native Slurm restart count")
     return (
-        Identity(namespace=args.namespace, native_id=native_id, token=args.submission),
+        Identity(provider="slurm", native_id=native_id, token=args.submission),
         int(restarts),
         values["SLURM_PROCID"],
     )
@@ -88,17 +85,14 @@ async def run(args: argparse.Namespace) -> None:
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    connection = Connection(
-        namespace=identity.namespace, provider="slurm",
-        launch={"connection_root": args.connection_root},
+    directory = attempt_directory(
+        configured_directory(Path(args.connection_root)), identity.token, restarts,
     )
-    directory = attempt_directory(connection, identity, restarts)
     scratch = configured_directory(Path(args.scratch_root or tempfile.gettempdir()))
     scratch = private_directory(
         scratch / identity.token / f"attempt-{restarts}" / str(rank), create=True
     )
     identity_values: dict[str, Any] = {
-        "namespace": identity.namespace,
         "native_id": identity.native_id,
         "token": identity.token,
         "uid": os.getuid(),
@@ -172,7 +166,7 @@ async def run(args: argparse.Namespace) -> None:
 def main() -> None:
     """Read frozen launcher arguments; a failure becomes a nonzero native task exit."""
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("submission", "namespace", "connection-root"):
+    for name in ("submission", "connection-root"):
         parser.add_argument(f"--{name}", required=True)
     for name in ("num-nodes", "cpus", "memory-bytes", "task-slots"):
         parser.add_argument(f"--{name}", required=True, type=int)

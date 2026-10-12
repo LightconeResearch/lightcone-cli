@@ -21,10 +21,9 @@ from uuid import UUID, uuid4
 
 import psutil
 
-from lightcone.engine.compute.catalog import local_disabled_reason
+from lightcone.engine.compute.catalog import cuda_device_count, local_disabled_reason
 from lightcone.engine.compute.model import (
     ComputeError,
-    Connection,
     Identity,
     LaunchPlan,
     Offer,
@@ -32,11 +31,11 @@ from lightcone.engine.compute.model import (
     Resources,
     Snapshot,
     UnavailableOfferError,
+    config_text,
     positive_int,
     validate_name,
 )
 from lightcone.engine.compute.runtime import (
-    DEFAULT_CONNECTION_ROOT,
     NOT_STARTED,
     configured_directory,
     open_client,
@@ -134,9 +133,8 @@ def _refuse_a_second_allocation() -> None:
         else "env -u LC_COMPUTE_CONFIG"
     ) + " lc compute down " + shlex.quote(cluster_id)
     raise ComputeError(
-        f"{message}; allocation {cluster_id} uses local namespace {directory.parent.name!r} "
-        f"with connection_root {str(directory.parent.parent)!r} "
-        f"(locator {str(directory.parent)!r}); using that launch catalog, stop it with "
+        f"{message}; allocation {cluster_id} uses connection_root "
+        f"{str(directory.parent.parent)!r}; using that launch catalog, stop it with "
         f"`{command}`"
     )
 
@@ -160,12 +158,10 @@ def _boot_identity() -> str:
 class LocalProvider:
     """Allocate one cooperative Dask execution node on the current host."""
 
-    def __init__(self, connection: Connection) -> None:
-        self.connection = connection
-        root = connection.launch.get("connection_root", DEFAULT_CONNECTION_ROOT)
-        if not isinstance(root, str) or not root or any(ord(c) < 32 for c in root):
-            raise ComputeError("local connection_root must be a nonempty path string")
-        self.root = configured_directory(Path(root)) / connection.namespace
+    def __init__(self, root: Path) -> None:
+        # The catalog resolves the connection root; allocations live under local/.
+        self.root = root
+        self.allocations = root / "local"
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Validate a one-node local offer without creating allocation files."""
@@ -175,23 +171,17 @@ class LocalProvider:
             raise ComputeError("local allocations require POSIX process sessions and signals")
         if request.num_nodes != 1:
             raise UnavailableOfferError("a local allocation provides exactly one execution node")
-        if self.connection.context not in ("", socket.gethostname()):
-            raise UnavailableOfferError("this local connection belongs to a different host")
-        allowed = {"connection_root", "scratch_root", "python", "task_slots_per_node"}
-        unknown = self.connection.launch.keys() - allowed
-        if unknown or offer.config:
+        config = offer.config
+        if config.keys() - {"scratch_root", "python", "task_slots_per_node"}:
             raise ComputeError(
-                "local offers support only connection_root, scratch_root, "
-                "python, and task_slots_per_node"
+                "local offer config supports only scratch_root, python, and task_slots_per_node"
             )
-        for name in ("python", "scratch_root"):
-            if name in self.connection.launch:
-                value = self.connection.launch[name]
-                if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
-                    raise ComputeError(f"local {name} must be a nonempty path string")
+        python_text = config_text(config.get("python", sys.executable), "local python")
+        scratch_text = config_text(
+            config.get("scratch_root", tempfile.gettempdir()), "local scratch_root",
+        )
         slots = positive_int(
-            self.connection.launch.get("task_slots_per_node", offer.resources.cpus),
-            "task_slots_per_node",
+            config.get("task_slots_per_node", offer.resources.cpus), "task_slots_per_node",
         )
         if slots > offer.resources.cpus:
             raise ComputeError("task_slots_per_node exceeds the offered CPU envelope")
@@ -204,23 +194,24 @@ class LocalProvider:
         if offer.resources.gpus:
             if sys.platform != "linux":
                 raise UnavailableOfferError("local GPU allocations require Linux")
-            mask = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-            if not mask:
+            if (visible := cuda_device_count()) < offer.resources.gpus:
                 raise UnavailableOfferError(
-                    "local GPU offers require an explicit nonempty CUDA_VISIBLE_DEVICES mask"
+                    f"the local offer has {offer.resources.gpus} GPUs, but "
+                    f"CUDA_VISIBLE_DEVICES exposes {visible} on this host"
                 )
+            mask = os.environ["CUDA_VISIBLE_DEVICES"]
         seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
         limit = offer.time.max_seconds
         if seconds is not None and limit is not None and seconds > limit:
             raise ComputeError("the requested time exceeds the local offer's maximum")
-        python = Path(self.connection.launch.get("python", sys.executable)).expanduser()
-        scratch = configured_directory(
-            Path(self.connection.launch.get("scratch_root", tempfile.gettempdir()))
-        )
+        try:
+            python = Path(python_text).expanduser()
+        except RuntimeError as exc:
+            raise ComputeError(f"cannot expand the configured local Python: {exc}") from exc
+        scratch = configured_directory(Path(scratch_text))
         if not python.is_absolute() or not python.is_file() or not os.access(python, os.X_OK):
             raise ComputeError("the configured local Python must be an executable absolute path")
         return LaunchPlan(
-            connection=self.connection,
             offer=offer,
             request=request,
             seconds=seconds,
@@ -240,8 +231,6 @@ class LocalProvider:
         """Start a detached allocation owner and retain its immutable OS identity."""
         if reason := local_disabled_reason():
             raise ComputeError(reason)
-        if plan.connection != self.connection or plan.num_nodes != 1:
-            raise ComputeError("local launch plan belongs to a different connection or node count")
         if plan.name is not None:
             validate_name(plan.name)
         _refuse_a_second_allocation()
@@ -261,7 +250,7 @@ class LocalProvider:
         else:
             environment["CUDA_DEVICE_ORDER"] = plan.details["cuda_device_order"]
         try:
-            directory = private_directory(self.root / token, create=True)
+            directory = private_directory(self.allocations / token, create=True)
             scratch = private_directory(
                 Path(plan.details["scratch_root"]) / f"lc-{token}", create=True,
             )
@@ -292,7 +281,7 @@ class LocalProvider:
             os.close(startup_read)
             startup_read = None
             identity = Identity(
-                namespace=self.connection.namespace, native_id=str(process.pid), token=token,
+                provider="local", native_id=str(process.pid), token=token,
                 host=socket.gethostname(),
                 name=plan.name or "",
             )
@@ -348,12 +337,12 @@ class LocalProvider:
 
     def _directory(self, identity: Identity) -> Path:
         if (
-            identity.namespace != self.connection.namespace
+            identity.provider != "local"
             or not re.fullmatch(r"[0-9a-f]{32}", identity.token)
             or not re.fullmatch(r"[1-9][0-9]*", identity.native_id)
         ):
-            raise ComputeError("this local allocation does not belong to this connection")
-        return private_directory(self.root / identity.token)
+            raise ComputeError("this cluster ID does not identify a local allocation")
+        return private_directory(self.allocations / identity.token)
 
     def _record(self, identity: Identity) -> tuple[Path, dict[str, Any]]:
         directory = self._directory(identity)
@@ -427,12 +416,12 @@ class LocalProvider:
 
     def discover(self) -> Sequence[Snapshot]:
         """Find active local owners by checking their private locators against the OS."""
-        if not self.root.exists():
+        if not self.allocations.exists():
             return []
-        private_directory(self.root)
+        private_directory(self.allocations)
         boot = _boot_identity()
         snapshots = []
-        for directory in sorted(self.root.iterdir()):
+        for directory in sorted(self.allocations.iterdir()):
             if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
                 continue
             if (directory / _RETIRED).exists():

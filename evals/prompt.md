@@ -58,11 +58,11 @@ it alive, and `--time` adds a hard lifetime that ends it even mid-run. After it
 ends, launch again; the name `local` can be reused, but the immutable ID changes.
 
 Compute configuration is `~/.lightcone/compute.yaml`, or the file selected by
-`LC_COMPUTE_CONFIG`. Its `local.resources` mapping can override the built-in CPU/RAM
-budget (for example, `{cpus: 4, memory: 8GiB}`). Explicit local connections use
-their own offers instead. Remote offers otherwise coexist with the default local
-offer. If `local.enabled: false` is configured, respect that policy: local launch
-and execution are disabled. Inspect `lc compute resources` and supply both
+`LC_COMPUTE_CONFIG`. A catalog that lists its own local offers (`provider: local`)
+uses those instead of the built-in one, which is how to set a smaller CPU/RAM
+budget. Remote offers otherwise coexist with the default local offer. If
+`allow_local: false` is configured, respect that policy: local launch and execution
+are disabled. Inspect `lc compute resources` and supply both
 `--cpus` and `--memory` to select a configured remote allocation; `--wait` works
 there too. The no-resource shortcut never selects remote compute automatically.
 Recognized NERSC login nodes refuse local compute automatically, even without a
