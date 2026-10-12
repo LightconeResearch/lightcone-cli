@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Source: senders/lightcone-cli.bench_watch.sh in LightconeResearch/lightcone-bench.
+# Copy to lightcone-cli:.github/scripts/bench_watch.sh
 # Watch the lightcone-bench run dispatched for a PR commit and keep ONE PR comment
 # (found by the marker below) up to date: the run link while it runs, the outcome
 # when it ends. A dispatch returns no run id, so the run is found by the sha in its
 # title — the bench workflow's run-name carries stack_ref for exactly this reason.
+#
+# When the run ends, the comment also carries the run's "Overall" row (all agents
+# pooled: mean reward, mean steps/tokens/cost/time, total cost), read from the
+# `overall` block of the run's results.json artifact.
 #
 # Env: BENCH_TOKEN  reads runs in lightcone-bench (the dispatch token)
 #      GH_TOKEN     comments on this repo (the job's GITHUB_TOKEN, pull-requests: write)
@@ -33,6 +37,22 @@ upsert_comment() { # $1 = markdown body; creates the marker comment or edits it 
   fi
 }
 
+overall_table() { # markdown table of the run's pooled results; empty if unavailable
+  local url dir
+  url=$(bench_api "$API/repos/$BENCH/actions/runs/$run_id/artifacts?name=results" \
+        | jq -r '.artifacts[0].archive_download_url // empty')
+  [ -n "$url" ] || return 0
+  dir=$(mktemp -d)
+  curl -sfL -H "Authorization: Bearer $BENCH_TOKEN" "$url" -o "$dir/results.zip" \
+    && unzip -qo "$dir/results.zip" results.json -d "$dir" || return 0
+  jq -r '.overall // empty | select(.trials > 0)
+    | def f(d): if . == null then "—" else (. * pow(10; d) | round / pow(10; d) | tostring) end;
+      "| trials | scored | mean reward | steps | tool calls | shell calls | out tokens (k) | cached % | cost $ | agent min | total cost $ |",
+      "|---|---|---|---|---|---|---|---|---|---|---|",
+      "| \(.trials) | \(.scored) | \(.mean_reward | f(2)) | \(.agent_steps | f(0)) | \(.tool_calls_total | f(0)) | \(.shell_calls | f(0)) | \(.completion_ktokens | f(1)) | \(.cached_pct | f(0)) | \(.cost_usd | f(3)) | \(.agent_min | f(1)) | \(.total_cost_usd | f(3)) |"' \
+    "$dir/results.json"
+}
+
 # 1. Find the run: it shows up a few seconds after the dispatch.
 run_id=""; run_url=""
 for _ in $(seq 1 12); do
@@ -58,7 +78,10 @@ for _ in $(seq 1 "$MAX_POLLS"); do
     cancelled) icon="⚪"; word="was cancelled" ;;
     *)         icon="❌"; word="failed ($conclusion)" ;;
   esac
-  upsert_comment "**lightcone-bench** — benchmark of \`$short\` $icon $word: [run $run_id]($run_url) — the matrix, baseline deltas and trace report are in its job summary."
+  body="**lightcone-bench** — benchmark of \`$short\` $icon $word: [run $run_id]($run_url) — the per-agent tables, baseline deltas and trace report are in its job summary."
+  table=$(overall_table)
+  [ -n "$table" ] && body="$body"$'\n\n'"All agents pooled (reward averaged over scored trials, the rest over all trials):"$'\n\n'"$table"
+  upsert_comment "$body"
   exit 0
 done
 upsert_comment "**lightcone-bench** — benchmark of \`$short\` is still running after $((MAX_POLLS * POLL_SECONDS / 3600)) h: [run $run_id]($run_url)."

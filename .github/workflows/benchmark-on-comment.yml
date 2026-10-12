@@ -1,9 +1,10 @@
-# Sender for LightconeResearch/lightcone-bench (source: senders/ in that repo; setup in its docs/pr-triggered-benchmarks.md).
+# Copy to lightcone-cli:.github/workflows/benchmark-on-comment.yml  (with bench_watch.sh)
 # Comment "/benchmark" on a PR (maintainers only) to benchmark that PR's stack on
 # demand — a draft PR, or a re-run — with the skills from agent-skills main
 # installed (the skills axis is held fixed here; varying it is the agent-skills
 # senders' job). One comment on the PR links the run and is edited with the
-# outcome when it ends (checked every 10 minutes).
+# outcome and the pooled results when it ends (checked every 10 minutes). Three
+# attempts per agent, run in parallel.
 name: benchmark-on-comment
 on:
   issue_comment:
@@ -40,7 +41,7 @@ jobs:
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/LightconeResearch/lightcone-bench/actions/workflows/benchmark.yml/dispatches \
-            -d "{\"ref\":\"main\",\"inputs\":{\"task\":\"lightcone-cli/snae-build\",\"use_skills\":\"true\",\"stack_ref\":\"$SHA\"}}"
+            -d "{\"ref\":\"main\",\"inputs\":{\"task\":\"lightcone-cli/snae-build\",\"use_skills\":\"true\",\"attempts\":\"3\",\"stack_ref\":\"$SHA\"}}"
       - name: Ack with a rocket
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
