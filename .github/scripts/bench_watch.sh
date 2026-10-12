@@ -46,7 +46,10 @@ overall_table() { # markdown table of the run's pooled results; empty if unavail
   curl -sfL -H "Authorization: Bearer $BENCH_TOKEN" "$url" -o "$dir/results.zip" \
     && unzip -qo "$dir/results.zip" results.json -d "$dir" || return 0
   jq -r '.overall // empty | select(.trials > 0)
-    | def f(d): if . == null then "—" else (. * pow(10; d) | round / pow(10; d) | tostring) end;
+    | def f(d): if . == null then "—" elif d == 0 then (round | tostring) else
+        ((. * pow(10; d) | round | tostring) as $s
+         | ("0" * ([d + 1 - ($s | length), 0] | max)) + $s
+         | .[:-d] + "." + .[-d:]) end;
       "| trials | scored | mean reward | steps | tool calls | shell calls | out tokens (k) | cached % | cost $ | agent min | total cost $ |",
       "|---|---|---|---|---|---|---|---|---|---|---|",
       "| \(.trials) | \(.scored) | \(.mean_reward | f(2)) | \(.agent_steps | f(0)) | \(.tool_calls_total | f(0)) | \(.shell_calls | f(0)) | \(.completion_ktokens | f(1)) | \(.cached_pct | f(0)) | \(.cost_usd | f(3)) | \(.agent_min | f(1)) | \(.total_cost_usd | f(3)) |"' \
