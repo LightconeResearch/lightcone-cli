@@ -7,6 +7,7 @@ Convergence *semantics* are tested against the engine in
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -427,10 +428,37 @@ def test_check_exits_nonzero_when_something_would_run(
 
     _stub(monkeypatch, check=MaterializeReport(planned={"baseline/fit": "no manifest"}))
 
-    result = runner.invoke(main, ["materialize", "--check"])
+    human = runner.invoke(main, ["materialize", "--check"])
+    assert human.exit_code == 1
+    assert "would run baseline/fit" in human.output
+
+    result = runner.invoke(main, ["materialize", "--check", "--json"])
 
     assert result.exit_code == 1
-    assert "would run baseline/fit" in result.output
+    payload = json.loads(result.output)
+    assert payload["up_to_date"] is False
+    assert payload["planned"] == {"baseline/fit": "no manifest"}
+
+
+def test_check_json_succeeds_when_every_output_is_current(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, check=MaterializeReport(current=["baseline/fit"]))
+
+    result = runner.invoke(main, ["materialize", "--check", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "ok" not in payload
+    assert payload["up_to_date"] is True
+
+
+def test_check_help_documents_json_gate_result(runner: CliRunner) -> None:
+    help_text = runner.invoke(main, ["materialize", "--help"]).output
+    assert "`up_to_date`" in help_text
+    assert "`ok`" not in help_text
 
 
 def test_check_treats_all_positionals_as_targets_without_querying_compute(
@@ -524,7 +552,6 @@ def test_the_json_report_is_machine_readable(
     result = runner.invoke(main, ["materialize", CLUSTER_ID, "--json"])
 
     assert json.loads(result.output) == {
-        "ok": True,
         "up_to_date": False,
         "made": ["baseline/fit"],
         "current": [],
@@ -712,7 +739,7 @@ def test_status_json_is_machine_readable(
         "image": None,
         "sandbox": "",
         "crate": "",
-        "counts": {"current": 1, "behind": 1, "stale": 1},
+        "counts": {"current": 1, "behind": 1, "stale": 1, "no recipe": 0},
         "outputs": [
             {
                 "output": "baseline/first",
@@ -740,6 +767,36 @@ def test_status_json_is_machine_readable(
             },
         ],
         "warnings": [],
+    }
+
+
+def test_status_shows_outputs_without_recipes_in_text_and_json(
+    runner: CliRunner, analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = """
+    version: "0.0.13"
+    name: analysis
+    inputs: []
+    outputs:
+      - id: pending
+        type: metric
+        format: txt
+    decisions: {}
+    """
+    root = analysis(spec, universes={"baseline": "id: baseline\ndecisions: {}\n"})
+    monkeypatch.chdir(root)
+
+    human = runner.invoke(main, ["status"])
+    assert human.exit_code == 0
+    assert "baseline/pending" in human.output
+    assert "no recipe" in human.output
+
+    machine = runner.invoke(main, ["status", "--json"])
+    assert machine.exit_code == 0
+    report = json.loads(machine.output)
+    assert report["counts"]["no recipe"] == 1
+    assert {output["output"]: output["status"] for output in report["outputs"]} == {
+        "baseline/pending": "no recipe",
     }
 
 

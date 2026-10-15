@@ -38,7 +38,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, worker
@@ -79,11 +79,6 @@ class MaterializeReport:
     notes: list[str] = field(default_factory=list)
 
     @property
-    def ok(self) -> bool:
-        """Whether everything that was attempted finished."""
-        return not self.failed and not self.blocked
-
-    @property
     def up_to_date(self) -> bool:
         """Whether the analysis needed nothing done to it.
 
@@ -94,18 +89,23 @@ class MaterializeReport:
 
         A run that failed is not up to date either, however little it
         managed to produce: ``made`` stays empty when every recipe fails,
-        so without ``ok`` here the first two keys of the JSON report would
-        read "nothing to do" over a list of failures.
+        so without ``failed`` and ``blocked`` here the first key of the
+        JSON report would read "nothing to do" over a list of failures.
         """
-        return self.ok and not self.made and not self.planned
+        return not (self.failed or self.blocked or self.made or self.planned)
 
     def as_dict(self) -> dict[str, Any]:
         """Return the report as JSON-ready data.
 
+        There is deliberately no overall success key: a run succeeded when
+        ``failed`` and ``blocked`` are empty, a check passes when
+        ``up_to_date`` is true, and one key standing for both read as
+        "done" over outputs still to build.
+
         Returns:
-            Every field, with ``ok`` and ``up_to_date`` first.
+            Every field, with ``up_to_date`` first.
         """
-        return {"ok": self.ok, "up_to_date": self.up_to_date, **asdict(self)}
+        return {"up_to_date": self.up_to_date, **asdict(self)}
 
 
 # =============================================================================
@@ -138,7 +138,8 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             read, or a target matches nothing.
     """
     report = MaterializeReport()
-    for key, verdict, _, _ in _classified(root, targets, report, refresh=refresh):
+    _, classified = _classified(root, targets, report, refresh=refresh)
+    for key, verdict, _, _ in classified:
         name = _name(key)
         if verdict.calls_for_a_remake(refresh=refresh):
             report.planned[name] = verdict.why
@@ -151,7 +152,10 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
 
 def _classified(
     root: Path, targets: Sequence[str], report: MaterializeReport, *, refresh: bool
-) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]]:
+) -> tuple[
+    Graph,
+    list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]],
+]:
     """Classify every task in topological order, reading nothing but disk.
 
     The walk both read-only modes share, so there is one answer to "what
@@ -170,8 +174,8 @@ def _classified(
             decides whether their dependents see the sentinel.
 
     Returns:
-        One ``(key, verdict, manifest, foreign write)`` per task, upstream
-        first.
+        The graph and one ``(key, verdict, manifest, foreign write)`` per
+        task, upstream first.
     """
     graph, env_version, _ = _graph(root, targets, report)
     unfetched: set[str] = set()
@@ -186,7 +190,7 @@ def _classified(
             "`lc materialize` fetches declared inputs before executing "
             "recipes. Compute is required for outputs whose inputs cannot yet be checked."
         )
-    return classified
+    return graph, classified
 
 
 def _classify_graph(
@@ -287,8 +291,8 @@ class OutputStatus:
 
     #: ``universe/output_id``.
     output: str
-    status: assets.Status
-    #: Why, for ``stale`` and ``behind``. Empty for ``current``.
+    status: assets.Status | Literal["no recipe"]
+    #: Why, for ``stale`` and ``behind``. Empty for ``current`` and ``no recipe``.
     why: str
     #: The commit the output was materialized at, or empty if it never was.
     #: This is the whole point of the verb: an artifact that is behind is
@@ -344,7 +348,7 @@ class StatusReport:
     @property
     def counts(self) -> dict[str, int]:
         """How many outputs are in each state, states with none included."""
-        tally = {"current": 0, "behind": 0, "stale": 0}
+        tally = {"current": 0, "behind": 0, "stale": 0, "no recipe": 0}
         for output in self.outputs:
             tally[output.status] += 1
         return tally
@@ -392,7 +396,8 @@ def status(root: Path) -> StatusReport:
         result.image = {"tag": tag, "state": state, "archive": archive}
     result.sandbox = _sandbox_line(result.mode)
     stamps = []
-    for key, verdict, manifest, foreign in _classified(root, [], report, refresh=False):
+    graph, classified = _classified(root, [], report, refresh=False)
+    for key, verdict, manifest, foreign in classified:
         if manifest and manifest.finished_at:
             stamps.append(manifest.finished_at)
         result.outputs.append(
@@ -405,6 +410,10 @@ def status(root: Path) -> StatusReport:
                 foreign_write=foreign.sha if foreign else "",
             )
         )
+    result.outputs.extend(
+        OutputStatus(output=_name(key), status="no recipe", why="", git_sha="", data_version="")
+        for key in graph.no_recipe
+    )
     result.crate = _crate_line(root, max(stamps, default=""))
     result.warnings = report.warnings
     return result

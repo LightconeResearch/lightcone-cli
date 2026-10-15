@@ -1065,8 +1065,18 @@ failed.** `lc materialize --check` is a gate, and a project of curated
 results would otherwise never pass it again — that is the `behind` half.
 The other half is that `made` stays empty when *every* recipe fails, so
 `not made and not planned` reported "nothing to do" over a list of
-failures. It is `ok and not made and not planned`; those two are the
-first keys of the JSON report and are what an agent branches on.
+failures. It is true only when `failed`, `blocked`, `made` and `planned`
+are all empty, and it is the JSON report's first key.
+
+**The materialize report has no `ok`, by decision (2026-10).** It meant
+"nothing failed or was blocked", which check mode can never violate, so
+`--check --json` said `"ok": true` while exiting 1 over outputs still to
+build, and agents read it as done. Redefining it as the exit code made
+it identical to `up_to_date` in check mode, a second name for one fact.
+The remaining keys say what they mean: a run succeeded when `failed`
+and `blocked` are empty, a check passes when `up_to_date` is true, and
+the exit code is nonzero when any of `failed`, `blocked` or `planned`
+is not empty.
 
 **`lc status` reports; `--check` gates.** Status always exits 0 — a state
 is not a failure — and it is the only verb that shows the commit each
