@@ -298,7 +298,8 @@ def build(as_json: bool) -> None:
     is_flag=True,
     help=(
         "Report what would run and why, without executing or committing "
-        "anything. Exit 1 if any output would run; in JSON, `ok` is false."
+        "anything. Exit 1 if any output would run; in JSON, `up_to_date` "
+        "is false."
     ),
 )
 @click.option(
@@ -391,7 +392,8 @@ def materialize(
             click.echo("\n".join(["", *report.notes]), err=True)
         _render_materialize_output(report, root, dry_run=check_only)
 
-    if not report.ok:
+    # `planned` is filled by check mode only: there it is the gate failing.
+    if report.failed or report.blocked or report.planned:
         sys.exit(1)
 
 

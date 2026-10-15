@@ -436,7 +436,6 @@ def test_check_exits_nonzero_when_something_would_run(
 
     assert result.exit_code == 1
     payload = json.loads(result.output)
-    assert payload["ok"] is False
     assert payload["up_to_date"] is False
     assert payload["planned"] == {"baseline/fit": "no manifest"}
 
@@ -452,13 +451,14 @@ def test_check_json_succeeds_when_every_output_is_current(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["ok"] is True
+    assert "ok" not in payload
     assert payload["up_to_date"] is True
 
 
 def test_check_help_documents_json_gate_result(runner: CliRunner) -> None:
     help_text = runner.invoke(main, ["materialize", "--help"]).output
-    assert "`ok` is false" in help_text
+    assert "`up_to_date`" in help_text
+    assert "`ok`" not in help_text
 
 
 def test_check_treats_all_positionals_as_targets_without_querying_compute(
@@ -552,7 +552,6 @@ def test_the_json_report_is_machine_readable(
     result = runner.invoke(main, ["materialize", CLUSTER_ID, "--json"])
 
     assert json.loads(result.output) == {
-        "ok": True,
         "up_to_date": False,
         "made": ["baseline/fit"],
         "current": [],

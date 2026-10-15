@@ -93,7 +93,7 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["baseline/first", "baseline/second"]
-    assert report.ok and not report.up_to_date
+    assert not report.failed and not report.blocked and not report.up_to_date
     assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
     assert _commits(root) == before + 2
     assert not dataset.status(root)
@@ -435,7 +435,7 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
     monkeypatch.setattr(engine, "cluster_for_run", unexpected)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok and report.up_to_date
+    assert report.up_to_date
     assert (root / "ro-crate-metadata.json").is_file()
 
 
@@ -614,7 +614,7 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
@@ -636,7 +636,7 @@ def test_an_edit_while_the_graph_runs_is_reported(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert any("notes.md" in w and "in flight" in w for w in report.warnings)
 
 
@@ -660,7 +660,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert any("notes.py" in w and "in flight" in w for w in report.warnings)
     staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
     assert staged == ["notes.py"]
@@ -690,7 +690,7 @@ def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
 
     assert report.failed == ["baseline/first"]
     assert report.blocked == ["baseline/second"]
-    assert not report.ok
+    assert not report.up_to_date
     assert _commits(root) == before
     assert not dataset.status(root)
 
@@ -917,7 +917,7 @@ def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
     the same bytes the origin recorded. Without the fetch this run
     *failed*: the worker's hash refused the pointer file."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    assert not engine.materialize(root, [], cluster_id=CLUSTER_ID).failed
 
     clone = _clone(root, tmp_path)
     with pytest.raises(assets.ContentNotFetchedError):
@@ -938,13 +938,13 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     failure. Reaching the state honestly: clone, then delete the origin
     the annex would fetch from."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    assert not engine.materialize(root, [], cluster_id=CLUSTER_ID).failed
     clone = _clone(root, tmp_path)
     dataset._git(["remote", "remove", "origin"], cwd=clone)
 
     report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
-    assert not report.ok
+    assert not report.up_to_date
     assert report.failed == ["baseline/copy"]
     assert any("could not be fetched" in w for w in report.warnings)
 
@@ -982,7 +982,7 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
 
     report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert project_mod._env_is_current(root)
 
 
@@ -1206,7 +1206,7 @@ def test_real_dask_respects_recipe_resource_reservations(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok and len(report.made) == 4
+    assert not report.failed and not report.blocked and len(report.made) == 4
     events = []
     for path in (root / "results/baseline").glob("task*.json"):
         start, finish, visible = json.loads(path.read_text())
@@ -1233,7 +1233,7 @@ def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
 
     _resource_cluster(monkeypatch)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert report.ok
+    assert not report.failed and not report.blocked
     assert report.current == ["baseline/first"]
     assert report.made == ["baseline/second"]
     assert (root / "results/baseline/.first.manifest.json").read_bytes() == original
@@ -1300,7 +1300,8 @@ def test_the_report_is_json_ready(root: Path, inline: None) -> None:
     report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     data = json.loads(json.dumps(report.as_dict()))
 
-    assert data["ok"] is True
+    assert "ok" not in data
+    assert data["up_to_date"] is False
     assert data["made"] == ["baseline/first"]
 
 

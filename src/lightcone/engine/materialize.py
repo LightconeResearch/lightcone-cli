@@ -79,11 +79,6 @@ class MaterializeReport:
     notes: list[str] = field(default_factory=list)
 
     @property
-    def ok(self) -> bool:
-        """Whether the run finished or the check gate passed."""
-        return not self.failed and not self.blocked and not self.planned
-
-    @property
     def up_to_date(self) -> bool:
         """Whether the analysis needed nothing done to it.
 
@@ -94,18 +89,23 @@ class MaterializeReport:
 
         A run that failed is not up to date either, however little it
         managed to produce: ``made`` stays empty when every recipe fails,
-        so without ``ok`` here the first two keys of the JSON report would
-        read "nothing to do" over a list of failures.
+        so without ``failed`` and ``blocked`` here the first key of the
+        JSON report would read "nothing to do" over a list of failures.
         """
-        return self.ok and not self.made
+        return not (self.failed or self.blocked or self.made or self.planned)
 
     def as_dict(self) -> dict[str, Any]:
         """Return the report as JSON-ready data.
 
+        There is deliberately no overall success key: a run succeeded when
+        ``failed`` and ``blocked`` are empty, a check passes when
+        ``up_to_date`` is true, and one key standing for both read as
+        "done" over outputs still to build.
+
         Returns:
-            Every field, with ``ok`` and ``up_to_date`` first.
+            Every field, with ``up_to_date`` first.
         """
-        return {"ok": self.ok, "up_to_date": self.up_to_date, **asdict(self)}
+        return {"up_to_date": self.up_to_date, **asdict(self)}
 
 
 # =============================================================================
