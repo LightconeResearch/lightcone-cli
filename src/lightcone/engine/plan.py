@@ -251,13 +251,18 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
         validate_analysis_schema,
         validate_universe_file,
     )
+    from yaml import YAMLError
 
-    problems = [
-        *validate_analysis_schema(spec_path),
-        *(str(e) for e in validate_analysis_file(spec_path)),
-    ]
-    for path in universes:
-        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    try:
+        problems = [
+            *validate_analysis_schema(spec_path),
+            *(str(e) for e in validate_analysis_file(spec_path)),
+        ]
+        for path in universes:
+            problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    except YAMLError as e:
+        # Parser diagnostics already name the source file and its location.
+        problems = [str(e)]
     if problems:
         listed = "\n".join(f"  {problem}" for problem in problems)
         raise ProjectError(

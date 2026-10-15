@@ -293,6 +293,55 @@ def test_no_universe_is_a_clean_error(tmp_path: Path) -> None:
         _build(tmp_path)
 
 
+@pytest.mark.parametrize(("filename", "content", "diagnostic"), [
+    ("astra.yaml", "name: a: b\n", "line 1, column 8"),
+    ("universes/baseline.yaml", "id: a: b\n", "line 1, column 6"),
+    ("astra.yaml", "outputs: [\n", "line 2, column 1"),
+    ("astra.yaml", "name: \x00\n", "unacceptable character #x0000"),
+])
+def test_malformed_yaml_is_a_clean_validation_error(
+    tmp_path: Path, filename: str, content: str, diagnostic: str,
+) -> None:
+    root = _project(tmp_path)
+    path = root / filename
+    path.write_text(content)
+
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(root)
+
+    assert str(path) in str(raised.value)
+    assert diagnostic in str(raised.value)
+
+
+def test_malformed_external_analysis_names_its_own_file(tmp_path: Path) -> None:
+    root = _project(tmp_path, _SPEC + '\nanalyses:\n  child:\n    path: child\n')
+    child = root / "child" / "astra.yaml"
+    child.parent.mkdir()
+    child.write_text("name: a: b\n")
+
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(root)
+
+    assert str(child) in str(raised.value)
+    assert "line 1, column 8" in str(raised.value)
+
+
+def test_validation_does_not_hide_unrelated_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astra import validation
+
+    error = ValueError("unexpected validator defect")
+
+    def broken(path: Path) -> list[str]:
+        raise error
+
+    monkeypatch.setattr(validation, "validate_analysis_schema", broken)
+    with pytest.raises(ValueError) as raised:
+        _build(_project(tmp_path))
+    assert raised.value is error
+
+
 def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
     """lc names the file from it, so there is nowhere to write the output.
     Every offender at once: a spec is fixed in one pass, not one run per
