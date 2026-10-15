@@ -185,6 +185,22 @@ def test_the_context_carries_the_workflow_run_vocabulary(project: Path) -> None:
     assert "https://w3id.org/ro/terms/workflow-run" in document["@context"]
 
 
+def test_the_crate_version_is_pinned_not_rocrates_default(project: Path) -> None:
+    """rocrate 0.16 moved its default to 1.3, whose context maps
+    `ComputationalWorkflow` to a term the workflow profiles do not
+    recognise — so the version is ours, and both halves must agree."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    document = _render(project, _graph(project))
+    entities = _entities(document)
+
+    assert "https://w3id.org/ro/crate/1.1/context" in document["@context"]
+    claimed = {ref["@id"] for ref in entities["ro-crate-metadata.json"]["conformsTo"]}
+    assert claimed == {
+        "https://w3id.org/ro/crate/1.1",
+        "https://w3id.org/workflowhub/workflow-ro-crate/1.0",
+    }
+
+
 def test_the_root_conforms_to_every_claimed_profile_and_declares_each(
     project: Path,
 ) -> None:
