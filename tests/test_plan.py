@@ -353,3 +353,51 @@ def test_a_file_that_is_there_is_never_a_family(tmp_path: Path) -> None:
     odd = tmp_path / "cat_{raw}.fits"
     odd.write_text("x\n")
     assert not plan.names_a_family(odd)
+
+
+# ---- a source chosen by a decision -----------------------------------------
+
+_DECIDED = _SPEC.replace("source: data/catalog.fits", "source: data/{decisions.method}.fits")
+
+
+def test_a_decision_in_a_source_picks_each_universes_own_file(tmp_path: Path) -> None:
+    """Each universe hashes and depends on only the file its option names,
+    so adding an option adds a file and moves no other universe's input."""
+    (tmp_path / "data").mkdir()
+    for name in ("mcmc", "nested"):
+        (tmp_path / "data" / f"{name}.fits").write_text(f"{name}\n")
+    root = _project(
+        tmp_path,
+        _DECIDED,
+        a="id: a\ndecisions:\n  method: mcmc\n",
+        b="id: b\ndecisions:\n  method: nested\n",
+    )
+    graph = _build(root)
+    assert graph.tasks[("a", "fit")].inputs == {"catalog": tmp_path / "data" / "mcmc.fits"}
+    assert graph.tasks[("b", "fit")].inputs == {"catalog": tmp_path / "data" / "nested.fits"}
+    assert "data/nested.fits" in graph.tasks[("b", "fit")].recipe
+
+
+def test_a_decided_source_that_is_not_on_disk_fails_when_the_graph_is_built(tmp_path: Path) -> None:
+    """Not when a recipe runs: a missing file is a fact about the spec and
+    the data, and the error names the output, the input and the universe."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "mcmc.fits").write_text("x\n")
+    root = _project(tmp_path, _DECIDED, b="id: b\ndecisions:\n  method: nested\n")
+    with pytest.raises(ProjectError, match=r"`fit`.*`catalog`.*nested\.fits.*`b`"):
+        _build(root)
+
+
+def test_a_source_may_only_name_decisions_its_output_declares(tmp_path: Path) -> None:
+    """The rule a recipe placeholder obeys: an undeclared decision is an
+    input the output's identity would not record, so it is an error."""
+    spec = _DECIDED.replace("    decisions: [method]\n", "").replace(" --method {decisions.method}", "")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "mcmc.fits").write_text("x\n")
+    with pytest.raises(ProjectError, match="names decision\\(s\\) method the output does not declare"):
+        _build(_project(tmp_path, spec))
+
+
+def test_a_source_without_a_decision_keeps_its_spelling(tmp_path: Path) -> None:
+    assert plan.decided_source("v{version}/cat.fits", {"method": "mcmc"}, output="o", input="i") == "v{version}/cat.fits"
+    assert plan.decided_source("d/{decisions.method}.fits", {"method": "mcmc"}, output="o", input="i") == "d/mcmc.fits"

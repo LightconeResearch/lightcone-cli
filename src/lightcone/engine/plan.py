@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 from lightcone.engine import assets, identity
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
@@ -69,6 +70,50 @@ def spelling_version(path: Path) -> str:
         with.
     """
     return f"spelling:sha256:{hashlib.sha256(str(path).encode()).hexdigest()}"
+
+
+#: A decision placeholder in a declared input's ``source``.
+_DECISION = re.compile(r"\{decisions\.([a-z][a-z0-9_]*)\}")
+
+
+def decided_source(source: str, decisions: Mapping[str, str], *, output: str, input: str) -> str:
+    """A declared source with its ``{decisions.<id>}`` placeholders filled in.
+
+    An input may vary with a decision: ``data/releases/{decisions.data_release}.yaml``
+    is one file per option, and each universe reads, hashes and depends on
+    only the one its choice names. Adding an option then adds a file and
+    moves no other universe's inputs. The output must declare the decision,
+    the same rule a recipe placeholder obeys, and the file it names must be
+    there: both are settled when the graph is built, not when a recipe runs.
+
+    A source with no decision placeholder comes back unchanged, so a family
+    spelled with other braces keeps its meaning (:func:`names_a_family`).
+
+    Args:
+        source: The declared source, as spelled.
+        decisions: Decision id → the option this universe chose, scoped to
+            the output.
+        output: The output declaring the input, for the error.
+        input: The input's id, for the error.
+
+    Returns:
+        The source with each decision placeholder replaced by its option.
+
+    Raises:
+        ProjectError: If a placeholder names a decision the output does not
+            declare. The caller, which knows the project root, refuses a
+            filled-in source that is not on disk.
+    """
+    if not _DECISION.search(source):
+        return source
+    missing = sorted({name for name in _DECISION.findall(source) if name not in decisions})
+    if missing:
+        raise ProjectError(
+            f"output `{output}`: input `{input}` has source `{source}`, which names "
+            f"decision(s) {', '.join(missing)} the output does not declare — add them to "
+            "its `decisions:`."
+        )
+    return _DECISION.sub(lambda m: str(decisions[m.group(1)]), source)
 
 
 def readable_source(path: Path) -> Path | None:
@@ -402,7 +447,14 @@ def _tasks(
             elif declared.source:
                 # An absolute `source:` wins over the join — pathlib's own
                 # rule, and the one anyone writing one expects.
-                paths[declared.id] = root / declared.source
+                paths[declared.id] = root / decided_source(
+                    declared.source, out.decisions, output=out.id, input=declared.id
+                )
+                if _DECISION.search(declared.source) and not paths[declared.id].exists():
+                    raise ProjectError(
+                        f"output `{out.id}`: input `{declared.id}` resolves to "
+                        f"{paths[declared.id]} in universe `{universe_id}`, which does not exist."
+                    )
             else:
                 raise ProjectError(
                     f"output `{out.id}` declares the input `{declared.id}`, but no "
