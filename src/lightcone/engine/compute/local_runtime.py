@@ -1,4 +1,4 @@
-"""Own one standard LocalCluster for a finite allocation lifetime."""
+"""Own one standard LocalCluster until it is stopped, idles out, or reaches its walltime."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from lightcone.engine.compute.runtime import (
 
 
 def main() -> None:
-    """Run the detached allocation owner until shutdown or its walltime expires."""
+    """Run the detached allocation owner until shutdown, idle expiry, or its walltime."""
     clear_inherited_mask()
     os.umask(0o077)
     directory = private_directory(Path(sys.argv[1]))
@@ -48,9 +48,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGALRM, expire)
-    remaining = float(launch["deadline"]) - time.monotonic()
-    signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
     try:
+        if launch["deadline"] is not None:
+            remaining = float(launch["deadline"]) - time.monotonic()
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
         try:
             startup = select.poll()
             startup.register(startup_fd, select.POLLIN)
@@ -64,6 +65,23 @@ def main() -> None:
         launch = read_private_json(directory / "launch.json")
         import dask
         from distributed import LocalCluster
+        from distributed.diagnostics.plugin import SchedulerPlugin
+
+        class Closed(SchedulerPlugin):
+            """End the session when the scheduler closes without the owner asking."""
+
+            async def close(self) -> None:
+                """Record why, then kill the session as the walltime does.
+
+                ``LocalCluster``'s own close would wait on the departed
+                scheduler, and the owner may not have finished starting it.
+                """
+                if not stopped.is_set():
+                    write_private_json(directory / "error.json", {
+                        "error": "the scheduler closed itself, after its idle timeout "
+                        "or at a client's request",
+                    })
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
 
         security = create_security(directory)
         allocation = read_private_json(directory / "identity.json")
@@ -84,6 +102,10 @@ def main() -> None:
                 "scheduler_file": str(directory / "scheduler.json"),
                 "dashboard": False,
                 "dashboard_address": "127.0.0.1:0",
+                # Dask's own activity test: tasks reset the timer; connected
+                # clients and status queries do not.
+                "idle_timeout": launch["idle_timeout"],
+                "plugins": [Closed()],
             },
             local_directory=str(private_directory(Path(launch["scratch"]))),
             # Recipes use subprocesses: Dask's Python-process RSS cannot enforce

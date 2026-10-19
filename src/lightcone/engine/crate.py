@@ -48,6 +48,13 @@ from lightcone.engine.project import SPEC_FILENAME
 #: undefined and silently dropped on JSON-LD expansion — typed but inert.
 _WORKFLOW_RUN_CONTEXT = "https://w3id.org/ro/terms/workflow-run"
 
+#: The RO-Crate version written, pinned rather than left to rocrate's
+#: default: the Workflow RO-Crate and Run Crate profiles are written
+#: against 1.1's vocabulary, and the 1.3 context maps
+#: ``ComputationalWorkflow`` to a term their shapes do not recognise, so
+#: following the default turns the workflow into an untyped file.
+_RO_CRATE_VERSION = "1.1"
+
 #: What the root conforms to, each also declared as a CreativeWork in the
 #: graph — consumers resolve the reference inside the crate, not on the
 #: network.
@@ -133,7 +140,7 @@ class _Builder:
         self.license = license
         self.writer = writer
         self.keys = dict(keys)
-        self.crate = ROCrate()
+        self.crate = ROCrate(version=_RO_CRATE_VERSION)
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted: the one iteration order.
         self.made: list[tuple[Key, assets.Manifest]] = sorted(
@@ -190,14 +197,6 @@ class _Builder:
     # ----- the workflow and its structure -----
 
     def _workflow(self) -> Any:
-        # Before `add_workflow` rewrites the descriptor's conformsTo: 1.1
-        # is what RO-Crate validators key on, 1.2 is the context actually
-        # emitted — the crate is structurally both, and saying only the
-        # newer one reads as conforming to neither.
-        self.crate.metadata["conformsTo"] = [
-            {"@id": "https://w3id.org/ro/crate/1.1"},
-            {"@id": "https://w3id.org/ro/crate/1.2"},
-        ]
         lang = ComputerLanguage(
             self.crate,
             "#astra",

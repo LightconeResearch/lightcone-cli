@@ -25,10 +25,12 @@ NOT_STARTED = (
 #: served. A departed client's events, which carry the recipe output it
 #: forwarded, are dropped at once rather than after Dask's default hour, so
 #: a long-lived allocation does not accumulate every invocation's output.
-SCHEDULER_CONFIG = {
+#: The idle timeout is the offer's alone, never the ambient Dask config's.
+SCHEDULER_CONFIG: dict[str, Any] = {
     "distributed.scheduler.http.routes": [],
     "distributed.worker.http.routes": [],
     "distributed.scheduler.events-cleanup-delay": "0s",
+    "distributed.scheduler.idle-timeout": None,
 }
 
 
@@ -41,13 +43,16 @@ def configured_directory(path: Path) -> Path:
     Raises:
         ComputeError: If the root is relative, contains ``..``, or cannot resolve.
     """
-    path = path.expanduser()
-    if not path.is_absolute() or ".." in path.parts:
-        raise ComputeError(f"compute root must be an absolute path without '..': {path}")
     try:
-        return path.resolve()
-    except (OSError, RuntimeError) as exc:
+        expanded = path.expanduser()
+    except RuntimeError as exc:
         raise ComputeError(f"cannot resolve compute root {path}: {exc}") from exc
+    if not expanded.is_absolute() or ".." in expanded.parts:
+        raise ComputeError(f"compute root must be an absolute path without '..': {expanded}")
+    try:
+        return expanded.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ComputeError(f"cannot resolve compute root {expanded}: {exc}") from exc
 
 
 def private_directory(path: Path, *, create: bool = False) -> Path:
