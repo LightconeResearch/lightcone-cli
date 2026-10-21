@@ -1,184 +1,373 @@
 name: Eval
 
-# Minimal agentic eval: scaffold a project from the eval seed on the
-# runner, let Claude Code (with the astra plugin) build it using the
-# branch's lc/astra, then check the results with astra validate and
-# lc materialize --check.
+# Agentic eval on Harbor: the task in evals/snae-build is run by real agent
+# harnesses against the lightcone-cli and agent-skills under test, and every
+# run explains itself from its trace.
+#
+#   prepare  build the engine wheel into the task, collect the skill bundles
+#   oracle   the task's scripted solution must score 1.0 — no LLM involved
+#   agents   one Harbor job per harness, the skills installed with --skill
+#   report   rewards, agent steps against main's history, the trace analysis,
+#            the PR comment; red on a failed gate or a missing analysis
+#
+# The step gate: a leg whose mean agent steps exceed the median of its last
+# runs on main by more than `tolerance` fails. Main runs record that history
+# (in the eval-results artifact of the newest successful main run) and gate
+# on reward only, so the reference follows main.
+#
+# Reuse from LightconeResearch/agent-skills, where the skills are the side
+# under test and the stack is lightcone-cli main:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#     push:
+#       branches: [main]
+#   permissions:
+#     contents: read
+#     pull-requests: write
+#     actions: read
+#   jobs:
+#     eval:
+#       uses: LightconeResearch/lightcone-cli/.github/workflows/eval.yml@main
+#       secrets: inherit
+#
+# Whichever of the two repositories triggered the run is checked out at the
+# triggering commit; the other at its input ref. Each repository keeps its
+# own history, because the baseline is looked up in the triggering one.
+#
+# Limits: --skill installs SKILL.md bundles only, not the plugins' hooks
+# (agent-skills' e2e-hooks workflow covers those); step counts compare within
+# a leg only, since harness tool vocabularies differ; at attempts=1 the step
+# comparison is coarse, which is what the median and the tolerance absorb.
+# A leg whose secret is absent is skipped with a notice, and a run in which
+# no leg ran fails.
 
 on:
   workflow_dispatch:
+    inputs:
+      stack_ref:
+        description: "lightcone-cli ref to evaluate when it is not the triggering repository"
+        type: string
+        default: main
+      skills_ref:
+        description: "agent-skills ref to install when it is not the triggering repository"
+        type: string
+        default: main
+      attempts:
+        description: "Trials per leg"
+        type: string
+        default: "1"
+      tolerance:
+        description: "Allowed fractional increase of agent steps over main's median"
+        type: string
+        default: "0.25"
+  workflow_call:
+    inputs:
+      stack_ref:
+        description: "lightcone-cli ref to evaluate when it is not the triggering repository"
+        type: string
+        default: main
+      skills_ref:
+        description: "agent-skills ref to install when it is not the triggering repository"
+        type: string
+        default: main
+      attempts:
+        description: "Trials per leg"
+        type: string
+        default: "1"
+      tolerance:
+        description: "Allowed fractional increase of agent steps over main's median"
+        type: string
+        default: "0.25"
   pull_request:
-    # `ready_for_review` beside the defaults, so flipping a draft to
-    # ready triggers the run the draft guard below skips.
+    # `ready_for_review` beside the defaults, so flipping a draft to ready
+    # triggers the run the draft guard below skips.
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
 
 # Only one eval per PR at a time — cancel in-progress runs
 concurrency:
-  group: eval-${{ github.event.pull_request.number || github.run_id }}
+  group: eval-${{ github.repository }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
   contents: read
   pull-requests: write
+  actions: read
+
+env:
+  HARBOR_VERSION: 0.22.0
+  STACK_REPO: LightconeResearch/lightcone-cli
+  SKILLS_REPO: LightconeResearch/agent-skills
 
 jobs:
-  eval:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+  prepare:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    # Step-level timeout on the agent step (below) is what actually
-    # bounds the run: a job-level timeout would cancel the always()
-    # report/comment/artifact steps along with it.
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out lightcone-cli
+        uses: actions/checkout@v4
         with:
+          repository: ${{ env.STACK_REPO }}
+          ref: ${{ github.repository == env.STACK_REPO && (github.event.pull_request.head.sha || github.sha) || inputs.stack_ref || 'main' }}
+          path: stack
           # Full history so hatch-vcs sees the tags and stamps a truthful
-          # dev version into the installed engine (and every manifest's
-          # lc_version) instead of a 0.1.dev fallback
+          # dev version into the wheel (and every manifest's lc_version),
+          # and so the change under test can be described
+          fetch-depth: 0
+
+      - name: Check out agent-skills
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SKILLS_REPO }}
+          ref: ${{ github.repository == env.SKILLS_REPO && (github.event.pull_request.head.sha || github.sha) || inputs.skills_ref || 'main' }}
+          path: skills-src
           fetch-depth: 0
 
       - name: Set up uv
-        # No python-version input: it would export an ambient UV_PYTHON,
-        # which lc's install-settings scrub then rightly warns about on
-        # every single invocation the agent makes. The interpreter is
-        # pinned per tool install below instead.
         uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
 
-      - name: Install lightcone-cli + astra (uv tools)
-        # The engine is the host's uv tool — install the branch under
-        # test the way a user installs a release: `uv tool install`,
-        # which links `lc` and (via the mirrored entry points) the
-        # git-annex executables into ~/.local/bin. The commit under test
-        # is the checkout itself, stamped into the version by hatch-vcs.
-        # astra's executable belongs to astra-tools, so it is its own
-        # tool install, pinned to the version the branch depends on. No
-        # venv is activated: the agent's shell sees the tools exactly as
-        # an end user's would.
+      - name: Assemble the eval inputs
+        env:
+          EVENT_REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          uv tool install --python 3.12 "$GITHUB_WORKSPACE"
-          uv tool install --python 3.12 "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          mkdir -p bundle/skills
+          cp -r stack/evals/snae-build bundle/task
+          cp stack/.github/scripts/eval_report.py stack/evals/trace-analysis-prompt.md bundle/
+          # The engine under test, built from its checkout: the task image
+          # installs exactly this wheel
+          uv build --wheel --project stack -o bundle/task/environment/lc-wheel
 
-      - name: Install Claude Code + astra plugin
+          # Every built skill bundle, first of each name: plugins bundle
+          # their dependencies, so one skill can appear in several
+          for d in skills-src/plugins/*/skills/*/; do
+            name=$(basename "$d")
+            [ -f "${d}SKILL.md" ] && [ ! -e "bundle/skills/$name" ] && cp -r "$d" "bundle/skills/$name"
+          done
+          ls bundle/skills | grep -q . || { echo "::error::no skill bundles in $SKILLS_REPO"; exit 1; }
+
+          case "${EVENT_REPO,,}" in
+            "${STACK_REPO,,}") changed=stack ;;
+            "${SKILLS_REPO,,}") changed=skills-src ;;
+            *) changed= ;;
+          esac
+          jq -n \
+            --arg stack "$STACK_REPO@$(git -C stack rev-parse --short HEAD)" \
+            --arg skills "$SKILLS_REPO@$(git -C skills-src rev-parse --short HEAD)" \
+            --arg skill_set "$(ls bundle/skills | paste -sd, -)" \
+            --arg sha "$(git -C "${changed:-stack}" rev-parse HEAD)" \
+            '{stack: $stack, skills: $skills, skill_set: $skill_set, sha: $sha}' > bundle/refs.json
+          cat bundle/refs.json
+
+          # What the analyst blames a regression on: the commits and files
+          # of the repository under test since its base
+          {
+            if [ -n "$changed" ] && [ -n "$BASE_SHA" ] \
+                && git -C "$changed" cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "Repository under test: $EVENT_REPO"
+              echo
+              echo '```'
+              git -C "$changed" log --oneline "$BASE_SHA..HEAD" | head -50
+              echo
+              git -C "$changed" diff --stat "$BASE_SHA...HEAD" | tail -60
+              echo '```'
+            else
+              echo "No base commit to compare against for this event."
+            fi
+          } > bundle/changes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-inputs
+          path: bundle
+          if-no-files-found: error
+
+  oracle:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: eval-inputs
+          path: bundle
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Harbor
+        run: uv tool install "harbor==$HARBOR_VERSION"
+
+      - name: Run the reference solution
+        run: harbor run -p bundle/task -a oracle -e docker -o jobs --job-name oracle -q -y
+
+      - name: Require reward 1.0
+        run: |
+          jq -e '[.stats.evals[]
+                  | (.n_errors // 0) == 0 and (.metrics[0].reward // 0) == 1.0]
+                 | length > 0 and all' jobs/oracle/result.json \
+            || { jq .stats jobs/oracle/result.json; echo "::error::oracle gate failed"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-oracle
+          path: jobs
+          if-no-files-found: warn
+
+  agents:
+    needs: oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { leg: claude-code, agent: claude-code, model: claude-sonnet-5-5, secret_name: CLAUDE_CODE_OAUTH_TOKEN }
+          - { leg: codex,       agent: codex,       model: gpt-5.1-codex,     secret_name: OPENAI_API_KEY }
+    steps:
+      - name: Gate on the leg's secret
+        id: gate
+        env:
+          LEG_KEY: ${{ secrets[matrix.secret_name] }}
+        run: |
+          mkdir -p "jobs/${{ matrix.leg }}"
+          skipped=false
+          if [ -z "$LEG_KEY" ]; then
+            skipped=true
+            echo "::notice::Skipping ${{ matrix.leg }} — secret ${{ matrix.secret_name }} is not set"
+          fi
+          echo "skip=$skipped" >> "$GITHUB_OUTPUT"
+          jq -n --arg leg "${{ matrix.leg }}" --arg agent "${{ matrix.agent }}" \
+            --arg model "${{ matrix.model }}" --argjson skipped "$skipped" \
+            --arg reason "${{ matrix.secret_name }} not set" \
+            '{leg: $leg, agent: $agent, model: $model, skipped: $skipped}
+             + (if $skipped then {skip_reason: $reason} else {} end)' \
+            > "jobs/${{ matrix.leg }}/leg.json"
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          name: eval-inputs
+          path: bundle
+
+      - name: Set up uv
+        if: steps.gate.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Harbor
+        if: steps.gate.outputs.skip != 'true'
+        run: uv tool install "harbor==$HARBOR_VERSION"
+
+      - name: Run the agent
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAUDE_CODE_MAX_TURNS: "200"
+        run: |
+          skill_flags=()
+          for d in bundle/skills/*/; do skill_flags+=(--skill "${d%/}"); done
+          harbor run -p bundle/task \
+            -a "${{ matrix.agent }}" -m "${{ matrix.model }}" \
+            -e docker -k "${{ inputs.attempts || '1' }}" "${skill_flags[@]}" \
+            -o "jobs/${{ matrix.leg }}" --job-name "${{ matrix.leg }}" -q -y
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-leg-${{ matrix.leg }}
+          path: jobs/${{ matrix.leg }}
+          if-no-files-found: warn
+
+  report:
+    needs: [prepare, agents]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: eval-inputs
+          path: bundle
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eval-leg-*
+          path: collected
+
+      - name: Fetch main's latest results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
+                 --branch main --event push --status success --limit 1 \
+                 --json databaseId -q '.[0].databaseId' || true)
+          if [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" \
+               -n eval-results -D baseline; then
+            echo "Baseline: run $id"
+          else
+            echo "::notice::No successful main run with eval-results yet — reporting without a baseline"
+          fi
+
+      - name: Summarize
+        run: |
+          mode=pr
+          [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ] && mode=main
+          python3 bundle/eval_report.py summarize --jobs collected --out report \
+            --baseline baseline --refs bundle/refs.json --changes bundle/changes.md \
+            --mode "$mode" --tolerance "${{ inputs.tolerance || '0.25' }}"
+
+      - name: Install Claude Code
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
           # Skip first-run onboarding in headless mode
           echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
-          claude plugin marketplace add LightconeResearch/agent-skills
-          claude plugin install astra@lightcone-research
 
-      - name: Set up eval project
-        run: |
-          # Global git identity so any repo the agent commits in works
-          # (ephemeral runner — nothing to pollute)
-          git config --global user.name Eval
-          git config --global user.email eval@lightcone
-          project="$RUNNER_TEMP/eval-project"
-          echo "PROJECT=$project" >> "$GITHUB_ENV"
-          lc init "$project"
-          # Overlay the task seed (astra.yaml, data/) on the scaffold
-          cp -r evals/tasks/snae/. "$project"/
-          cd "$project"
-          # Regenerate baseline.yaml from the task astra.yaml's defaults —
-          # the scaffolded one matches the boilerplate spec, not the task's
-          rm -f universes/baseline.yaml
-          astra universe generate -n baseline \
-            -d 'Default configuration using standard practices'
-          # No scientific deps are pre-seeded — declaring what the
-          # recipes import (`uv add`) is part of what the eval measures
-          # lc materialize refuses a dirty tree — commit the seed so the
-          # agent starts from a clean one
-          git add -A
-          git commit -q -m 'Seed the eval task'
-
-      - name: Run Claude Code
-        id: agent
-        timeout-minutes: 15
-        working-directory: ${{ env.PROJECT }}
+      - name: Analyse the traces
+        id: analysis
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          set -o pipefail
-          # Transcript goes outside the project so the agent's git
-          # status stays clean; uploaded via the agent-trace artifact
-          claude -p "$(cat "$GITHUB_WORKSPACE/evals/prompt.md")" \
-            --output-format stream-json --verbose \
-            --dangerously-skip-permissions \
-            --max-turns 200 \
-            | tee "$RUNNER_TEMP/claude-transcript.jsonl"
-
-      - name: Check results
-        id: check
-        working-directory: ${{ env.PROJECT }}
-        run: |
-          astra validate astra.yaml
-          lc status
-          # The gate: nothing failed, nothing left to make — and at least
-          # one output actually got materialized
-          lc materialize --check --json | jq -e \
-            '.up_to_date and ((.current | length) > 0)'
-          # The publication view: declaring a license and materializing
-          # once more is part of the task
-          test -f ro-crate-metadata.json
-
-      - name: Build report
-        if: always()
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          transcript="$RUNNER_TEMP/claude-transcript.jsonl"
-          if [ -s "$transcript" ]; then
-            python3 .github/scripts/trace_digest.py \
-              "$transcript" "$RUNNER_TEMP/agent-trace.md" > "$RUNNER_TEMP/metrics.env"
-            source "$RUNNER_TEMP/metrics.env"
-            # Claude's read of where the agent struggled — best-effort,
-            # the report still posts if this fails or times out
-            timeout 180 claude -p "$(cat evals/trace-analysis-prompt.md)" \
-              < "$RUNNER_TEMP/agent-trace.md" \
-              > "$RUNNER_TEMP/pain-points.md" \
-              || echo "_Trace analysis unavailable._" > "$RUNNER_TEMP/pain-points.md"
+          # The analysis is part of the result: a leg without one fails the
+          # job, after the comment says so
+          status=ok
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not set — no trace analysis"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-
-          icon="✅"
-          [ "${{ steps.check.outcome }}" = "success" ] || icon="❌"
-          {
-            echo "## $icon Eval"
-            echo ""
-            echo "<!-- lightcone-eval-report -->"
-            echo ""
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Outputs check | ${{ steps.check.outcome }} |"
-            echo "| Agent run | ${{ steps.agent.outcome }} |"
-            echo "| Turns | ${turns:-?} |"
-            echo "| Tool calls | ${tool_calls:-?} |"
-            echo "| Cost | \$${cost:-?} |"
-            echo "| Agent wall time | ${duration:-?} |"
-            echo "| Model | ${model:-?} |"
-            echo ""
-            echo '<details><summary>lc status</summary>'
-            echo ""
-            echo '```'
-            (cd "$PROJECT" && lc status) || echo "unavailable"
-            echo '```'
-            echo ""
-            echo '</details>'
-            echo ""
-            if [ -s "$RUNNER_TEMP/pain-points.md" ]; then
-              echo '<details><summary>Confusion &amp; pain points (Claude analysis)</summary>'
-              echo ""
-              cat "$RUNNER_TEMP/pain-points.md"
-              echo ""
-              echo '</details>'
-              echo ""
+          for input in report/analysis-input-*.md; do
+            [ -e "$input" ] || continue
+            leg=${input#report/analysis-input-}; leg=${leg%.md}
+            if ! timeout 600 claude -p "$(cat bundle/trace-analysis-prompt.md)" \
+                   < "$input" > "report/analysis-$leg.md" \
+                || ! [ -s "report/analysis-$leg.md" ]; then
+              echo "::error::trace analysis failed for $leg"
+              rm -f "report/analysis-$leg.md"
+              status=failed
             fi
-            echo "Full trace: \`agent-trace\` artifact on [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
-          } > "$RUNNER_TEMP/comment.md"
-          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Build the report
+        if: always()
+        run: |
+          python3 bundle/eval_report.py comment --out report
+          cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: report
+          if-no-files-found: warn
 
       - name: Comment on PR
         if: always() && github.event_name == 'pull_request'
@@ -186,7 +375,12 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/comment.md`, 'utf8');
+            let body = fs.readFileSync('report/comment.md', 'utf8');
+            // GitHub rejects comments over 65536 characters
+            if (body.length > 65000) {
+              body = body.slice(0, 65000) + '\n\n_Truncated — full report in the eval-results artifact._';
+            }
+            body += `\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const marker = '<!-- lightcone-eval-report -->';
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -210,28 +404,8 @@ jobs:
               });
             }
 
-      - name: Upload agent trace
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-trace
-          path: |
-            ${{ runner.temp }}/claude-transcript.jsonl
-            ${{ runner.temp }}/agent-trace.md
-            ${{ runner.temp }}/pain-points.md
-          if-no-files-found: warn
-
-      - name: Upload eval project
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-project
-          # include-hidden-files keeps the manifests, the run records in
-          # .git, and the annexed results; the venv and lc's per-run
-          # machine state are excluded
-          path: |
-            ${{ env.PROJECT }}
-            !${{ env.PROJECT }}/.venv/**
-            !${{ env.PROJECT }}/.lightcone/**
-          include-hidden-files: true
-          if-no-files-found: warn
+      - name: Gate
+        run: |
+          jq -r '.gate.reasons[]' report/results.json
+          jq -e '.gate.ok' report/results.json > /dev/null
+          [ "${{ steps.analysis.outputs.status }}" = ok ]

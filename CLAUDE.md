@@ -192,7 +192,7 @@ src/lightcone/              # namespace — NO __init__.py
         ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
-evals/                      # agentic eval seed: prompt.md + tasks/<id>/
+evals/                      # agentic eval: snae-build/ (a Harbor task) + the trace-analysis prompt
 tests/                      # pytest — mirrors src/
 ```
 
@@ -209,9 +209,21 @@ uv build                         # wheel + sdist (CI runs this only to publish)
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
-around them. The other workflows are `eval.yml` (the agentic eval,
-on dispatch or the `run-eval` PR label; re-trigger by re-adding the
-label) and `pypi-publish.yaml`.
+around them. The other workflows are `eval.yml` and `pypi-publish.yaml`.
+
+`eval.yml` is the agentic eval, on every non-draft PR, every push to
+main and dispatch. It runs `evals/snae-build` through Harbor in four
+jobs: `prepare` (the engine wheel built from the checkout into the task
+image, the agent-skills bundles), `oracle` (the scripted solution must
+score 1.0), `agents` (claude-code and codex, the skills installed with
+`--skill`, a leg without its secret skipped with a notice) and `report`
+(`.github/scripts/eval_report.py`, then one `claude -p` trace analysis
+per leg). It fails on a reward below 1.0, an errored trial, a missing
+trace analysis, or — off main — mean agent steps more than `tolerance`
+over the median of that leg's last main runs, a history carried in the
+newest successful main run's `eval-results` artifact. agent-skills
+reuses it through `workflow_call` with the skills as the side under
+test; the header comment holds the caller.
 
 ## Key Invariants (layer 1)
 
@@ -712,7 +724,7 @@ must not discard edits made elsewhere while the graph was running.
 `definition_version = sha256(recipe ‖ canonical decisions ‖ format)` is
 what the spec says an output *is*. The format is framed in its own right
 rather than left to arrive through the rendered `{output}` path: a recipe
-need not use that placeholder at all (`evals/tasks/snae` does not), and
+need not use that placeholder at all (the `evals/snae-build` seed does not), and
 one that does not would keep its digest across a re-declared
 serialization — while the sidecar, named from the id alone, does not move
 either, so the manifest would go on describing an output at a path that
