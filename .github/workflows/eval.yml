@@ -7,15 +7,27 @@ name: Eval
 # the skills installed, and report gates on reward, breakage and agent steps
 # against main's history, then posts a trace analysis.
 #
-# agent-skills reuses it, with its own PR as the side under test:
+# Each leg is one Harbor agent: `legs` is a JSON list of {name, agent,
+# model, secret, env?}, where `secret` names the secret exported under its
+# own name and `env` adds variables (e.g. ANTHROPIC_BASE_URL). The default
+# is one claude-code leg. `require_skills` fails a leg that never loaded a
+# skill. agent-skills reuses the workflow, with its own PR as the side under
+# test:
 #
 #   jobs:
 #     eval:
 #       uses: LightconeResearch/lightcone-cli/.github/workflows/eval.yml@main
 #       secrets: inherit
+#       with:
+#         require_skills: true
+#         legs: >-
+#           [{"name": "claude-code", "agent": "claude-code", "model": "claude-sonnet-5-5", "secret": "CLAUDE_CODE_OAUTH_TOKEN"},
+#            {"name": "opencode", "agent": "opencode", "model": "deepseek/deepseek-flash", "secret": "DEEPSEEK_API_KEY"}]
 #
 # The caller needs `pull-requests: write` and `actions: read`, the same
 # triggers as below, and a REPO_READ_TOKEN that can read lightcone-evals.
+# --skill installs the skill bundles only; plugin installs and hooks are
+# agent-skills' e2e-hooks workflow's to test.
 
 on:
   workflow_dispatch:
@@ -29,11 +41,20 @@ on:
       tasks_ref:
         description: "lightcone-evals ref to fetch the task from"
         default: main
+      legs:
+        description: "JSON list of legs (see the header); empty means one claude-code leg"
+        default: ""
+      require_skills:
+        description: "Fail a leg that never loaded a skill"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       stack_ref: { type: string, default: main }
       skills_ref: { type: string, default: main }
       tasks_ref: { type: string, default: main }
+      legs: { type: string, default: "" }
+      require_skills: { type: boolean, default: false }
   pull_request:
     # `ready_for_review` beside the defaults, so flipping a draft to ready
     # triggers the run the draft guard below skips.
@@ -56,13 +77,27 @@ env:
   TASK: lightcone-cli/snae-build
   STACK_REPO: LightconeResearch/lightcone-cli
   SKILLS_REPO: LightconeResearch/agent-skills
+  DEFAULT_LEGS: '[{"name": "claude-code", "agent": "claude-code", "model": "claude-sonnet-5-5", "secret": "CLAUDE_CODE_OAUTH_TOKEN"}]'
 
 jobs:
   prepare:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
     steps:
+      - name: Resolve the legs
+        id: legs
+        env:
+          LEGS: ${{ inputs.legs }}
+        run: |
+          legs=$(jq -c . <<< "${LEGS:-$DEFAULT_LEGS}") \
+            && jq -e 'type == "array" and length > 0
+                      and all(.[]; (.name, .agent, .model, .secret) | type == "string")' <<< "$legs" > /dev/null \
+            || { echo "::error::legs must be a JSON list of {name, agent, model, secret, env?}"; exit 1; }
+          echo "legs=$legs" >> "$GITHUB_OUTPUT"
+
       # The triggering repository at its commit, with the history that
       # describes the change; the other at its input ref
       - uses: actions/checkout@v4
@@ -154,28 +189,26 @@ jobs:
           path: jobs
 
   agents:
-    needs: oracle
+    needs: [prepare, oracle]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { leg: claude-code, model: claude-sonnet-5-5, secret: CLAUDE_CODE_OAUTH_TOKEN }
-          - { leg: codex, model: gpt-5.1-codex, secret: OPENAI_API_KEY }
+        include: ${{ fromJSON(needs.prepare.outputs.legs) }}
     steps:
       - name: Skip without the leg's secret
         id: gate
         env:
           KEY: ${{ secrets[matrix.secret] }}
         run: |
-          mkdir -p "jobs/${{ matrix.leg }}"
+          mkdir -p "jobs/${{ matrix.name }}"
           skipped=false
-          [ -n "$KEY" ] || { skipped=true; echo "::notice::Skipping ${{ matrix.leg }}: ${{ matrix.secret }} is not set"; }
+          [ -n "$KEY" ] || { skipped=true; echo "::notice::Skipping ${{ matrix.name }}: ${{ matrix.secret }} is not set"; }
           echo "skip=$skipped" >> "$GITHUB_OUTPUT"
-          jq -n --arg leg "${{ matrix.leg }}" --argjson skipped "$skipped" \
+          jq -n --arg leg "${{ matrix.name }}" --argjson skipped "$skipped" \
             --arg reason "${{ matrix.secret }} not set" \
-            '{leg: $leg, skipped: $skipped, skip_reason: $reason}' > "jobs/${{ matrix.leg }}/leg.json"
+            '{leg: $leg, skipped: $skipped, skip_reason: $reason}' > "jobs/${{ matrix.name }}/leg.json"
       - uses: actions/download-artifact@v4
         if: steps.gate.outputs.skip == 'false'
         with:
@@ -188,18 +221,21 @@ jobs:
       - name: Run the agent
         if: steps.gate.outputs.skip == 'false'
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          KEY: ${{ secrets[matrix.secret] }}
+          LEG_ENV: ${{ toJSON(matrix.env) }}
           CLAUDE_CODE_MAX_TURNS: "200"
         run: |
+          export "${{ matrix.secret }}=$KEY"
+          while IFS= read -r kv; do export "$kv"; done \
+            < <(jq -r '(. // {}) | to_entries[] | "\(.key)=\(.value)"' <<< "$LEG_ENV")
           skills=(); for d in bundle/skills/*/; do skills+=(--skill "${d%/}"); done
-          harbor run -p bundle/task -a "${{ matrix.leg }}" -m "${{ matrix.model }}" "${skills[@]}" \
-            -e docker -o "jobs/${{ matrix.leg }}" --job-name "${{ matrix.leg }}" -q -y
+          harbor run -p bundle/task -a "${{ matrix.agent }}" -m "${{ matrix.model }}" "${skills[@]}" \
+            -e docker -o "jobs/${{ matrix.name }}" --job-name "${{ matrix.name }}" -q -y
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-leg-${{ matrix.leg }}
-          path: jobs/${{ matrix.leg }}
+          name: eval-leg-${{ matrix.name }}
+          path: jobs/${{ matrix.name }}
 
   report:
     needs: [prepare, oracle, agents]
@@ -228,6 +264,7 @@ jobs:
       - name: Summarize and gate
         env:
           ORACLE: ${{ needs.oracle.result }}
+          REQUIRE_SKILLS: ${{ inputs.require_skills || false }}
         run: |
           shopt -s nullglob
           mode=pr
@@ -262,7 +299,8 @@ jobs:
           # The gate: the oracle, reward and breakage always; off main, steps
           # more than 25% and 3 over the median of the leg's main history,
           # once three main runs are on record (one trial per leg is noisy)
-          jq -s --arg oracle "$ORACLE" --arg mode "$mode" --slurpfile h baseline/history.json \
+          jq -s --arg oracle "$ORACLE" --arg mode "$mode" --argjson skills "$REQUIRE_SKILLS" \
+            --slurpfile h baseline/history.json \
             --slurpfile refs bundle/refs.json '
             def median: sort | if length % 2 == 1 then .[length / 2 | floor]
                                else (.[length / 2 - 1] + .[length / 2]) / 2 end;
@@ -275,6 +313,7 @@ jobs:
                 + [.[] | select(.skipped | not)
                    | (if .exception then "\(.leg): errored — \(.exception)" else empty end),
                      (if (.reward // 0) < 1 then "\(.leg): reward \(.reward) < 1.0" else empty end),
+                     (if $skills and (.skills | not) then "\(.leg): no skill was loaded" else empty end),
                      (if $mode == "pr" and (.history | length) >= 3 then
                         if .steps == null then "\(.leg): no trajectory, steps cannot be compared"
                         elif .steps > .median * 1.25 and .steps - .median >= 3
