@@ -752,3 +752,31 @@ def test_status_has_exactly_one_flag(runner: CliRunner) -> None:
     assert "--json" in options
     for flag in ("--check", "--refresh", "--verbose", "--all"):
         assert flag not in options
+
+
+def test_status_on_a_spec_that_is_not_yaml_is_a_clean_error(
+    runner: CliRunner, project: Path
+) -> None:
+    """A spec that does not parse has nothing to validate, so the gate has
+    to speak for it: one line naming the file and the line, not the
+    loader's traceback."""
+    (project / ".python-version").write_text("3.13.0\n")
+    (project / "universes").mkdir()
+    (project / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions: {}\n")
+    (project / "astra.yaml").write_text(
+        'version: "0.0.13"\n'
+        "name: demo\n"
+        "outputs:\n"
+        "  - id: fit\n"
+        "    type: metric\n"
+        "    format: json\n"
+        "    recipe:\n"
+        "      command: echo a: b > {output}\n"
+    )
+
+    result = runner.invoke(main, ["status"])
+
+    assert result.exit_code == 1
+    assert "does not validate" in result.output
+    assert "mapping values are not allowed here" in result.output
+    assert "Traceback" not in result.output
