@@ -5,7 +5,10 @@ name: Eval
 # task image to the lightcone-cli commit and collects the skills, oracle
 # requires the scripted solution to score 1.0, agents runs each harness with
 # the skills installed, and report gates on reward, breakage and agent steps
-# against main's history, then posts a trace analysis.
+# against main's history, then posts a trace analysis. The task owns what is
+# measured: its verifier writes the reward and, beside it, `agent_steps` and
+# `skills_loaded`; its `rubric.toml` is what `harbor analyze` asks of a
+# trial. Only the comparison with main's run is this workflow's own prompt.
 #
 # Each leg is one Harbor agent: `legs` is a JSON list of {name, agent,
 # model, secret, env?}, where `secret` names the secret exported under its
@@ -241,7 +244,7 @@ jobs:
     needs: [prepare, oracle, agents]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -272,7 +275,7 @@ jobs:
           mkdir -p report rows
           [ -f baseline/history.json ] || { mkdir -p baseline; echo '{}' > baseline/history.json; }
 
-          # One row per leg, from its trial's result.json and ATIF trajectory
+          # One row per leg, from what the task's verifier recorded
           for d in collected/eval-leg-*/; do
             leg=$(jq -r .leg "$d/leg.json")
             if [ "$(jq -r .skipped "$d/leg.json")" = true ]; then
@@ -282,16 +285,13 @@ jobs:
             trial=$(dirname "$(ls "$d"*/*/result.json 2>/dev/null | head -1)")
             traj="$trial/agent/trajectory.json"
             [ -f "$traj" ] && cp "$traj" "report/trace-$leg.json" || echo '{}' > "report/trace-$leg.json"
-            jq -n --arg leg "$leg" --arg trial "$trial" \
-              --slurpfile r "$trial/result.json" --slurpfile a "report/trace-$leg.json" '
-              ($a[0].steps // []) as $steps
-              | {leg: $leg, skipped: false, trial: $trial,
-                 reward: $r[0].verifier_result.rewards.reward,
+            jq -n --arg leg "$leg" --arg trial "$trial" --slurpfile r "$trial/result.json" '
+              ($r[0].verifier_result.rewards // {}) as $w
+              | {leg: $leg, skipped: false, trial: $trial, reward: $w.reward,
                  exception: ($r[0].exception_info
                    | if . then "\(.exception_type): \(.exception_message | tostring | .[:300])" else null end),
-                 steps: ([$steps[] | select(.source == "agent")] | if length > 0 then length else null end),
-                 skills: any($steps[].tool_calls[]?;
-                   (.function_name | ascii_downcase) == "skill" or (.arguments | tostring | test("SKILL\\.md")))}' \
+                 steps: $w.agent_steps,
+                 skills: (if $w.skills_loaded == null then null else $w.skills_loaded == 1 end)}' \
               > "rows/$leg.json" 2>/dev/null \
               || jq -n --arg leg "$leg" '{leg: $leg, skipped: false, reward: null, exception: "no trial result", steps: null}' > "rows/$leg.json"
           done
@@ -330,66 +330,58 @@ jobs:
               report/results.json > report/history.json
           fi
 
+      - uses: astral-sh/setup-uv@v6
+      - run: uv tool install "harbor==$HARBOR_VERSION"
+
       - name: Analyse the traces
         id: analysis
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          # The analysis is part of the result: a leg without one fails the job
+          # The analysis is part of the result: a leg without one fails the job.
+          # harbor analyze judges each trial by the task's rubric; claude -p
+          # then compares it with main's run of the same leg, which a single
+          # trial cannot see.
           legs=$(jq -r '.legs[] | select(.skipped | not) | select(.trial) | .leg' report/results.json)
           [ -n "$legs" ] || exit 0
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
-          cat > prompt.md <<'EOF'
-          You are reviewing one leg of an automated eval: an autonomous coding
-          agent was given a task instruction and had to carry it out with the
-          `astra` (spec) and `lc` (execution) CLIs, guided only by that
-          instruction, the Lightcone agent skills installed into its harness, and
-          the CLIs' own help. The message lists the files to read: the
-          instruction, this run's ATIF trajectory (JSON: `steps`, each with
-          `tool_calls` and an `observation`), the verifier's output, the change
-          under test, and, when present, the trajectory of the latest successful
-          main run of the same leg. Read them before answering.
+          rubric=(); [ -f bundle/task/rubric.toml ] && rubric=(-r bundle/task/rubric.toml)
+          cat > compare.md <<'EOF'
+          You are comparing two runs of one leg of an automated eval: an
+          autonomous coding agent carried out the same task with the `astra`
+          and `lc` CLIs and the Lightcone agent skills, once on this change and
+          once on main. The message lists the files to read: both ATIF
+          trajectories (JSON: `steps`, each with `tool_calls` and an
+          `observation`), this run's rubric analysis, and the change under
+          test. Read them before answering.
 
-          Explain *why* this run went the way it did, so a reviewer can act on it
-          without opening the trace. Cite trajectory steps as `step N` and quote
-          output verbatim where it matters. Do not restate the task, do not
-          summarize a successful build, and do not pad. Write exactly these two
-          markdown sections and nothing else:
-
-          #### Confusion & pain points
-
-          3-6 concise bullets: what happened, its root cause, and the fix it
-          suggests when one is clear. Look for failed commands and their cause;
-          misunderstandings of the spec format, the CLI, the sandbox or the
-          environment; whether the skills were loaded and told the agent what it
-          needed, or it fell back to `--help`, source reading or trial and error;
-          detours; and workarounds that hint at a gap lightcone-cli, the skills or
-          the eval setup should fix. If the run was essentially clean, say so in
-          one bullet.
-
-          #### What changed vs main
-
-          Only with a main trajectory: where the extra or missing steps are, the
-          first point where the two runs diverge, and which commit or file in the
-          change under test most plausibly caused it — or say plainly that it
-          looks like agent variance, and why. If reward or breakage changed,
-          explain that first. Without a main trajectory, write one line saying so.
+          Write one markdown section, `#### What changed vs main`, and nothing
+          else: where the extra or missing steps are, the first point where the
+          two runs diverge, and which commit or file in the change most
+          plausibly caused it — or say plainly that it looks like agent
+          variance, and why. If reward or breakage changed, explain that first.
+          Cite steps as `step N` and quote output verbatim where it matters.
           EOF
           status=ok
           for leg in $legs; do
             trial=$(jq -r --arg l "$leg" '.legs[] | select(.leg == $l) | .trial' report/results.json)
+            timeout 1200 harbor analyze "$trial" "${rubric[@]}" -m claude-sonnet-5-5 -e docker \
+              -o analyze --job-name "analyze-$leg" -q \
+              && cp "$trial/analysis.json" "report/analysis-$leg.json" \
+              || { echo "::error::trace analysis failed for $leg"; status=failed; continue; }
+            [ -f "baseline/trace-$leg.json" ] || continue
+            [ -x "$HOME/.local/bin/claude" ] || {
+              curl -fsSL https://claude.ai/install.sh | bash
+              echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"; }
             {
               echo "Leg: $leg. Summary: $(jq -c --arg l "$leg" '.legs[] | select(.leg == $l) | del(.trial)' report/results.json)"
-              echo "- instruction: bundle/task/instruction.md"
               echo "- this run's trajectory: report/trace-$leg.json"
-              echo "- verifier output: $trial/verifier/test-stdout.txt"
+              echo "- main's trajectory: baseline/trace-$leg.json"
+              echo "- this run's analysis: report/analysis-$leg.json"
               [ -f bundle/changes.md ] && echo "- change under test: bundle/changes.md"
-              [ -f "baseline/trace-$leg.json" ] && echo "- main's trajectory: baseline/trace-$leg.json"
             } > "input-$leg.txt"
-            timeout 900 "$HOME/.local/bin/claude" -p "$(cat prompt.md)" --allowedTools Read Grep \
-              < "input-$leg.txt" > "report/analysis-$leg.md" && [ -s "report/analysis-$leg.md" ] \
-              || { echo "::error::trace analysis failed for $leg"; status=failed; }
+            timeout 900 "$HOME/.local/bin/claude" -p "$(cat compare.md)" --allowedTools Read Grep \
+              < "input-$leg.txt" > "report/compare-$leg.md" && [ -s "report/compare-$leg.md" ] \
+              || { echo "::error::comparison with main failed for $leg"; status=failed; }
           done
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
@@ -401,11 +393,18 @@ jobs:
                    (.refs | to_entries | map("\(.key): `\(.value)`") | join(" · ")), "",
                    "| Leg | Reward | Agent steps | main median (runs) | Skills loaded |", "|---|---|---|---|---|",
                    (.legs[] | if .skipped then "| \(.leg) | skipped: \(.reason) | | | |"
-                     else "| \(.leg) | \(.reward // "—") | \(.steps // "—") | \(.median // "—") (\(.history | length)) | \(if .skills then "yes" else "**no**" end) |" end),
+                     else "| \(.leg) | \(.reward // "—") | \(.steps // "—") | \(.median // "—") (\(.history | length)) | \(if .skills then "yes" elif .skills == false then "**no**" else "—" end) |" end),
                    "", (.reasons[] | "- ❌ \(.)"), ""' report/results.json
-            for f in report/analysis-*.md; do
+            for f in report/analysis-*.json; do
               [ -e "$f" ] || continue
-              leg=${f#report/analysis-}; echo "### ${leg%.md}"; echo; cat "$f"; echo
+              leg=${f#report/analysis-}; leg=${leg%.json}
+              echo "### $leg"; echo
+              jq -r '.summary, "", (.checks | to_entries[]
+                | "- \({pass: "✅", fail: "❌"}[.value.outcome] // "➖") **\(.key)**: \(.value.explanation)")' "$f"
+              echo
+              if [ -f "report/compare-$leg.md" ]; then cat "report/compare-$leg.md"
+              else echo "_No main run of this leg on record to compare against._"; fi
+              echo
             done
             echo "Steps are gated once three main runs are on record; trajectories are in the \`eval-results\` artifact."
           } > report/comment.md

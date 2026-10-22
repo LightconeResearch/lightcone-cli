@@ -218,14 +218,16 @@ to the lightcone-cli commit under test and collects the agent-skills
 bundles, `oracle` requires the scripted solution to score 1.0, `agents`
 runs each leg of the `legs` input (a JSON list of Harbor agents; one
 claude-code leg by default) with the skills installed through `--skill`
-(a leg without its secret is skipped), and `report` (jq over each
-trial's result and ATIF trajectory, then one `claude -p` per leg that
-reads the trajectories itself) fails on a reward below 1.0, an errored trial, a missing
-analysis, a leg that loaded no skill when `require_skills` is set, or —
+(a leg without its secret is skipped), and `report` fails on a reward
+below 1.0, an errored trial, a missing analysis, a leg that loaded no skill when `require_skills` is set, or —
 off main — agent steps more than 25% and 3 steps over the
 median of the leg's last main runs, once three are on record. That
 history travels in the newest successful main run's `eval-results`
-artifact. The workflow is one self-contained file, so agent-skills reuses
+artifact. The task owns what is measured: its verifier writes
+`agent_steps` and `skills_loaded` beside the reward, and its `rubric.toml`
+is what `harbor analyze` judges each trial by; the workflow's one prompt is
+the `claude -p` comparison with main's run of the same leg, which a single
+trial cannot see. The workflow is one self-contained file, so agent-skills reuses
 it through `workflow_call` with its own PR as the side under test (the
 header comment holds the caller) and nothing it runs can drift from it.
 
