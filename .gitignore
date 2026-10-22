@@ -220,6 +220,3 @@ uv.lock
 
 # macOS
 .DS_Store
-
-# The engine wheel the eval workflow builds into the task image
-evals/snae-build/environment/lc-wheel/

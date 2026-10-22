@@ -1,22 +1,29 @@
 name: Eval
 
-# Agentic eval on Harbor: the task in evals/snae-build is run by real agent
-# harnesses against the lightcone-cli and agent-skills under test, and every
-# run explains itself from its trace.
+# Agentic eval on Harbor: tasks from LightconeResearch/lightcone-evals are run
+# by real agent harnesses against the lightcone-cli and agent-skills under
+# test, and every run explains itself from its trace.
 #
-#   prepare  build the engine wheel into the task, collect the skill bundles
-#   oracle   the task's scripted solution must score 1.0 — no LLM involved
+#   prepare  fetch the tasks and pin each image to the lightcone-cli commit
+#            under test, collect the skill bundles
+#   oracle   every task's scripted solution must score 1.0 — no LLM involved
 #   agents   one Harbor job per harness, the skills installed with --skill
 #   report   rewards, agent steps against main's history, the trace analysis,
 #            the PR comment; red on a failed gate or a missing analysis
 #
-# The step gate: a leg whose mean agent steps exceed the median of its last
-# runs on main by more than `tolerance` fails. Main runs record that history
-# (in the eval-results artifact of the newest successful main run) and gate
-# on reward only, so the reference follows main.
+# The tasks stay in lightcone-evals, in Harbor format. Each image installs
+# lightcone-cli from git at its `ARG LIGHTCONE_COMMIT=` line, which prepare
+# rewrites to the commit under test (lightcone-bench's contract too).
+# lightcone-evals is private: a REPO_READ_TOKEN secret with contents:read on
+# it is required.
 #
-# Reuse from LightconeResearch/agent-skills, where the skills are the side
-# under test and the stack is lightcone-cli main:
+# The step gate: a leg whose mean agent steps on a task exceed the median of
+# its last runs on main by more than `tolerance` fails. Main runs record that
+# history (in the eval-results artifact of the newest successful main run)
+# and gate on reward only, so the reference follows main.
+#
+# Reuse from LightconeResearch/agent-skills (or lightcone-evals), where that
+# repository is the side under test and the others are at their input refs:
 #
 #   on:
 #     pull_request:
@@ -32,16 +39,16 @@ name: Eval
 #       uses: LightconeResearch/lightcone-cli/.github/workflows/eval.yml@main
 #       secrets: inherit
 #
-# Whichever of the two repositories triggered the run is checked out at the
-# triggering commit; the other at its input ref. Each repository keeps its
-# own history, because the baseline is looked up in the triggering one.
+# Whichever of the three repositories triggered the run is checked out at the
+# triggering commit; the others at their input refs. Each repository keeps
+# its own history, because the baseline is looked up in the triggering one.
 #
 # Limits: --skill installs SKILL.md bundles only, not the plugins' hooks
 # (agent-skills' e2e-hooks workflow covers those); step counts compare within
-# a leg only, since harness tool vocabularies differ; at attempts=1 the step
-# comparison is coarse, which is what the median and the tolerance absorb.
-# A leg whose secret is absent is skipped with a notice, and a run in which
-# no leg ran fails.
+# a leg and task only, since harness tool vocabularies differ; at attempts=1
+# the step comparison is coarse, which is what the median and the tolerance
+# absorb. A leg whose secret is absent is skipped with a notice, and a run in
+# which no leg ran fails.
 
 on:
   workflow_dispatch:
@@ -52,6 +59,14 @@ on:
         default: main
       skills_ref:
         description: "agent-skills ref to install when it is not the triggering repository"
+        type: string
+        default: main
+      tasks:
+        description: "Comma-separated task paths in lightcone-evals; a folder means every task in it"
+        type: string
+        default: lightcone-cli/snae-build
+      tasks_ref:
+        description: "lightcone-evals ref to fetch the tasks from when it is not the triggering repository"
         type: string
         default: main
       attempts:
@@ -70,6 +85,14 @@ on:
         default: main
       skills_ref:
         description: "agent-skills ref to install when it is not the triggering repository"
+        type: string
+        default: main
+      tasks:
+        description: "Comma-separated task paths in lightcone-evals; a folder means every task in it"
+        type: string
+        default: lightcone-cli/snae-build
+      tasks_ref:
+        description: "lightcone-evals ref to fetch the tasks from when it is not the triggering repository"
         type: string
         default: main
       attempts:
@@ -101,6 +124,7 @@ env:
   HARBOR_VERSION: 0.22.0
   STACK_REPO: LightconeResearch/lightcone-cli
   SKILLS_REPO: LightconeResearch/agent-skills
+  TASKS_REPO: LightconeResearch/lightcone-evals
 
 jobs:
   prepare:
@@ -114,9 +138,7 @@ jobs:
           repository: ${{ env.STACK_REPO }}
           ref: ${{ github.repository == env.STACK_REPO && (github.event.pull_request.head.sha || github.sha) || inputs.stack_ref || 'main' }}
           path: stack
-          # Full history so hatch-vcs sees the tags and stamps a truthful
-          # dev version into the wheel (and every manifest's lc_version),
-          # and so the change under test can be described
+          # Full history, so the change under test can be described
           fetch-depth: 0
 
       - name: Check out agent-skills
@@ -127,20 +149,53 @@ jobs:
           path: skills-src
           fetch-depth: 0
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+      - name: Require the lightcone-evals token
+        env:
+          REPO_READ_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
+        run: |
+          [ -n "$REPO_READ_TOKEN" ] || {
+            echo "::error::REPO_READ_TOKEN is not set — it needs contents:read on $TASKS_REPO, which is private"
+            exit 1
+          }
+
+      - name: Check out lightcone-evals
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TASKS_REPO }}
+          ref: ${{ github.repository == env.TASKS_REPO && (github.event.pull_request.head.sha || github.sha) || inputs.tasks_ref || 'main' }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
+          path: tasks-src
+          fetch-depth: 0
 
       - name: Assemble the eval inputs
         env:
           EVENT_REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          TASKS: ${{ inputs.tasks || 'lightcone-cli/snae-build' }}
         run: |
-          mkdir -p bundle/skills
-          cp -r stack/evals/snae-build bundle/task
+          mkdir -p bundle/tasks bundle/skills
           cp stack/.github/scripts/eval_report.py stack/evals/trace-analysis-prompt.md bundle/
-          # The engine under test, built from its checkout: the task image
-          # installs exactly this wheel
-          uv build --wheel --project stack -o bundle/task/environment/lc-wheel
+
+          # The requested tasks, side by side: to Harbor a folder of tasks is
+          # one job. Each image installs lightcone-cli at its
+          # `ARG LIGHTCONE_COMMIT=` line, pinned here to the commit under test
+          stack_sha=$(git -C stack rev-parse HEAD)
+          IFS=', ' read -r -a entries <<< "$TASKS"
+          for entry in "${entries[@]}"; do
+            [ -n "$entry" ] || continue
+            src="tasks-src/${entry%/}"
+            if [ -f "$src/task.toml" ]; then found=("$src"); else found=("$src"/*/task.toml); found=("${found[@]%/task.toml}"); fi
+            for t in "${found[@]}"; do
+              [ -f "$t/task.toml" ] || { echo "::error::'$entry' is neither a task nor a folder of tasks in $TASKS_REPO"; exit 1; }
+              name=$(basename "$t")
+              [ ! -e "bundle/tasks/$name" ] || { echo "::error::two tasks named '$name'"; exit 1; }
+              grep -q '^ARG LIGHTCONE_COMMIT=' "$t/environment/Dockerfile" \
+                || { echo "::error::task $name does not pin lightcone-cli with ARG LIGHTCONE_COMMIT="; exit 1; }
+              cp -r "$t" "bundle/tasks/$name"
+              sed -i "s|^ARG LIGHTCONE_COMMIT=.*|ARG LIGHTCONE_COMMIT=$stack_sha|" "bundle/tasks/$name/environment/Dockerfile"
+            done
+          done
+          ls bundle/tasks | grep -q . || { echo "::error::no tasks selected"; exit 1; }
 
           # Every built skill bundle, first of each name: plugins bundle
           # their dependencies, so one skill can appear in several
@@ -153,14 +208,17 @@ jobs:
           case "${EVENT_REPO,,}" in
             "${STACK_REPO,,}") changed=stack ;;
             "${SKILLS_REPO,,}") changed=skills-src ;;
+            "${TASKS_REPO,,}") changed=tasks-src ;;
             *) changed= ;;
           esac
           jq -n \
             --arg stack "$STACK_REPO@$(git -C stack rev-parse --short HEAD)" \
             --arg skills "$SKILLS_REPO@$(git -C skills-src rev-parse --short HEAD)" \
+            --arg tasks "$TASKS_REPO@$(git -C tasks-src rev-parse --short HEAD)" \
+            --arg task_set "$(ls bundle/tasks | paste -sd, -)" \
             --arg skill_set "$(ls bundle/skills | paste -sd, -)" \
             --arg sha "$(git -C "${changed:-stack}" rev-parse HEAD)" \
-            '{stack: $stack, skills: $skills, skill_set: $skill_set, sha: $sha}' > bundle/refs.json
+            '{stack: $stack, skills: $skills, tasks: $tasks, task_set: $task_set, skill_set: $skill_set, sha: $sha}' > bundle/refs.json
           cat bundle/refs.json
 
           # What the analyst blames a regression on: the commits and files
@@ -189,7 +247,7 @@ jobs:
   oracle:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -203,7 +261,7 @@ jobs:
         run: uv tool install "harbor==$HARBOR_VERSION"
 
       - name: Run the reference solution
-        run: harbor run -p bundle/task -a oracle -e docker -o jobs --job-name oracle -q -y
+        run: harbor run -p bundle/tasks -a oracle -e docker -o jobs --job-name oracle -q -y
 
       - name: Require reward 1.0
         run: |
@@ -272,7 +330,7 @@ jobs:
         run: |
           skill_flags=()
           for d in bundle/skills/*/; do skill_flags+=(--skill "${d%/}"); done
-          harbor run -p bundle/task \
+          harbor run -p bundle/tasks \
             -a "${{ matrix.agent }}" -m "${{ matrix.model }}" \
             -e docker -k "${{ inputs.attempts || '1' }}" "${skill_flags[@]}" \
             -o "jobs/${{ matrix.leg }}" --job-name "${{ matrix.leg }}" -q -y
@@ -321,6 +379,7 @@ jobs:
           [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ] && mode=main
           python3 bundle/eval_report.py summarize --jobs collected --out report \
             --baseline baseline --refs bundle/refs.json --changes bundle/changes.md \
+            --tasks bundle/tasks \
             --mode "$mode" --tolerance "${{ inputs.tolerance || '0.25' }}"
 
       - name: Install Claude Code

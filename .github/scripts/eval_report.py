@@ -197,6 +197,8 @@ def read_trial(trial_dir: Path) -> dict[str, Any]:
     exc = result.get("exception_info")
     trial: dict[str, Any] = {
         "trial": result.get("trial_name", trial_dir.name),
+        "task": Path(str((result.get("task_id") or {}).get("path") or "")).name
+        or str(result.get("task_name") or "?").split("/")[-1],
         "rewards": rewards or {},
         "reward": (rewards or {}).get("reward"),
         "exception": (
@@ -274,34 +276,49 @@ def _mean(values: list[Any]) -> float | None:
     return statistics.mean(nums) if nums else None
 
 
-def read_leg(leg_dir: Path) -> dict[str, Any]:
-    """Every trial of one matrix leg, plus the leg's own description."""
+def read_leg(leg_dir: Path) -> list[dict[str, Any]]:
+    """One group per task a matrix leg ran, keyed ``<leg>.<task>``.
+
+    Steps, history and the gate are per group: two tasks' step counts say
+    nothing about each other. A skipped leg is one group with no task.
+    """
     meta = _load(leg_dir / "leg.json") or {}
+    leg = meta.get("leg", leg_dir.name)
     trials = [
         read_trial(p.parent)
         for p in sorted(leg_dir.rglob("result.json"))
         if (_load(p) or {}).get("trial_name")
     ]
-    phases: Counter[str] = Counter()
+    by_task: dict[str, list[dict[str, Any]]] = {}
     for t in trials:
-        phases.update(t["phases"])
-    return {
-        "leg": meta.get("leg", leg_dir.name),
-        "agent": meta.get("agent", "?"),
-        "model": meta.get("model", "?"),
-        "skipped": bool(meta.get("skipped")),
-        "skip_reason": meta.get("skip_reason", ""),
-        "trials": trials,
-        "n": len(trials),
-        "errored": sum(1 for t in trials if t["exception"]),
-        "mean_reward": _mean([t["reward"] for t in trials]),
-        "mean_steps": _mean([t["steps"] for t in trials]),
-        "mean_tool_calls": _mean([t["tool_calls"] for t in trials]),
-        "mean_cost_usd": _mean([t["cost_usd"] for t in trials]),
-        "mean_agent_min": _mean([t["agent_min"] for t in trials]),
-        "phases": {k: v / max(len(trials), 1) for k, v in phases.items()},
-        "skills_used": any(t["skills_used"] for t in trials),
-    }
+        by_task.setdefault(t["task"], []).append(t)
+    groups = []
+    for task, ts in sorted(by_task.items()) or [("", [])]:
+        phases: Counter[str] = Counter()
+        for t in ts:
+            phases.update(t["phases"])
+        groups.append(
+            {
+                "leg": f"{leg}.{task}" if task else leg,
+                "harness_leg": leg,
+                "task": task,
+                "agent": meta.get("agent", "?"),
+                "model": meta.get("model", "?"),
+                "skipped": bool(meta.get("skipped")),
+                "skip_reason": meta.get("skip_reason", ""),
+                "trials": ts,
+                "n": len(ts),
+                "errored": sum(1 for t in ts if t["exception"]),
+                "mean_reward": _mean([t["reward"] for t in ts]),
+                "mean_steps": _mean([t["steps"] for t in ts]),
+                "mean_tool_calls": _mean([t["tool_calls"] for t in ts]),
+                "mean_cost_usd": _mean([t["cost_usd"] for t in ts]),
+                "mean_agent_min": _mean([t["agent_min"] for t in ts]),
+                "phases": {k: v / max(len(ts), 1) for k, v in phases.items()},
+                "skills_used": any(t["skills_used"] for t in ts),
+            }
+        )
+    return groups
 
 
 def gate(
@@ -348,7 +365,7 @@ def summarize(args: argparse.Namespace) -> int:
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)
     refs = _load(args.refs) if args.refs else {}
-    legs = [read_leg(d) for d in sorted(p for p in args.jobs.iterdir() if p.is_dir())]
+    legs = [g for d in sorted(p for p in args.jobs.iterdir() if p.is_dir()) for g in read_leg(d)]
     base = args.baseline
     base_results = (_load(base / "results.json") if base else None) or {}
     history = (_load(base / "history.json") if base else None) or {}
@@ -407,6 +424,10 @@ def summarize(args: argparse.Namespace) -> int:
         (out / f"evidence-{name}.md").write_text("\n".join(evidence) + "\n")
 
         base_digest = base / f"digest-{name}.md" if base else None
+        task_file = args.tasks / leg["task"] / "instruction.md" if args.tasks else None
+        instruction = (
+            task_file.read_text() if task_file and task_file.is_file() else "_not provided_"
+        )
         summary = (
             f"leg {name} ({leg['agent']} / {leg['model']}): mean reward "
             f"{_fmt(leg['mean_reward'], '{:.2f}')}, mean agent steps "
@@ -416,6 +437,8 @@ def summarize(args: argparse.Namespace) -> int:
         (out / f"analysis-input-{name}.md").write_text(
             "\n\n".join(
                 [
+                    "# Task instruction",
+                    instruction,
                     "# Run summary",
                     summary,
                     "\n".join(evidence),
@@ -537,6 +560,7 @@ def main() -> int:
     s.add_argument("--baseline", type=Path)
     s.add_argument("--refs", type=Path)
     s.add_argument("--changes", type=Path)
+    s.add_argument("--tasks", type=Path)
     s.add_argument("--mode", choices=["main", "pr"], default="pr")
     s.add_argument("--tolerance", type=float, default=0.25)
     c = sub.add_parser("comment")

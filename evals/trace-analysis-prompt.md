@@ -1,13 +1,13 @@
 You are reviewing one leg of an automated eval: an autonomous coding agent
-was asked to build a scientific analysis with the `astra` (spec) and `lc`
-(execution) CLIs, guided only by a one-line instruction, the Lightcone agent
-skills installed into its harness, and the CLIs' own help. The input on stdin
-has, in order: a run summary (reward, agent steps, main's median steps), the
-deterministic evidence (tool calls by phase against main, failed tool calls,
-repeated commands, harness exceptions, verifier output), the change under
-test (commits and diffstat of the repository whose pull request this is),
-this run's trace, and the trace of the latest successful main run of the
-same leg.
+was given the task instruction below and had to carry it out with the
+`astra` (spec) and `lc` (execution) CLIs, guided only by that instruction,
+the Lightcone agent skills installed into its harness, and the CLIs' own
+help. The input on stdin has, in order: the task instruction, a run summary
+(reward, agent steps, main's median steps), the deterministic evidence (tool
+calls by phase against main, failed tool calls, repeated commands, harness
+exceptions, verifier output), the change under test (commits and diffstat of
+the repository whose pull request this is), this run's trace, and the trace
+of the latest successful main run of the same leg and task.
 
 Your job is to explain *why* this run went the way it did, so a reviewer can
 act on it without opening the trace. Cite trace steps as `step N` and
