@@ -192,7 +192,7 @@ src/lightcone/              # namespace — NO __init__.py
         ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
-evals/                      # the eval's trace-analysis prompt (the tasks live in lightcone-evals)
+evals/                      # the eval's trace-analysis prompt (the task lives in lightcone-evals)
 tests/                      # pytest — mirrors src/
 ```
 
@@ -212,21 +212,20 @@ runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
 around them. The other workflows are `eval.yml` and `pypi-publish.yaml`.
 
 `eval.yml` is the agentic eval, on every non-draft PR, every push to
-main and dispatch. It runs Harbor tasks fetched from
-`LightconeResearch/lightcone-evals` (`lightcone-cli/snae-build` by
-default; private, so a `REPO_READ_TOKEN` secret is required) in four
-jobs: `prepare` (each task's `ARG LIGHTCONE_COMMIT=` rewritten to the
-lightcone-cli commit under test, the agent-skills bundles), `oracle`
-(every scripted solution must score 1.0), `agents` (claude-code and
-codex, the skills installed with `--skill`, a leg without its secret
-skipped with a notice) and `report` (`.github/scripts/eval_report.py`,
-then one `claude -p` trace analysis per leg and task). It fails on a
-reward below 1.0, an errored trial, a missing trace analysis, or — off
-main — mean agent steps more than `tolerance` over the median of that
-leg's last main runs on the task, a history carried in the newest
-successful main run's `eval-results` artifact. agent-skills and
-lightcone-evals reuse it through `workflow_call`, each as the side under
-test; the header comment holds the caller.
+main and dispatch. It runs the Harbor task `lightcone-cli/snae-build`
+from the private `LightconeResearch/lightcone-evals` (a `REPO_READ_TOKEN`
+secret reads it): `prepare` rewrites the task's `ARG LIGHTCONE_COMMIT=`
+to the lightcone-cli commit under test and collects the agent-skills
+bundles, `oracle` requires the scripted solution to score 1.0, `agents`
+runs claude-code and codex with the skills installed through `--skill`
+(a leg without its secret is skipped), and `report`
+(`.github/scripts/eval_report.py`, then one `claude -p` trace analysis
+per leg) fails on a reward below 1.0, an errored trial, a missing
+analysis, or — off main — agent steps more than 25% and 3 steps over the
+median of the leg's last main runs, once three are on record. That
+history travels in the newest successful main run's `eval-results`
+artifact. agent-skills reuses the workflow through `workflow_call`, with
+its own PR as the side under test; the header comment holds the caller.
 
 ## Key Invariants (layer 1)
 
