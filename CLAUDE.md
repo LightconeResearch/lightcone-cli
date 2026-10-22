@@ -192,7 +192,6 @@ src/lightcone/              # namespace — NO __init__.py
         ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
-evals/                      # the eval's trace-analysis prompt (the task lives in lightcone-evals)
 tests/                      # pytest — mirrors src/
 ```
 
@@ -218,14 +217,15 @@ secret reads it): `prepare` rewrites the task's `ARG LIGHTCONE_COMMIT=`
 to the lightcone-cli commit under test and collects the agent-skills
 bundles, `oracle` requires the scripted solution to score 1.0, `agents`
 runs claude-code and codex with the skills installed through `--skill`
-(a leg without its secret is skipped), and `report`
-(`.github/scripts/eval_report.py`, then one `claude -p` trace analysis
-per leg) fails on a reward below 1.0, an errored trial, a missing
+(a leg without its secret is skipped), and `report` (jq over each
+trial's result and ATIF trajectory, then one `claude -p` per leg that
+reads the trajectories itself) fails on a reward below 1.0, an errored trial, a missing
 analysis, or — off main — agent steps more than 25% and 3 steps over the
 median of the leg's last main runs, once three are on record. That
 history travels in the newest successful main run's `eval-results`
-artifact. agent-skills reuses the workflow through `workflow_call`, with
-its own PR as the side under test; the header comment holds the caller.
+artifact. The workflow is one self-contained file, so agent-skills reuses
+it through `workflow_call` with its own PR as the side under test (the
+header comment holds the caller) and nothing it runs can drift from it.
 
 ## Key Invariants (layer 1)
 

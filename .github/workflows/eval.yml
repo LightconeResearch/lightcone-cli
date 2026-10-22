@@ -92,7 +92,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           mkdir -p bundle/skills
-          cp stack/.github/scripts/eval_report.py stack/evals/trace-analysis-prompt.md bundle/
 
           # The task image installs lightcone-cli at its ARG LIGHTCONE_COMMIT=
           cp -r "evals/$TASK" bundle/task
@@ -226,14 +225,71 @@ jobs:
           [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -n eval-results -D baseline \
             || echo "::notice::No main history yet"
 
-      - name: Summarize
+      - name: Summarize and gate
+        env:
+          ORACLE: ${{ needs.oracle.result }}
         run: |
+          shopt -s nullglob
           mode=pr
           [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" = push ] && mode=main
-          mkdir -p collected
-          python3 bundle/eval_report.py summarize --jobs collected --out report --task bundle/task \
-            --baseline baseline --refs bundle/refs.json --changes bundle/changes.md \
-            --oracle "${{ needs.oracle.result }}" --mode "$mode"
+          mkdir -p report rows
+          [ -f baseline/history.json ] || { mkdir -p baseline; echo '{}' > baseline/history.json; }
+
+          # One row per leg, from its trial's result.json and ATIF trajectory
+          for d in collected/eval-leg-*/; do
+            leg=$(jq -r .leg "$d/leg.json")
+            if [ "$(jq -r .skipped "$d/leg.json")" = true ]; then
+              jq '{leg, skipped: true, reason: .skip_reason}' "$d/leg.json" > "rows/$leg.json"
+              continue
+            fi
+            trial=$(dirname "$(ls "$d"*/*/result.json 2>/dev/null | head -1)")
+            traj="$trial/agent/trajectory.json"
+            [ -f "$traj" ] && cp "$traj" "report/trace-$leg.json" || echo '{}' > "report/trace-$leg.json"
+            jq -n --arg leg "$leg" --arg trial "$trial" \
+              --slurpfile r "$trial/result.json" --slurpfile a "report/trace-$leg.json" '
+              ($a[0].steps // []) as $steps
+              | {leg: $leg, skipped: false, trial: $trial,
+                 reward: $r[0].verifier_result.rewards.reward,
+                 exception: ($r[0].exception_info
+                   | if . then "\(.exception_type): \(.exception_message | tostring | .[:300])" else null end),
+                 steps: ([$steps[] | select(.source == "agent")] | if length > 0 then length else null end),
+                 skills: any($steps[].tool_calls[]?;
+                   (.function_name | ascii_downcase) == "skill" or (.arguments | tostring | test("SKILL\\.md")))}' \
+              > "rows/$leg.json" 2>/dev/null \
+              || jq -n --arg leg "$leg" '{leg: $leg, skipped: false, reward: null, exception: "no trial result", steps: null}' > "rows/$leg.json"
+          done
+
+          # The gate: the oracle, reward and breakage always; off main, steps
+          # more than 25% and 3 over the median of the leg's main history,
+          # once three main runs are on record (one trial per leg is noisy)
+          jq -s --arg oracle "$ORACLE" --arg mode "$mode" --slurpfile h baseline/history.json \
+            --slurpfile refs bundle/refs.json '
+            def median: sort | if length % 2 == 1 then .[length / 2 | floor]
+                               else (.[length / 2 - 1] + .[length / 2]) / 2 end;
+            map(if .skipped then . else
+                  .history = [$h[0][.leg][]?.steps]
+                  | .median = (if (.history | length) > 0 then (.history | median) else null end) end)
+            | {refs: $refs[0], legs: ., reasons: (
+                (if $oracle != "success" then ["reference solution: \($oracle) — the task or the stack is broken"]
+                 elif all(.[]; .skipped) then ["no agent leg ran"] else [] end)
+                + [.[] | select(.skipped | not)
+                   | (if .exception then "\(.leg): errored — \(.exception)" else empty end),
+                     (if (.reward // 0) < 1 then "\(.leg): reward \(.reward) < 1.0" else empty end),
+                     (if $mode == "pr" and (.history | length) >= 3 then
+                        if .steps == null then "\(.leg): no trajectory, steps cannot be compared"
+                        elif .steps > .median * 1.25 and .steps - .median >= 3
+                        then "\(.leg): \(.steps) agent steps against a main median of \(.median)"
+                        else empty end
+                      else empty end)])}' rows/*.json < /dev/null > report/results.json
+          jq -r '.reasons[]' report/results.json
+
+          # Main runs append to the history the next run compares against
+          if [ "$mode" = main ]; then
+            jq --slurpfile h baseline/history.json --arg sha "$(jq -r .sha bundle/refs.json)" '
+              reduce (.legs[] | select(.steps != null)) as $l ($h[0];
+                .[$l.leg] = ((.[$l.leg] // []) + [{sha: $sha, steps: $l.steps}])[-10:])' \
+              report/results.json > report/history.json
+          fi
 
       - name: Analyse the traces
         id: analysis
@@ -241,14 +297,59 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           # The analysis is part of the result: a leg without one fails the job
-          ls report/analysis-input-*.md >/dev/null 2>&1 || exit 0
+          legs=$(jq -r '.legs[] | select(.skipped | not) | select(.trial) | .leg' report/results.json)
+          [ -n "$legs" ] || exit 0
           curl -fsSL https://claude.ai/install.sh | bash
           echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
+          cat > prompt.md <<'EOF'
+          You are reviewing one leg of an automated eval: an autonomous coding
+          agent was given a task instruction and had to carry it out with the
+          `astra` (spec) and `lc` (execution) CLIs, guided only by that
+          instruction, the Lightcone agent skills installed into its harness, and
+          the CLIs' own help. The message lists the files to read: the
+          instruction, this run's ATIF trajectory (JSON: `steps`, each with
+          `tool_calls` and an `observation`), the verifier's output, the change
+          under test, and, when present, the trajectory of the latest successful
+          main run of the same leg. Read them before answering.
+
+          Explain *why* this run went the way it did, so a reviewer can act on it
+          without opening the trace. Cite trajectory steps as `step N` and quote
+          output verbatim where it matters. Do not restate the task, do not
+          summarize a successful build, and do not pad. Write exactly these two
+          markdown sections and nothing else:
+
+          #### Confusion & pain points
+
+          3-6 concise bullets: what happened, its root cause, and the fix it
+          suggests when one is clear. Look for failed commands and their cause;
+          misunderstandings of the spec format, the CLI, the sandbox or the
+          environment; whether the skills were loaded and told the agent what it
+          needed, or it fell back to `--help`, source reading or trial and error;
+          detours; and workarounds that hint at a gap lightcone-cli, the skills or
+          the eval setup should fix. If the run was essentially clean, say so in
+          one bullet.
+
+          #### What changed vs main
+
+          Only with a main trajectory: where the extra or missing steps are, the
+          first point where the two runs diverge, and which commit or file in the
+          change under test most plausibly caused it — or say plainly that it
+          looks like agent variance, and why. If reward or breakage changed,
+          explain that first. Without a main trajectory, write one line saying so.
+          EOF
           status=ok
-          for input in report/analysis-input-*.md; do
-            leg=${input#report/analysis-input-}; leg=${leg%.md}
-            timeout 600 "$HOME/.local/bin/claude" -p "$(cat bundle/trace-analysis-prompt.md)" \
-              < "$input" > "report/analysis-$leg.md" && [ -s "report/analysis-$leg.md" ] \
+          for leg in $legs; do
+            trial=$(jq -r --arg l "$leg" '.legs[] | select(.leg == $l) | .trial' report/results.json)
+            {
+              echo "Leg: $leg. Summary: $(jq -c --arg l "$leg" '.legs[] | select(.leg == $l) | del(.trial)' report/results.json)"
+              echo "- instruction: bundle/task/instruction.md"
+              echo "- this run's trajectory: report/trace-$leg.json"
+              echo "- verifier output: $trial/verifier/test-stdout.txt"
+              [ -f bundle/changes.md ] && echo "- change under test: bundle/changes.md"
+              [ -f "baseline/trace-$leg.json" ] && echo "- main's trajectory: baseline/trace-$leg.json"
+            } > "input-$leg.txt"
+            timeout 900 "$HOME/.local/bin/claude" -p "$(cat prompt.md)" --allowedTools Read Grep \
+              < "input-$leg.txt" > "report/analysis-$leg.md" && [ -s "report/analysis-$leg.md" ] \
               || { echo "::error::trace analysis failed for $leg"; status=failed; }
           done
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -256,7 +357,19 @@ jobs:
       - name: Build the report
         if: always()
         run: |
-          python3 bundle/eval_report.py comment --out report
+          {
+            jq -r '"## \(if (.reasons | length) == 0 then "✅" else "❌" end) Eval\n\n<!-- lightcone-eval-report -->\n",
+                   (.refs | to_entries | map("\(.key): `\(.value)`") | join(" · ")), "",
+                   "| Leg | Reward | Agent steps | main median (runs) | Skills loaded |", "|---|---|---|---|---|",
+                   (.legs[] | if .skipped then "| \(.leg) | skipped: \(.reason) | | | |"
+                     else "| \(.leg) | \(.reward // "—") | \(.steps // "—") | \(.median // "—") (\(.history | length)) | \(if .skills then "yes" else "**no**" end) |" end),
+                   "", (.reasons[] | "- ❌ \(.)"), ""' report/results.json
+            for f in report/analysis-*.md; do
+              [ -e "$f" ] || continue
+              leg=${f#report/analysis-}; echo "### ${leg%.md}"; echo; cat "$f"; echo
+            done
+            echo "Steps are gated once three main runs are on record; trajectories are in the \`eval-results\` artifact."
+          } > report/comment.md
           cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -287,6 +400,5 @@ jobs:
 
       - name: Gate
         run: |
-          jq -r '.gate.reasons[]' report/results.json
-          jq -e '.gate.ok' report/results.json > /dev/null
+          jq -e '.reasons | length == 0' report/results.json > /dev/null
           [ "${{ steps.analysis.outputs.status }}" != failed ]
