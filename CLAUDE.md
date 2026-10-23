@@ -212,8 +212,7 @@ around them. The other workflows are `eval.yml` and `pypi-publish.yaml`.
 
 `eval.yml` is the agentic eval, on every non-draft PR, every push to
 main and dispatch. It runs the Harbor task `lightcone-cli/snae-build`
-from the private `LightconeResearch/lightcone-evals` (a `REPO_READ_TOKEN`
-secret reads it): `prepare` rewrites the task's `ARG LIGHTCONE_COMMIT=`
+from `LightconeResearch/lightcone-evals`: `prepare` rewrites the task's `ARG LIGHTCONE_COMMIT=`
 to the lightcone-cli commit under test and collects the agent-skills
 bundles, `oracle` requires the scripted solution to score 1.0, `agents`
 runs each leg of the `legs` input (a JSON list of Harbor agents; one

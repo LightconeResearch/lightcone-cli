@@ -24,8 +24,8 @@ name: Eval
 #           [{"name": "claude-code", "agent": "claude-code", "model": "claude-sonnet-5-5", "secret": "CLAUDE_CODE_OAUTH_TOKEN"},
 #            {"name": "opencode", "agent": "opencode", "model": "deepseek/deepseek-flash", "secret": "DEEPSEEK_API_KEY"}]
 #
-# The caller needs `pull-requests: write` and `actions: read`, the same
-# triggers as below, and a REPO_READ_TOKEN that can read lightcone-evals.
+# The caller needs `pull-requests: write` and `actions: read`, and the same
+# triggers as below.
 # --skill installs the skill bundles only; plugin installs and hooks are
 # agent-skills' e2e-hooks workflow's to test.
 
@@ -114,12 +114,11 @@ jobs:
           fetch-depth: ${{ github.repository == env.SKILLS_REPO && '0' || '1' }}
           path: skills
 
-      - name: Check out lightcone-evals (private)
+      - name: Check out lightcone-evals
         uses: actions/checkout@v4
         with:
           repository: LightconeResearch/lightcone-evals
           ref: ${{ inputs.tasks_ref || 'main' }}
-          token: ${{ secrets.REPO_READ_TOKEN }}
           path: evals
 
       - name: Assemble the eval inputs
