@@ -211,22 +211,12 @@ runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
 around them. The other workflows are `eval.yml` and `pypi-publish.yaml`.
 
 `eval.yml` is the agentic eval, on every non-draft PR, every push to
-main and dispatch. It runs the Harbor task `lightcone-cli/snae-build`
-from `LightconeResearch/lightcone-evals`: `prepare` rewrites the task's `ARG LIGHTCONE_COMMIT=`
-to the lightcone-cli commit under test and collects the agent-skills
-bundles, `oracle` requires the scripted solution to score 1.0, `agents`
-runs each leg of the `legs` input (a JSON list of Harbor agents; one
-claude-code leg by default) with the skills installed through `--skill`
-(a leg without its secret is skipped), and `report` (jq over each
-trial's result and ATIF trajectory, then one `claude -p` per leg that
-reads the trajectories itself) fails on a reward below 1.0, an errored trial, a missing
-analysis, a leg that loaded no skill when `require_skills` is set, or —
-off main — agent steps more than 25% and 3 steps over the
-median of the leg's last main runs, once three are on record. That
-history travels in the newest successful main run's `eval-results`
-artifact. The workflow is one self-contained file, so agent-skills reuses
-it through `workflow_call` with its own PR as the side under test (the
-header comment holds the caller) and nothing it runs can drift from it.
+main and dispatch. It is a caller only: the workflow lives in
+`LightconeResearch/lightcone-evals` beside the task it runs (its README
+holds the contract), and this repository hands it the commit under test
+as `stack_ref` and its own secrets. A PR fails on a reward below 1.0, a
+failed oracle, an errored trial or analysis, or agent steps more than 25%
+and 3 over the median of this repository's last main runs.
 
 ## Key Invariants (layer 1)
 
