@@ -66,8 +66,8 @@ DEFAULT_BASE = (
 #: Where the pinned uv binary is copied from. Manifest-list digest, so the
 #: text is architecture-independent while each build gets its own arch.
 UV_IMAGE = (
-    "ghcr.io/astral-sh/uv:0.12.23"
-    "@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21"
+    "ghcr.io/astral-sh/uv:0.13.5"
+    "@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff"
 )
 
 #: Where the pinned interpreter is installed inside the image.
