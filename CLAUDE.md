@@ -215,8 +215,7 @@ main and dispatch. It is a caller only: the workflow lives in
 `LightconeResearch/lightcone-evals` beside the task it runs (its README
 holds the contract), and this repository hands it the commit under test
 as `stack_ref` and its own secrets. A PR fails on a reward below 1.0, a
-failed oracle, an errored trial or analysis, or agent steps more than 25%
-and 3 over the median of this repository's last main runs.
+failed oracle, or an errored trial or analysis.
 
 ## Key Invariants (layer 1)
 

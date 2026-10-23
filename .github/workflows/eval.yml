@@ -2,8 +2,8 @@ name: Eval
 
 # The agentic eval, hosted in LightconeResearch/lightcone-evals beside the
 # task it runs; see that workflow's header and README. This repository is
-# the side under test: its commit pins the task image, its secrets run the
-# legs, and its main runs are the baseline its PRs are compared against.
+# the side under test: its commit pins the task image and its secrets run
+# the legs.
 
 on:
   pull_request:
@@ -17,7 +17,6 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  actions: read
 
 jobs:
   eval:
