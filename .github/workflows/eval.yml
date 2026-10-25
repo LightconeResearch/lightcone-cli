@@ -20,9 +20,7 @@ permissions:
 
 jobs:
   eval:
-    # TODO: switch to @main once LightconeResearch/lightcone-evals#5 merges.
-    uses: LightconeResearch/lightcone-evals/.github/workflows/eval.yml@hosted-eval
+    uses: LightconeResearch/lightcone-evals/.github/workflows/eval.yml@main
     secrets: inherit
     with:
       stack_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      tasks_ref: hosted-eval
