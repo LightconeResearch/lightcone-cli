@@ -468,6 +468,25 @@ def status(as_json: bool) -> None:
 
 
 # =============================================================================
+# lc view
+# =============================================================================
+
+
+@main.command()
+def view() -> None:
+    """Serve the analysis's inventory to a browser, until interrupted.
+
+    A Jupyter server on localhost that reads the current project and
+    nothing else: no kernels, no terminals, nothing that writes. It logs
+    the page's URL with a random token; open it in a browser, through
+    `ssh -L` from a remote machine. It opens no browser itself.
+    """
+    from lightcone.engine import view as engine
+
+    engine.serve(Path.cwd())
+
+
+# =============================================================================
 # Rendering
 # =============================================================================
 

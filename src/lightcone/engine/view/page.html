@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <link rel="stylesheet" href="${css}" />
+    <style>
+      html, body { margin: 0; }
+      .lightcone-view { min-height: 100vh; box-sizing: border-box; padding: 24px 16px;
+        background: var(--astra-color-canvas); color: var(--astra-color-text); }
+      .lightcone-view-message { max-width: 72ch; margin: 0 auto; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="lightcone-view" data-api="${api}" data-files="${files}"></div>
+    <script type="module" src="${js}"></script>
+  </body>
+</html>

@@ -28,7 +28,7 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
     """`lc --help` advertises only verbs that work — advertising others
     before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("init", "build", "materialize", "run", "status"):
+    for verb in ("init", "build", "materialize", "run", "status", "view"):
         assert f"  {verb}" in result.output
     for verb in ("verify", "export"):
         assert f"  {verb}" not in result.output

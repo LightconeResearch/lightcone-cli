@@ -220,3 +220,7 @@ uv.lock
 
 # macOS
 .DS_Store
+
+# lc view: the page's dependencies, and the bundle built from them into the package
+view/node_modules/
+src/lightcone/engine/view/static/

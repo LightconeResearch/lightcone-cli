@@ -56,6 +56,7 @@ speculatively.
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Compute** — explicit local/Slurm allocation and podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
+| 9 | **Viewer** — `lc view`, a read-only Jupyter Server app serving astra-ui's inventory of the current project | 🔶 **first slice** — the inventory and artifact previews; no output status or universe choice yet |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -154,7 +155,7 @@ src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build
+│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build, lc view
 │   └── compute.py          # lc compute resources, launch, status, down
 └── engine/
     ├── __init__.py         # docstring only
@@ -188,10 +189,15 @@ src/lightcone/              # namespace — NO __init__.py
     │   ├── seatbelt.py     # macOS backend
     │   ├── oci.py          # containerized backend: the mount table as mechanism
     │   └── denial.py       # the denial UX
-    └── templates/          # the scaffold's file content
-        ├── __init__.py     # loader; a renderer only where there is a value to decide
-        └── files/*.tmpl    # the templates themselves, as real files
+    ├── templates/          # the scaffold's file content
+    │   ├── __init__.py     # loader; a renderer only where there is a value to decide
+    │   └── files/*.tmpl    # the templates themselves, as real files
+    └── view/               # lc view: the Jupyter Server app
+        ├── __init__.py     # ViewServer (the restriction), ViewApp, the routes, serve()
+        ├── page.html       # the one page, a string.Template
+        └── static/         # the bundle built from view/ — gitignored, package data
 
+view/                       # the page's TypeScript: astra-ui's Inventory over lc's routes
 evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
@@ -204,10 +210,13 @@ uv run pytest
 uv run ruff check src/ tests/    # --fix to apply
 uv run mypy src/
 uv build                         # wheel + sdist (CI runs this only to publish)
+(cd view && npm ci && npm run build)   # the page `lc view` serves; also `npm run typecheck`
 ```
 
 Test, lint and type-check are the whole loop, and they are what
-`.github/workflows/{tests,lint}.yml` run. There is deliberately no task
+`.github/workflows/{tests,lint}.yml` run. Node is needed only for the
+viewer's page: `uv sync` builds it when node is there and warns when it
+is not, `uv build` fails without it, and the test suite never needs it. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
 around them. The other workflows are `eval.yml` (the agentic eval,
 on dispatch or the `run-eval` PR label; re-trigger by re-adding the
@@ -2529,6 +2538,76 @@ written to" — a path the schema never defined. What changed, and why:
   `/etc/resolv.conf` is a symlink into `/run` wherever systemd-resolved
   is in use, so the grant also keeps DNS working.
 
+## Key Invariants (layer 9)
+
+**Jupyter Server supplies the secure-server half; lc supplies the
+restriction** (2026-10). A local web server on a shared login node is
+reachable by every user on it — loopback is not per-user, and `myst
+start` (measured, mystmd 1.10.1) serves its content unauthenticated with
+`Access-Control-Allow-Origin: *`. Rather than re-implement token login,
+the `Host` check against DNS rebinding, port retries and a 0600 runtime
+file, `lc view` is a jupyter_server `ExtensionApp` (`engine/view`), and
+`ViewServer` takes away everything that is not reading:
+
+- **`default_services = ("auth",)`.** No kernels, sessions or
+  kernelspecs (they run code), no contents or config API (they write), no
+  nbconvert, events or file views. Terminals are an extension, and
+  `load_other_extensions = False` keeps them out.
+- **No Jupyter configuration is read** (`config_file_paths` is empty), so
+  nothing on the machine can empty the token, re-enable a service or load
+  an extension. `allow_unauthenticated_access` defaults false, so an
+  undecorated route fails closed.
+- **Ctrl-C stops without asking** (`answer_yes`): on a terminal Jupyter
+  prompts, and resumes when nobody answers — a hang for an agent. **No
+  browser is opened**: on a headless node `webbrowser` can resolve to a
+  console browser that takes over the terminal. The URL is logged.
+
+**The whole project is readable, by decision** (2026-10). Jupyter's own
+`/files/` stays — read-only, authenticated, Range-capable — and so does
+its rule that hidden paths are never served: `.git`, `.venv`,
+`.lightcone`, manifests. Declared inputs under `data/` are visible to
+whoever holds the token, which is the same exposure as running Jupyter in
+the project; narrowing the reader to `astra.yaml`, `universes/` and
+`results/` was considered and dropped because seeing the data is part of
+viewing an analysis.
+
+**The browser resolves the analysis, not lc.** The page runs
+`@astra-spec/sdk`'s `resolveAnalysis` over a three-method reader —
+`readText` through `/files/`, `stat` and `readDirectory` through two
+routes of ours that ask the contents manager, so root confinement and the
+hidden rule are Jupyter's, not a second implementation. `stat` answers an
+absent path `200 null`, not 404: the SDK stats every declared output, and
+each unmaterialized one would otherwise be an error in the browser
+console and the server log.
+
+**Previews are the host's, built with astra-ui's pure builders**
+(`view/src/preview.tsx`), on jupyterlab-lightcone's rules: images by URL,
+CSV/TSV and JSON tables from a bounded sample, a JSON metric as a value,
+text formats as text. Every read is a Range request cut while read, and
+each URL carries the binding's cache token, so one artifact version is
+read once per page. **An annex pointer is said for what it is**: a small
+file beginning `/annex/objects/` — what a clone holds for content it has
+not fetched — previews as "not in this clone" with the `git annex get`
+that fetches it, never as a broken image or a key shown as text. Which
+outputs get a preview box at all is astra-ui's decision (a figure or a
+table in the detail; any type in a compact card), not the host's.
+
+**The page is built into the wheel and works offline.** `view/` is a
+small npm package (astra-ui's `Inventory`, the SDK, React) bundled by
+esbuild into `engine/view/static/`, gitignored and shipped as package
+data through `hatch-jupyter-builder`: a release build fails without the
+bundle, an editable install builds it when node is present and warns
+otherwise. Every byte the page loads — fonts included — comes from the
+server (verified in a browser: no request leaves it). `build.mjs` writes
+`THIRD-PARTY-NOTICES.txt` from esbuild's metafile, so the notices are
+what the bundle carries, and it fails on a package with no licence file.
+
+**The cost, recorded:** jupyter_server adds about 39 packages (13 MB,
+pyzmq and argon2-cffi-bindings compiled) to every lc install — Slurm
+workers included, since they run the driver's installation — for a verb
+most of them never run. The import is inside the command, so startup is
+unaffected. Accepted to ship one package for now.
+
 ## Extending the Codebase
 
 | To... | Read | Key patterns |
@@ -2552,6 +2631,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
 | Change a denial message | `sandbox/denial.py` + `tests/test_sandbox_denial.py` | Remedies must be copy-pasteable and real *today*; the trailer stays unconditional |
+| Change what `lc view` serves | `engine/view/__init__.py` + `view/src/main.tsx` + `tests/test_view.py` | A route reads, never writes; anything that runs code stays out of `default_services`; mutation-check every refusal |
 
 ## Test Patterns
 
@@ -2649,6 +2729,14 @@ The sandbox suite splits along the seam, which is what makes it cheap:
   dependency, so none may skip): a real materialize, then the official
   `rocrate-validator` against the Provenance profile, REQUIRED clean and
   RECOMMENDED pinned to the recorded `_FLOOR` set.
+- `tests/test_view.py` — **the server's answer**: the real `ViewApp` in a
+  subprocess, probed over HTTP, under a hostile Jupyter configuration
+  (empty token, terminals enabled, remote access and hidden files
+  allowed) that must change nothing. pytest-jupyter's fixtures are not
+  used: they hard-code a stock `ServerApp`, which is exactly the server
+  this layer is not. The Ctrl-C test needs a pty, because Jupyter only
+  asks on a terminal. No node: the bundle is needed only by `serve`'s
+  refusal, tested through the CLI.
 
 Note the autouse `tools` fixture stubs `engine.project._run` only —
 sandbox, allocation, and execution integration tests also spawn real processes

@@ -1,0 +1,29 @@
+{
+  "name": "lightcone-view",
+  "private": true,
+  "description": "The page `lc view` serves: the ASTRA inventory of the current project.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@astra-spec/sdk": "0.1.2",
+    "@astra-spec/ui": "0.0.7",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

@@ -34,6 +34,7 @@ dependencies = [
     "psutil>=6",
     "pydantic>=2.9,<3",
     "pyyaml>=6",
+    "jupyter-server>=2.21,<3",
 ]
 
 [dependency-groups]
@@ -66,7 +67,7 @@ git-remote-annex = "git_annex:cli"
 git-remote-tor-annex = "git_annex:cli"
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling", "hatch-vcs", "hatch-jupyter-builder>=0.9"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
@@ -74,9 +75,28 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lightcone"]
+# The page `lc view` serves, built from `view/` and gitignored.
+artifacts = ["src/lightcone/engine/view/static"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/lightcone"]
+include = ["src/lightcone", "view/package.json", "view/package-lock.json", "view/build.mjs",
+           "view/tsconfig.json", "view/src"]
+artifacts = ["src/lightcone/engine/view/static"]
+
+# A release build needs node and fails without the bundle; an editable
+# install (`uv sync`) builds it when node is there and warns when it is not,
+# so the Python dev loop never requires node.
+[tool.hatch.build.hooks.jupyter-builder]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = ["src/lightcone/engine/view/static/main.js"]
+skip-if-exists = ["src/lightcone/engine/view/static/main.js"]
+optional-editable-build = true
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+path = "view"
+build_dir = "src/lightcone/engine/view/static"
+source_dir = "view/src"
+npm = "npm"
 
 [tool.ruff]
 target-version = "py311"
@@ -101,6 +121,12 @@ follow_untyped_imports = true
 # little else — one module-scoped relaxation beats an ignore on every call.
 [[tool.mypy.overrides]]
 module = ["lightcone.engine.crate"]
+disallow_untyped_calls = false
+
+# The same for jupyter_server, whose extension and contents APIs are
+# largely unannotated.
+[[tool.mypy.overrides]]
+module = ["lightcone.engine.view"]
 disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
