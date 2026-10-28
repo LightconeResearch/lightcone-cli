@@ -56,6 +56,7 @@ speculatively.
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Compute** — explicit local/Slurm allocation and podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
+| 9 | **App** — `lc serve`: the analysis in a trimmed JupyterLab, records as dock tabs | 🔶 **landed; depends on a draft `@astra-spec/ui` (`RecordView`)** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -152,9 +153,13 @@ Any new `lightcone-*` package must:
 ```
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
+├── app/                    # the `lc serve` app: a LabServerApp; `python -m`, never imported by the CLI
+│   ├── __init__.py         # LightconeApp — directories, URL, nothing of its own to serve
+│   ├── templates/index.html  # the page, after JupyterLab's examples/app
+│   └── static/ schemas/ themes/  # built from ui/ — gitignored, packaged by the build hook
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build
+│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build, lc serve
 │   └── compute.py          # lc compute resources, launch, status, down
 └── engine/
     ├── __init__.py         # docstring only
@@ -169,6 +174,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── worker.py           # making one output; also the `python -m` entry point
     ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
     ├── run.py              # what `lc run` is: the probe + the uv hop
+    ├── serve.py            # what `lc serve` is: find this project's server or start one
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
     │   ├── model.py        # the shared Pydantic models, the Provider protocol, PROVIDERS
@@ -192,6 +198,7 @@ src/lightcone/              # namespace — NO __init__.py
         ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
+ui/                         # the app's front end (npm): JupyterLab + one plugin, built into app/
 evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
@@ -204,7 +211,12 @@ uv run pytest
 uv run ruff check src/ tests/    # --fix to apply
 uv run mypy src/
 uv build                         # wheel + sdist (CI runs this only to publish)
+cd ui && npm ci && npm run build # the `lc serve` front end, into src/lightcone/app/
 ```
+
+The front end is the one non-Python build. `uv build` runs it through
+`hatch-jupyter-builder` and refuses to package without it; an editable
+`uv sync` only tries, so Python work never needs Node — `lc serve` does.
 
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
@@ -2119,6 +2131,65 @@ an in-place `write_text` on one dirties the other, which is the
 recorded thin hazard demonstrating itself. `test_materialize._forge`
 unlinks before writing; a new tampering test should too.
 
+## Key Invariants (layer 9)
+
+**The app is JupyterLab's own machinery, trimmed — not a framework of
+ours.** The server is a `LabServerApp` (token auth, page config, settings,
+themes) and the page is `new JupyterLab()` with a hand-picked plugin list,
+both after JupyterLab's `examples/app` (BSD-3, credited where adapted).
+LabShell gives dock tabs, splits and theming; there is no custom
+front-end class, no custom shell, no other server extension loaded
+(`load_other_extensions = False`, `labextensions_path = []`) and no
+module federation. The plugin list is the smallest set the explorer
+needs, and two entries are less obvious than they look: LabShell shows
+nothing until a layout restorer has run (so `application-extension:layout`
+is in, over an in-memory `StateDB` — the server keeps no workspace), and
+an empty side area keeps its width until collapsed (so the explorer
+collapses both once restored).
+
+**The browser resolves the spec; the server adds no routes.**
+`@astra-spec/sdk` resolves over a `ProjectReader` on Jupyter's Contents
+API, rooted at the project, and `@astra-spec/ui` renders. Python never
+parses the spec for the app — astra-tools has no serializer for the
+resolved form, and writing one would be a second resolver. A path is
+stat'ed from its parent's listing, and a directory is listed only once
+its own parent shows it: resolution asks about every unmaterialized
+output, and this answers "absent" without a failing request for each.
+
+**Records are tabs, never modals.** The Overview is astra-ui's `Inventory`
+with its detail stack controlled and pinned to `[]`, so its dialog never
+renders and every open becomes a tab; a record tab is `RecordView` (the
+embedded dialog chrome without a close control — the tab bar owns
+dismissal). Record tabs are plain widgets, not `MainAreaWidget`s: a
+`jp-toolbar` attached after the theme is applied sends the web
+components' `accent-palette`/`accent-fill-rest` tokens into a loop that
+never settles. The Overview's toolbar (the universe picker) attaches
+before the theme, which is why it is the only toolbar.
+
+**`lc serve` is detached, idempotent and stops itself.** It prints the
+URL of this project's running server, or starts one and prints that,
+and returns — an agent's call must not block. Discovery is jupyter's own
+(`list_running_servers` over the runtime files, matched on `root_dir`);
+the idle stop is jupyter's own (`shutdown_no_activity_timeout`, 30 min —
+the app's own API polling counts as activity while a tab is open). The
+server is spawned with `JUPYTER_NO_CONFIG=1`, as upstream's example
+does, so a user's jupyter config cannot change what an agent gets back.
+It never opens a browser. `RECORD` is passed through to the URL
+unchecked: validating it would need the resolver this layer refuses to
+duplicate, so the browser shows a "nothing at …" tab instead.
+
+**Serve state is private to the user and kept per host, never in the
+project.** Runtime files and the log carry the token, and a project on
+group-shared storage would hand it to every collaborator; so they live
+in `~/.lightcone/serve/<short hostname>/`, mode 0700, log 0600. Per host
+because NERSC-style sites share `$HOME` across login nodes while jupyter
+can only tell whether a pid is alive on its own node — shared, a call on
+one node would delete a live server's file from another, or trust a
+reused pid. A call on another node starts its own server; the old one
+idles out. The URL is `localhost` on the named host (stderr, and
+`--json`'s `host`): from elsewhere, `ssh -L` to that node. Accepted
+residue: two concurrent first calls can start two servers.
+
 ### Recorded decisions
 
 - **Offers name their provider; there are no connections (2026-10).** A
@@ -2548,6 +2619,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster names or IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
+| Change what `lc serve` shows | `ui/src/explorer.tsx` (+ `@astra-spec/ui` for anything a record looks like) | Records open as tabs, never dialogs; the spec is resolved in the browser by the SDK, never in Python |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -2594,6 +2666,11 @@ written to" — a path the schema never defined. What changed, and why:
   - **`cluster_for_run(cluster_id)` is the graph-test monkeypatch point.**
     Most tests use an inline scheduler; integration tests borrow real standard
     Dask clients, including detached allocation and processes-based cases.
+- `tests/test_serve.py` — `lc serve` against a **real** detached jupyter
+  server, its state under `tmp_path`. The page needs no front-end build,
+  so the lifecycle runs everywhere; that the built bundle is served is
+  gated like the smoke suites (`LC_UI_TESTS_REQUIRED=1` in CI, two guard
+  tests). The front end itself is checked by driving it in a browser.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
   rendering, exit codes, error translation. Rich wraps output at terminal
   width, so assert on short unwrappable fragments.

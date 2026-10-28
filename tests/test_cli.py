@@ -7,6 +7,8 @@ Convergence *semantics* are tested against the engine in
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,7 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
     """`lc --help` advertises only verbs that work — advertising others
     before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("init", "build", "materialize", "run", "status"):
+    for verb in ("init", "build", "materialize", "run", "serve", "status"):
         assert f"  {verb}" in result.output
     for verb in ("verify", "export"):
         assert f"  {verb}" not in result.output
@@ -752,3 +754,63 @@ def test_status_has_exactly_one_flag(runner: CliRunner) -> None:
     assert "--json" in options
     for flag in ("--check", "--refresh", "--verbose", "--all"):
         assert flag not in options
+
+
+# ---- lc serve ---------------------------------------------------------------
+
+
+def _served(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[Path, str | None]]) -> None:
+    from lightcone.engine import serve as engine
+
+    def serve(root: Path, record: str | None = None) -> engine.Served:
+        calls.append((root, record))
+        return engine.Served(url="http://localhost:8888/lightcone?token=t", host="login07",
+                             pid=42, started=True)
+
+    monkeypatch.setattr(engine, "serve", serve)
+
+
+def test_serve_prints_only_the_url_on_stdout(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent captures stdout; where it runs goes to stderr, because a
+    localhost URL on a remote host is only reachable through that host."""
+    calls: list[tuple[Path, str | None]] = []
+    _served(monkeypatch, calls)
+    result = runner.invoke(main, ["serve", "decisions.binning"])
+    assert result.exit_code == 0
+    assert result.stdout == "http://localhost:8888/lightcone?token=t\n"
+    assert "login07" in result.stderr
+    assert calls == [(Path.cwd(), "decisions.binning")]
+
+
+def test_serve_json(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    _served(monkeypatch, [])
+    result = runner.invoke(main, ["serve", "--json"])
+    assert json.loads(result.stdout) == {
+        "url": "http://localhost:8888/lightcone?token=t",
+        "host": "login07",
+        "pid": 42,
+        "started": True,
+    }
+
+
+def test_serve_refuses_a_directory_without_a_spec(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, ["serve"])
+    assert result.exit_code == 1
+    assert "no astra.yaml" in result.output
+
+
+def test_the_cli_does_not_import_the_jupyter_server() -> None:
+    """Only `lc serve`'s child imports it; every other invocation would pay."""
+    proc = subprocess.run(
+        [sys.executable, "-c", "import lightcone.cli.commands, sys; print(sorted(sys.modules))"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "'jupyter_server'" not in proc.stdout
+    assert "'tornado'" not in proc.stdout
