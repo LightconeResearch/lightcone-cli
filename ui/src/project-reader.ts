@@ -12,8 +12,11 @@ type Listing = ReadonlyMap<string, Contents.IModel> | undefined;
  * outputs that were never materialized, and this answers "absent" without
  * a failing request for each. Make one reader per resolution, so the next
  * one sees what changed.
+ *
+ * Every path the resolution asks about lands in `touched`, present or not:
+ * those are the paths whose change on disk changes what it resolves to.
  */
-export function projectReader(contents: Contents.IManager): ProjectReader {
+export function projectReader(contents: Contents.IManager, touched: Set<string>): ProjectReader {
   const listings = new Map<string, Promise<Listing>>();
   const list = (dir: string): Promise<Listing> => {
     let listing = listings.get(dir);
@@ -34,6 +37,7 @@ export function projectReader(contents: Contents.IManager): ProjectReader {
 
   return {
     async readText(path) {
+      touched.add(path);
       const model = await contents.get(path, { type: 'file', format: 'text', content: true });
       if (typeof model.content !== 'string') {
         throw new Error(`${path} is not a text file.`);
@@ -41,6 +45,7 @@ export function projectReader(contents: Contents.IManager): ProjectReader {
       return model.content;
     },
     async stat(path) {
+      touched.add(path);
       if (!path) return { type: 'directory' };
       const slash = path.lastIndexOf('/');
       const entry = (await list(path.slice(0, Math.max(0, slash))))?.get(path.slice(slash + 1));
@@ -50,6 +55,7 @@ export function projectReader(contents: Contents.IManager): ProjectReader {
         : { type: 'file', size: entry.size ?? 0, modifiedAtMs: Date.parse(entry.last_modified) };
     },
     async readDirectory(path) {
+      touched.add(path);
       const listing = await list(path);
       if (!listing) throw new Error(`No directory at ${path}.`);
       return [...listing.values()].map(({ name, type }) => ({

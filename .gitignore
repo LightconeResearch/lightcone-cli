@@ -224,5 +224,3 @@ uv.lock
 # The app's front end: dependencies, and the build that `uv build` packages
 ui/node_modules/
 src/lightcone/app/static/
-src/lightcone/app/schemas/
-src/lightcone/app/themes/

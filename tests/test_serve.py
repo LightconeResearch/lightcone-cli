@@ -8,6 +8,8 @@ smoke suites: a checkout without ``ui/`` built skips, and
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import signal
 import stat
@@ -16,6 +18,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -93,6 +96,32 @@ def test_the_token_stays_private(state: Path, project: Path) -> None:
     assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
     (log,) = runtime.glob("*.log")
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_a_change_on_disk_is_pushed_to_the_page(state: Path, project: Path) -> None:
+    """What keeps an open page current: jupyter-live-content's WebSocket,
+    loaded beside the app, tells a subscriber when a file it read changes
+    on disk — here, written the way an agent writes it, not through Jupyter."""
+    from tornado.websocket import websocket_connect
+
+    url = urlsplit(engine.serve(project).url)
+    token = url.query.split("token=")[1].split("&")[0]
+
+    async def subscribe_then_edit() -> dict[str, object]:
+        socket = await websocket_connect(
+            f"ws://{url.netloc}/api/live-content/ws?token={token}"
+        )
+        await socket.write_message(json.dumps({"type": "client_opened", "path": "astra.yaml"}))
+        await asyncio.sleep(0.5)  # the watcher starts on subscription
+        (project / "astra.yaml").write_text("name: edited\n")
+        message = await asyncio.wait_for(socket.read_message(), timeout=10)
+        socket.close()
+        assert isinstance(message, str)
+        return dict(json.loads(message))
+
+    update = asyncio.run(subscribe_then_edit())
+    assert update["type"] == "server_update"
+    assert update["path"] == "astra.yaml"
 
 
 def test_a_server_that_dies_at_startup_reports_its_log(

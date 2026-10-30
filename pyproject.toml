@@ -36,6 +36,7 @@ dependencies = [
     "pyyaml>=6",
     "jupyter-server>=2.21",
     "jupyterlab-server>=2.28",
+    "jupyter-live-content>=0.1.2,<0.2",
 ]
 
 [dependency-groups]
@@ -77,11 +78,11 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lightcone"]
 # The app's front end, built from ui/ and gitignored.
-artifacts = ["src/lightcone/app/static", "src/lightcone/app/schemas", "src/lightcone/app/themes"]
+artifacts = ["src/lightcone/app/static"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/lightcone"]
-artifacts = ["src/lightcone/app/static", "src/lightcone/app/schemas", "src/lightcone/app/themes"]
+artifacts = ["src/lightcone/app/static"]
 
 # Builds the front end before packaging, and refuses to package without it.
 # An editable install tolerates a host without Node, so Python development

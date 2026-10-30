@@ -12,7 +12,7 @@
   <script id="jupyter-config-data" type="application/json">
     {{ page_config_full | tojson }}
   </script>
-  <script src="{{page_config['fullStaticUrl'] | e}}/bundle.js?v={{page_config['appVersion'] | urlencode}}" main="index"></script>
+  <script src="{{page_config['fullStaticUrl'] | e}}/bundle.js?v={{page_config['appVersion'] | urlencode}}" defer></script>
 </head>
 <body>
   <script type="text/javascript">

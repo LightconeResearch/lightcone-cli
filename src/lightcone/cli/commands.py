@@ -484,9 +484,10 @@ def serve(record: str | None, as_json: bool) -> None:
     """Serve this project's analysis in the browser and print its URL.
 
     Returns at once: the server runs detached, and a second call reuses it
-    rather than starting another. It stops itself after 30 minutes with no
-    browser activity. RECORD is a canonical record path
-    (e.g. `decisions.binning`) for the page to open on.
+    rather than starting another. The page follows its files as they change
+    on disk, and the server stops itself 30 minutes after the page last
+    read from it. RECORD is a canonical record path (e.g.
+    `decisions.binning`) whose details the page opens with.
 
     The URL is on `localhost` of the host named on stderr; from another
     machine, reach it through `ssh -L <port>:localhost:<port> <host>`.
