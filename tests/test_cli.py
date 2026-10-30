@@ -30,7 +30,7 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
     """`lc --help` advertises only verbs that work — advertising others
     before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("init", "build", "materialize", "run", "serve", "status"):
+    for verb in ("init", "build", "materialize", "run", "status", "view"):
         assert f"  {verb}" in result.output
     for verb in ("verify", "export"):
         assert f"  {verb}" not in result.output
@@ -756,7 +756,7 @@ def test_status_has_exactly_one_flag(runner: CliRunner) -> None:
         assert flag not in options
 
 
-# ---- lc serve ---------------------------------------------------------------
+# ---- lc view ---------------------------------------------------------------
 
 
 def _served(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[Path, str | None]]) -> None:
@@ -770,23 +770,23 @@ def _served(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[Path, str | None]
     monkeypatch.setattr(engine, "serve", serve)
 
 
-def test_serve_prints_only_the_url_on_stdout(
+def test_view_prints_only_the_url_on_stdout(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An agent captures stdout; where it runs goes to stderr, because a
     localhost URL on a remote host is only reachable through that host."""
     calls: list[tuple[Path, str | None]] = []
     _served(monkeypatch, calls)
-    result = runner.invoke(main, ["serve", "decisions.binning"])
+    result = runner.invoke(main, ["view", "decisions.binning"])
     assert result.exit_code == 0
     assert result.stdout == "http://localhost:8888/lightcone?token=t\n"
     assert "login07" in result.stderr
     assert calls == [(Path.cwd(), "decisions.binning")]
 
 
-def test_serve_json(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_view_json(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     _served(monkeypatch, [])
-    result = runner.invoke(main, ["serve", "--json"])
+    result = runner.invoke(main, ["view", "--json"])
     assert json.loads(result.stdout) == {
         "url": "http://localhost:8888/lightcone?token=t",
         "host": "login07",
@@ -795,18 +795,18 @@ def test_serve_json(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
-def test_serve_refuses_a_directory_without_a_spec(
+def test_view_refuses_a_directory_without_a_spec(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(main, ["serve"])
+    result = runner.invoke(main, ["view"])
     assert result.exit_code == 1
     assert "no astra.yaml" in result.output
 
 
 def test_the_cli_does_not_import_the_jupyter_server() -> None:
-    """Only `lc serve`'s child imports it: every other invocation would pay,
-    and `lc serve` itself only reads the files the server writes."""
+    """Only `lc view`'s child imports it: every other invocation would pay,
+    and `lc view` itself only reads the files the server writes."""
     proc = subprocess.run(
         [
             sys.executable,

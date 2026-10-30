@@ -1,4 +1,4 @@
-"""``lc serve``'s lifecycle, against a real detached jupyter server.
+"""``lc view``'s lifecycle, against a real detached jupyter server.
 
 The page itself needs no front-end build, so the lifecycle runs everywhere.
 Whether the built front end is actually served is gated like the other

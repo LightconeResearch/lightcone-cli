@@ -56,7 +56,7 @@ speculatively.
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Compute** — explicit local/Slurm allocation and podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
-| 9 | **App** — `lc serve`: the analysis on one page, served by Jupyter | 🔶 **landed** |
+| 9 | **App** — `lc view`: the analysis on one page, served by Jupyter | 🔶 **landed** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -153,13 +153,13 @@ Any new `lightcone-*` package must:
 ```
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
-├── app/                    # the `lc serve` app: a LabServerApp; `python -m`, never imported by the CLI
+├── app/                    # the `lc view` app: a LabServerApp; `python -m`, never imported by the CLI
 │   ├── __init__.py         # LightconeApp — directories, URL, nothing of its own to serve
 │   ├── templates/index.html  # the page, after JupyterLab's examples/app
 │   └── static/             # built from ui/ — gitignored, packaged by the build hook
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build, lc serve
+│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build, lc view
 │   └── compute.py          # lc compute resources, launch, status, down
 └── engine/
     ├── __init__.py         # docstring only
@@ -174,7 +174,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── worker.py           # making one output; also the `python -m` entry point
     ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
     ├── run.py              # what `lc run` is: the probe + the uv hop
-    ├── serve.py            # what `lc serve` is: find this project's server or start one
+    ├── serve.py            # what `lc view` is: find this project's server or start one
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
     │   ├── model.py        # the shared Pydantic models, the Provider protocol, PROVIDERS
@@ -211,12 +211,12 @@ uv run pytest
 uv run ruff check src/ tests/    # --fix to apply
 uv run mypy src/
 uv build                         # wheel + sdist (CI runs this only to publish)
-cd ui && npm ci && npm run build # the `lc serve` front end, into src/lightcone/app/
+cd ui && npm ci && npm run build # the `lc view` front end, into src/lightcone/app/
 ```
 
 The front end is the one non-Python build. `uv build` runs it through
 `hatch-jupyter-builder` and refuses to package without it; an editable
-`uv sync` only tries, so Python work never needs Node — `lc serve` does.
+`uv sync` only tries, so Python work never needs Node — `lc view` does.
 
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
@@ -2186,7 +2186,13 @@ shows the SDK's own error rather than a guess at another. Each record opens in `
 dock tabs were built and dropped to stay on the released
 `@astra-spec/ui`; image outputs render through the `/files/` handler.
 
-**`lc serve` is detached, idempotent and stops itself.** It prints the
+**The verb names the intent, the module the mechanism.** `lc view` is
+what an agent runs to show the user the analysis (2026-10, renamed from
+`lc serve`); `engine/serve.py`, `tests/test_serve.py` and
+`~/.lightcone/serve/` keep the server's name, because they are the
+Jupyter server and nothing else.
+
+**`lc view` is detached, idempotent and stops itself.** It prints the
 URL of this project's running server, or starts one and prints that,
 and returns — an agent's call must not block. Discovery is jupyter's own
 (`list_running_servers` over the runtime files, matched on `root_dir`);
@@ -2641,7 +2647,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster names or IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
-| Change what `lc serve` shows | `ui/src/index.tsx` (+ `@astra-spec/ui` for anything a record looks like) | Released astra-ui only; the spec is resolved in the browser by the SDK, never in Python |
+| Change what `lc view` shows | `ui/src/index.tsx` (+ `@astra-spec/ui` for anything a record looks like) | Released astra-ui only; the spec is resolved in the browser by the SDK, never in Python |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -2688,7 +2694,7 @@ written to" — a path the schema never defined. What changed, and why:
   - **`cluster_for_run(cluster_id)` is the graph-test monkeypatch point.**
     Most tests use an inline scheduler; integration tests borrow real standard
     Dask clients, including detached allocation and processes-based cases.
-- `tests/test_serve.py` — `lc serve` against a **real** detached jupyter
+- `tests/test_serve.py` — `lc view` against a **real** detached jupyter
   server, its state under `tmp_path`. The page needs no front-end build,
   so the lifecycle runs everywhere; that the built bundle is served is
   gated like the smoke suites (`LC_UI_TESTS_REQUIRED=1` in CI, two guard

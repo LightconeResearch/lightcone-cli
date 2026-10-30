@@ -43,7 +43,7 @@ class Served:
     started: bool
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the JSON shape of ``lc serve --json``."""
+        """Return the JSON shape of ``lc view --json``."""
         return asdict(self)
 
 
@@ -64,7 +64,7 @@ def serve(root: Path, record: str | None = None) -> Served:
             does not come up.
     """
     if not (root / SPEC_FILENAME).is_file():
-        raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc serve` from the project root")
+        raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc view` from the project root")
     host = socket.gethostname().split(".", 1)[0]
     runtime = _STATE.expanduser() / host
     runtime.mkdir(parents=True, exist_ok=True)

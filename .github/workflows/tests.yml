@@ -40,7 +40,7 @@ jobs:
       # And for the crate validation: rocrate-validator is in the dev
       # group, so every runner has it and none may skip.
       LC_CRATE_TESTS_REQUIRED: "1"
-      # And for `lc serve`'s front end, which the step below builds.
+      # And for `lc view`'s front end, which the step below builds.
       LC_UI_TESTS_REQUIRED: "1"
 
     steps:

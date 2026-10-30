@@ -9,7 +9,7 @@ JupyterLab interface to configure. The one other extension it loads is
 jupyter-live-content, whose WebSocket tells the page when a file it read
 changed on disk.
 
-Run as ``python -m lightcone.app``; ``lc serve`` is what starts it.
+Run as ``python -m lightcone.app``; ``lc view`` is what starts it.
 """
 
 from __future__ import annotations
