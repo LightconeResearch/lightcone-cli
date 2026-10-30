@@ -10,6 +10,7 @@ nodes while jupyter can only tell whether a process is alive on its own.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -20,7 +21,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import psutil
 
@@ -118,7 +119,12 @@ def _start(runtime: Path, root: Path) -> dict[str, Any]:
     while time.monotonic() < deadline:
         info = _running(runtime, root)
         if info is not None and info.get("pid") == process.pid:
-            return info
+            # jupyter writes its file before its event loop binds the port.
+            url = urlsplit(info["url"])
+            with contextlib.suppress(OSError), socket.create_connection(
+                (url.hostname, url.port), timeout=1
+            ):
+                return info
         if process.poll() is not None:
             raise ProjectError(f"the server exited during startup:\n{_tail(log)}")
         time.sleep(0.1)
