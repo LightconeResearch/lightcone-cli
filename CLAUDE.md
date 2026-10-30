@@ -360,6 +360,22 @@ user owns:
     a hand-installed package leaves it reporting "would make no changes".
     Set-level, not byte-level, as spec §3 already accepts; what bounds what
     a recipe can import is the sandbox, not this probe.
+  - **The probes are why the scaffold sets a uv floor** (`required-version
+    = ">=0.7"`, 2026-10). uv 0.6 has no `uv sync --check` and 0.5 no
+    `uv lock --check`; both reject the flag, `_is_current` reads that as
+    "not current", and every convergence silently re-locks and re-syncs
+    forever. 0.7 is the oldest release where every flag lc runs exists
+    (measured back to 0.5: init, `--check` and the recipe hop), so the
+    floor names a requirement, not the uv the design happened to be
+    measured on — the earlier `>=0.12` was that, and refused `lc init`
+    on every host lagging it. The `uv-floor` job in `tests.yml` runs the
+    uv-touching suites under exactly that version, so a flag lc starts
+    using that the floor lacks fails CI instead of silently. Raise both
+    together. Accepted residue: uv 0.12 changed the default pre-release
+    mode, so collaborators either side of it can resolve a pre-release
+    differently and rewrite each other's lock — churn (`behind`), never
+    a correctness loss, since the lock is recorded. Projects scaffolded
+    with `>=0.12` keep it: `pyproject.toml` is the user's.
 - **An authored `Containerfile` is left alone.** Spec §8 has `lc init`
   refuse one; we don't. Images are generated from the lock, so a
   hand-written file is simply not an input to anything — treating it as a
