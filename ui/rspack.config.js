@@ -17,6 +17,8 @@ module.exports = {
     ]
   },
   plugins: [
+    // The Lightcone mark, as lightconeresearch.org uses it; the page links it.
+    new rspack.CopyRspackPlugin({ patterns: ['style/favicon.svg'] }),
     new rspack.DefinePlugin({
       // Needed for packages using cwd(), like the path polyfill.
       process: { cwd: () => '/', env: {} }

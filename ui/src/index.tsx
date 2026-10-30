@@ -136,6 +136,8 @@ function App({ record }: { record: string | null }) {
         const next = await load(touched);
         if (!live) return;
         setState(next);
+        // The tab names the analysis: several projects can be open at once.
+        window.document.title = 'document' in next ? next.document.analysis.name : 'Lightcone';
         watching.follow(touched);
       } while (again);
       loading = false;

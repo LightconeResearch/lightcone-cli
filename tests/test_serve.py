@@ -186,5 +186,8 @@ def test_the_page_loads_the_built_front_end(state: Path, project: Path) -> None:
     _gate()
     served = engine.serve(project)
     base = served.url.split("/lightcone?")[0]
-    status, _ = _get(f"{base}/static/lightcone/bundle.js")
-    assert status == 200
+    _, page = _get(served.url)
+    for asset in ("bundle.js", "favicon.svg"):
+        assert f"/static/lightcone/{asset}?v=" in page
+        status, _ = _get(f"{base}/static/lightcone/{asset}")
+        assert status == 200
