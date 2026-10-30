@@ -805,9 +805,15 @@ def test_serve_refuses_a_directory_without_a_spec(
 
 
 def test_the_cli_does_not_import_the_jupyter_server() -> None:
-    """Only `lc serve`'s child imports it; every other invocation would pay."""
+    """Only `lc serve`'s child imports it: every other invocation would pay,
+    and `lc serve` itself only reads the files the server writes."""
     proc = subprocess.run(
-        [sys.executable, "-c", "import lightcone.cli.commands, sys; print(sorted(sys.modules))"],
+        [
+            sys.executable,
+            "-c",
+            "import lightcone.cli.commands, lightcone.engine.serve, sys;"
+            " print(sorted(sys.modules))",
+        ],
         capture_output=True,
         text=True,
         check=True,

@@ -4,6 +4,7 @@ import '../style/index.css';
 import {
   AnalysisValidationError,
   indexAnalysis,
+  projectDirname,
   resolveAnalysis,
   type AnalysisIndex,
   type ArtifactBinding,
@@ -61,39 +62,44 @@ function renderArtifact({ artifacts }: Loaded) {
 }
 
 /**
- * Call `changed` when any of `paths` is created, modified or deleted on
- * disk, through jupyter-live-content's WebSocket. Each path's ancestor
- * directories are subscribed too, so a file appearing in a directory that
- * did not exist yet is still seen: the directory's own creation is. Returns
- * the function that stops watching.
+ * Call `changed` when a followed path is created, modified or deleted on
+ * disk, through one jupyter-live-content WebSocket for the page's life;
+ * `follow` moves its subscriptions to a new set of paths. Each path's
+ * ancestor directories are subscribed too, so a file appearing in a
+ * directory that did not exist yet is still seen: the directory's own
+ * creation is. The socket authenticates with the page's login cookie.
  */
-function watch(paths: Set<string>, changed: () => void): () => void {
+function watcher(changed: () => void) {
   const settings = ServerConnection.makeSettings();
-  let url = URLExt.join(settings.wsUrl, 'api/live-content/ws');
-  if (settings.appendToken && settings.token) {
-    url += `?token=${encodeURIComponent(settings.token)}`;
-  }
-  const subscribed = new Set<string>();
-  for (const path of paths) {
-    for (let at = path; at; at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
-      subscribed.add(at);
-    }
-  }
-  const socket = new settings.WebSocket(url);
-  socket.onopen = () => {
-    for (const path of subscribed) {
-      socket.send(JSON.stringify({ type: 'client_opened', path }));
-    }
+  const socket = new settings.WebSocket(URLExt.join(settings.wsUrl, 'api/live-content/ws'));
+  let subscribed = new Set<string>();
+  let wanted = new Set<string>();
+  const send = (type: string, path: string) => socket.send(JSON.stringify({ type, path }));
+  const sync = () => {
+    if (socket.readyState !== socket.OPEN) return;
+    for (const path of subscribed) if (!wanted.has(path)) send('client_closed', path);
+    for (const path of wanted) if (!subscribed.has(path)) send('client_opened', path);
+    subscribed = wanted;
   };
+  socket.onopen = sync;
   // A save is several events in a burst; one re-resolve answers them all.
   let pending: number | undefined;
   socket.onmessage = () => {
     window.clearTimeout(pending);
     pending = window.setTimeout(changed, 200);
   };
-  return () => {
-    window.clearTimeout(pending);
-    socket.close();
+  return {
+    follow(paths: Set<string>) {
+      wanted = new Set();
+      for (const path of paths) {
+        for (let at = path; at; at = projectDirname(at)) wanted.add(at);
+      }
+      sync();
+    },
+    close() {
+      window.clearTimeout(pending);
+      socket.close();
+    }
   };
 }
 
@@ -113,20 +119,31 @@ function App({ record }: { record: string | null }) {
   const [state, setState] = useState<State>();
   const [dark, setDark] = useState(DARK.matches);
   useEffect(() => {
-    let stop = () => {};
     let live = true;
+    // One resolution at a time; changes during one ask for exactly one more.
+    let loading = false;
+    let again = false;
+    const watching = watcher(() => void refresh());
     const refresh = async () => {
-      const touched = new Set<string>();
-      const next = await load(touched);
-      if (!live) return;
-      setState(next);
-      stop();
-      stop = watch(touched, () => void refresh());
+      if (loading) {
+        again = true;
+        return;
+      }
+      loading = true;
+      do {
+        again = false;
+        const touched = new Set<string>();
+        const next = await load(touched);
+        if (!live) return;
+        setState(next);
+        watching.follow(touched);
+      } while (again);
+      loading = false;
     };
     void refresh();
     return () => {
       live = false;
-      stop();
+      watching.close();
     };
   }, []);
   useEffect(() => {

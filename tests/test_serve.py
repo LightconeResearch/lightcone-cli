@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -105,7 +105,7 @@ def test_a_change_on_disk_is_pushed_to_the_page(state: Path, project: Path) -> N
     from tornado.websocket import websocket_connect
 
     url = urlsplit(engine.serve(project).url)
-    token = url.query.split("token=")[1].split("&")[0]
+    (token,) = parse_qs(url.query)["token"]
 
     async def subscribe_then_edit() -> dict[str, object]:
         socket = await websocket_connect(
@@ -127,7 +127,12 @@ def test_a_change_on_disk_is_pushed_to_the_page(state: Path, project: Path) -> N
 def test_a_server_that_dies_at_startup_reports_its_log(
     state: Path, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(engine, "_APP_ARGS", ("-c", "print('no such app'); raise SystemExit(3)"))
+    popen = engine.subprocess.Popen
+
+    def failing(args: list[str], **kwargs: object) -> object:
+        return popen([args[0], "-c", "print('no such app'); raise SystemExit(3)"], **kwargs)
+
+    monkeypatch.setattr(engine.subprocess, "Popen", failing)
     with pytest.raises(ProjectError, match="no such app"):
         engine.serve(project)
 

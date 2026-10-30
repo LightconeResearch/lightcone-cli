@@ -33,10 +33,8 @@ class LightconeApp(LabServerApp):
     name = "lightcone"
     app_name = "Lightcone"
     app_version = version("lightcone-cli")
-    extension_url = "/lightcone"
     default_url = "/lightcone"
     app_url = "/lightcone"
-    load_other_extensions = False
     serverapp_config = {"jpserver_extensions": {"jupyter_live_content": True}}
     static_dir = str(_HERE / "static")
     templates_dir = str(_HERE / "templates")

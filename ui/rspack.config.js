@@ -1,13 +1,12 @@
 const path = require('path');
 const rspack = require('@rspack/core');
 
-module.exports = (env, { mode = 'development' }) => ({
+// One build, the one the wheel ships: production, without a source map.
+module.exports = {
   entry: './lib/index.js',
   output: { path: path.resolve(__dirname, '../src/lightcone/app/static'), filename: 'bundle.js' },
   bail: true,
-  // The wheel ships the production build, without its source map.
-  devtool: mode === 'production' ? false : 'source-map',
-  mode,
+  mode: 'production',
   // Served from localhost, once per session: size hints are for the web.
   performance: { hints: false },
   module: {
@@ -23,4 +22,4 @@ module.exports = (env, { mode = 'development' }) => ({
       process: { cwd: () => '/', env: {} }
     })
   ]
-});
+};

@@ -11,6 +11,7 @@ nodes while jupyter can only tell whether a process is alive on its own.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 import subprocess
@@ -21,14 +22,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from lightcone.engine.project import ProjectError
+import psutil
+
+from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 # Stops a server nobody is using; jupyter_server's own activity clock.
 IDLE_TIMEOUT = 30 * 60
 _STARTUP_TIMEOUT = 60.0
 _STATE = Path("~/.lightcone/serve")
-# The command after the interpreter; tests replace it to stage a failing child.
-_APP_ARGS = ("-m", "lightcone.app")
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,8 @@ def serve(root: Path, record: str | None = None) -> Served:
         ProjectError: If ``root`` holds no ``astra.yaml``, or the server
             does not come up.
     """
-    if not (root / "astra.yaml").is_file():
-        raise ProjectError(f"no astra.yaml in {root} — run `lc serve` from the project root")
+    if not (root / SPEC_FILENAME).is_file():
+        raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc serve` from the project root")
     host = socket.gethostname().split(".", 1)[0]
     runtime = _STATE.expanduser() / host
     runtime.mkdir(parents=True, exist_ok=True)
@@ -78,11 +79,16 @@ def serve(root: Path, record: str | None = None) -> Served:
 
 
 def _running(runtime: Path, root: Path) -> dict[str, Any] | None:
-    from jupyter_server.serverapp import list_running_servers
-
-    for info in list_running_servers(str(runtime)):
-        if info.get("root_dir") == os.path.abspath(root):
-            return dict(info)
+    # jupyter_server's `list_running_servers`, without the second its import costs.
+    for file in runtime.glob("jpserver-*.json"):
+        try:
+            info: dict[str, Any] = json.loads(file.read_text())
+        except (OSError, ValueError):
+            continue  # being written, or being removed
+        if not psutil.pid_exists(info["pid"]):
+            file.unlink(missing_ok=True)
+        elif info.get("root_dir") == os.path.abspath(root):
+            return info
     return None
 
 
@@ -94,7 +100,7 @@ def _start(runtime: Path, root: Path) -> dict[str, Any]:
         # The server outlives this command, so it is not a `project._run` call.
         process = subprocess.Popen(
             [
-                sys.executable, *_APP_ARGS,
+                sys.executable, "-m", "lightcone.app",
                 "--no-browser",
                 f"--ServerApp.root_dir={root}",
                 f"--ServerApp.shutdown_no_activity_timeout={IDLE_TIMEOUT}",

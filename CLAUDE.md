@@ -2137,7 +2137,8 @@ unlinks before writing; a new tampering test should too.
 `LabServerApp` — token auth, the page config, Jupyter's Contents API —
 after JupyterLab's `examples/app` (BSD-3, credited where adapted), loading
 no other server extension but jupyter-live-content
-(`load_other_extensions = False`, `labextensions_path = []`) and serving
+(`serverapp_config`'s `jpserver_extensions`, which turns extension
+discovery off; `labextensions_path = []`) and serving
 no settings or themes. The page is
 not a JupyterLab front end: React renders astra-ui's `Inventory` straight
 into the body, over a `ContentsManager` from `@jupyterlab/services`.

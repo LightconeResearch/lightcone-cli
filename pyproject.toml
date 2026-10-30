@@ -84,19 +84,21 @@ artifacts = ["src/lightcone/app/static"]
 include = ["src/lightcone"]
 artifacts = ["src/lightcone/app/static"]
 
-# Builds the front end before packaging, and refuses to package without it.
-# An editable install tolerates a host without Node, so Python development
+# Builds the front end before packaging when ui/src is newer than the bundle
+# (never from an sdist, which carries no ui/), and refuses to package without
+# it. An editable install tolerates a host without Node, so Python development
 # never needs it; only `lc serve` does.
 [tool.hatch.build.hooks.jupyter-builder]
 dependencies = ["hatch-jupyter-builder>=0.9"]
 build-function = "hatch_jupyter_builder.npm_builder"
 ensured-targets = ["src/lightcone/app/static/bundle.js"]
-skip-if-exists = ["src/lightcone/app/static/bundle.js"]
 optional-editable-build = true
 
 [tool.hatch.build.hooks.jupyter-builder.build-kwargs]
 path = "ui"
-build_cmd = "build:prod"
+build_dir = "src/lightcone/app/static"
+source_dir = "ui/src"
+build_cmd = "build"
 npm = ["npm"]
 
 [tool.ruff]

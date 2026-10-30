@@ -1,7 +1,9 @@
-import type { ProjectReader } from '@astra-spec/sdk';
+import { projectDirname, type ProjectReader } from '@astra-spec/sdk';
 import type { Contents } from '@jupyterlab/services';
 
 type Listing = ReadonlyMap<string, Contents.IModel> | undefined;
+
+const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 
 /**
  * The project, read through Jupyter's Contents API. The server's root is the
@@ -23,9 +25,8 @@ export function projectReader(contents: Contents.IManager, touched: Set<string>)
     if (!listing) {
       listing = (async () => {
         if (dir) {
-          const slash = dir.lastIndexOf('/');
-          const parent = await list(dir.slice(0, Math.max(0, slash)));
-          if (parent?.get(dir.slice(slash + 1))?.type !== 'directory') return undefined;
+          const parent = await list(projectDirname(dir));
+          if (parent?.get(basename(dir))?.type !== 'directory') return undefined;
         }
         const model = await contents.get(dir, { type: 'directory', content: true });
         return new Map((model.content as Contents.IModel[]).map(entry => [entry.name, entry]));
@@ -47,8 +48,7 @@ export function projectReader(contents: Contents.IManager, touched: Set<string>)
     async stat(path) {
       touched.add(path);
       if (!path) return { type: 'directory' };
-      const slash = path.lastIndexOf('/');
-      const entry = (await list(path.slice(0, Math.max(0, slash))))?.get(path.slice(slash + 1));
+      const entry = (await list(projectDirname(path)))?.get(basename(path));
       if (!entry) return undefined;
       return entry.type === 'directory'
         ? { type: 'directory' }
