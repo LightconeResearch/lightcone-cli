@@ -21,7 +21,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from astra.papers.cache import PaperCache
 
+from lightcone.engine import assets
 from lightcone.engine import serve as engine
 from lightcone.engine.project import ProjectError
 
@@ -82,10 +84,98 @@ def test_the_first_call_starts_a_server_and_the_next_reuses_it(
     assert again.url.endswith("&record=decisions.binning")
 
 
-def test_the_page_needs_the_token(state: Path, project: Path) -> None:
-    url = engine.serve(project).url
-    status, _ = _get(url.split("?")[0])
-    assert status != 200
+@pytest.fixture
+def papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PaperCache:
+    """astra's paper cache, where the server's $HOME puts it. The project is
+    under that $HOME too, as a project usually is — which is where jupyter
+    starts abbreviating paths to `~`."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return PaperCache(tmp_path / ".cache" / "astra" / "papers")
+
+
+@pytest.fixture
+def served(state: Path, project: Path, papers: PaperCache) -> tuple[str, str]:
+    """The server's root URL and its token."""
+    url = urlsplit(engine.serve(project).url)
+    (token,) = parse_qs(url.query)["token"]
+    return f"{url.scheme}://{url.netloc}", token
+
+
+def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project: Path) -> None:
+    """Read by lc's own manifest reader, so the page parses no lc format and
+    the Contents API never has to serve a dotfile."""
+    base, token = served
+    output = project / "results" / "baseline" / "best_fit.json"
+    output.parent.mkdir(parents=True)
+    output.write_text("{}")
+    manifest = assets.Manifest(
+        output_id="best_fit",
+        universe_id="baseline",
+        recipe="python fit.py",
+        definition_version="sha256:d",
+        env_version="sha256:e",
+        data_version="sha256:x",
+        decisions={},
+        input_versions={"catalog": "sha256:c"},
+        git_sha="abc123",
+        git_remote="",
+        lc_version="0.5.0",
+        hermeticity={},
+        finished_at="2026-10-31T09:00:00.000Z",
+    )
+    assets.write(assets.manifest_path(output), manifest)
+    api = f"{base}/lightcone/api/run?token={token}&path="
+    status, body = _get(f"{api}results/baseline/best_fit.json")
+    assert status == 200
+    assert json.loads(body)["run"] == {
+        "finishedAt": "2026-10-31T09:00:00.000Z",
+        "gitRevision": "abc123",
+        "recipe": "python fit.py",
+        "environment": "sha256:e",
+        "cliVersion": "0.5.0",
+        "inputVersions": {"catalog": "sha256:c"},
+    }
+    assert json.loads(_get(f"{api}results/baseline/other.json")[1]) == {"run": None}
+    assert _get(f"{api}../outside.json")[0] == 400
+    # The manifest stays a dotfile to everything else.
+    hidden = f"{base}/api/contents/results/baseline/.best_fit.manifest.json?token={token}"
+    assert _get(hidden)[0] == 404
+
+
+def test_a_cited_paper_comes_from_astras_cache(
+    served: tuple[str, str], papers: PaperCache
+) -> None:
+    base, token = served
+    papers.add("10.1093/MNRAS/stv1198", b"%PDF-1.4 gd1", title="Gaia", authors=["A. B.", "C. D."])
+    # The page sends DOIs as the SDK normalizes them; astra stored this one as written.
+    query = f"doi=10.1093/mnras/stv1198&doi=10.1/absent&token={token}"
+    status, body = _get(f"{base}/lightcone/api/papers?{query}")
+    assert status == 200
+    found = json.loads(body)["papers"]
+    assert found.keys() == {"10.1093/mnras/stv1198"}
+    paper = found["10.1093/mnras/stv1198"]
+    assert (paper["title"], paper["authors"]) == ("Gaia", "A. B., C. D.")
+    # Served by Jupyter's own file handler: ranges for pdf.js.
+    request = urllib.request.Request(
+        f"{base}{paper['pdfUrl']}?token={token}", headers={"Range": "bytes=0-3"}
+    )
+    with urllib.request.urlopen(request) as pdf:
+        assert (pdf.status, pdf.headers["Content-Type"]) == (206, "application/pdf")
+        assert pdf.read() == b"%PDF"
+
+
+def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
+    """The app's routes reach past the project, to astra's cache, so they
+    are held to the token like the page and the Contents API are."""
+    base, _ = served
+    routes = (
+        "/lightcone",
+        "/lightcone/api/papers?doi=10.1/x",
+        "/lightcone/api/run?path=x",
+        "/lightcone/papers/x/paper.pdf",
+    )
+    for route in routes:
+        assert _get(f"{base}{route}")[0] in (302, 403), route
 
 
 def test_the_token_stays_private(state: Path, project: Path) -> None:

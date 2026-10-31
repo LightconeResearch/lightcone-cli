@@ -154,7 +154,8 @@ Any new `lightcone-*` package must:
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── app/                    # the `lc view` app: a LabServerApp; `python -m`, never imported by the CLI
-│   ├── __init__.py         # LightconeApp — directories, URL, nothing of its own to serve
+│   ├── __init__.py         # LightconeApp — directories, URL, auth required of every route
+│   ├── routes.py           # an output's recorded run, astra's paper cache
 │   ├── templates/index.html  # the page, after JupyterLab's examples/app
 │   └── static/             # built from ui/ — gitignored, packaged by the build hook
 ├── cli/                    # the CLI only: flags, rendering, exit codes
@@ -2146,10 +2147,11 @@ A `JupyterFrontEnd` (shell, plugins, LabShell's menu and tab bars) was
 built and dropped: with one view and no picker, its only remaining job
 was loading a JupyterLab theme for a page with no JupyterLab interface.
 Light or dark follows the OS (`prefers-color-scheme` →
-`data-astra-color-scheme`). The frontend depends on six packages; keep
-it that way.
+`data-astra-color-scheme`). The frontend depends on seven packages — the six it renders with, plus
+`pdfjs-dist` for reading papers; keep it that way.
 
-**The browser resolves the spec; the server adds no routes.**
+**The browser resolves the spec; the server's routes answer only what the
+Contents API cannot.**
 `@astra-spec/sdk` resolves over a `ProjectReader` on the Contents API,
 rooted at the project, and `@astra-spec/ui` renders. Python never parses
 the spec for the app — astra-tools has no serializer for the resolved
@@ -2184,7 +2186,61 @@ The page resolves `universes/baseline.yaml` — a project without one
 shows the SDK's own error rather than a guess at another. Each record opens in `Inventory`'s own dialog, and a deep link
 (`?record=`) is that dialog open at load (`defaultDetail`). Records as
 dock tabs were built and dropped to stay on the released
-`@astra-spec/ui`; image outputs render through the `/files/` handler.
+`@astra-spec/ui`.
+
+**astra-ui's host slots are filled from project files, or through the
+app's own routes (`app/routes.py`) where the Contents API cannot answer,
+or left empty:**
+
+- `renderArtifact` — astra-ui's own `ArtifactPreview` over bounded reads
+  through `/files/`: figures as images, CSV/TSV tables from a 64 KiB
+  ranged sample, JSON tables and metrics under 2 MB. The bounds are
+  jupyterlab-lightcone's, so an output previews the same in both hosts.
+  A preview is keyed on its file's cache token and loads once per
+  version, never on an unrelated change elsewhere on disk.
+- `renderProvenance` — `GET /lightcone/api/run?path=<output file>`,
+  answered by `assets.read(assets.manifest_path(…))`: lc's one reader of
+  its own format, so the page parses none of it, and manifests stay
+  dotfiles the Contents API refuses. (A first version read them in the
+  browser under `ContentsManager.allow_hidden=True`, which also let the
+  token write `.git/hooks`; replaced before merge.)
+- `paperMetadata` + `loadPdfJs` — cited papers read in place. astra's
+  paper cache (`~/.cache/astra/papers`, what `astra paper add` fills and
+  quotes are verified against) lies outside the project:
+  `GET /lightcone/api/papers?doi=…` answers title, authors and a `pdfUrl`,
+  and the PDFs themselves are served by Jupyter's own
+  `AuthenticatedFileHandler` rooted at the cache (`/lightcone/papers/…`),
+  which brings ranges for pdf.js and 304s on reopening. A cached paper
+  wins; an arXiv DOI the cache lacks reads from `arxiv.org/pdf/<id>` (the
+  rule jupyterlab-lightcone and the published site share); any other DOI
+  keeps the viewer's link to it. A title is whatever the cache holds —
+  `astra paper add --pdf` records none, `astra paper fetch-metadata --all`
+  fills them. Papers load after the analysis is shown, and again only
+  when the cited DOIs change. pdf.js is the legacy 4.8.69 build astra-ui
+  validates, its worker created through `new Worker(new URL(...))` so
+  rspack emits it. There is no fetch route: the page never writes the
+  cache.
+- **Left empty, deliberately:** `getOutputStatus` (current/behind/stale is
+  `assets.classify`'s answer — a browser copy would be the second
+  implementation layer 4 forbids), `renderCodeLink` (no editor to open
+  in), `onFetchPaper` (it writes astra's cache, from a click).
+
+**Every route needs the token** (2026-10, with the routes, reversing "the
+server adds no routes"). jupyter_server still serves a handler that
+declares no auth rule to anyone, so the server runs with
+`allow_unauthenticated_access=False`, turning a missing rule — ours or an
+extension's — into a refusal; the routes also carry `@web.authenticated`,
+which jupyter_server expects of every extension handler.
+`test_every_route_needs_the_token` fails only with both removed. The
+routes are prepended: jupyterlab_server ends its own list with a
+`/lightcone/.*` catch-all that answers with the page.
+
+**The page is versioned by its bundle's bytes.** Jupyter serves the
+static directory as immutable by path, ignoring `?v=`, so `?v=` is the
+only thing that makes a browser fetch a rebuilt `bundle.js` — and it is
+a hash of that file, not the package version, which a development build
+does not move. Lazy chunks (pdf.js and its worker) are named by content
+hash for the same reason.
 
 **The verb names the intent, the module the mechanism.** `lc view` is
 what an agent runs to show the user the analysis (2026-10, renamed from

@@ -3,27 +3,31 @@ import '../style/index.css';
 
 import {
   AnalysisValidationError,
+  collectCitedDois,
   indexAnalysis,
   projectDirname,
   resolveAnalysis,
   type AnalysisIndex,
   type ArtifactBinding,
-  type ResolvedAnalysisDocument,
-  type ResolvedOutput
+  type ResolvedAnalysisDocument
 } from '@astra-spec/sdk';
 import { recordEntry } from '@astra-spec/ui/lib';
-import { locateRecord } from '@astra-spec/ui/model';
+import { locateRecord, type InventoryPaperMetadataMap } from '@astra-spec/ui/model';
 import { Inventory } from '@astra-spec/ui/views';
-import { PageConfig, URLExt } from '@jupyterlab/coreutils';
+import { URLExt } from '@jupyterlab/coreutils';
 import { ContentsManager, ServerConnection } from '@jupyterlab/services';
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { errorMessage } from './api';
+import { artifactRenderer } from './artifacts';
+import { citedPapers, loadPdfJs } from './papers';
 import { projectReader } from './project-reader';
+import { Provenance } from './provenance';
 
 const UNIVERSE = 'baseline';
-const IMAGE = /\.(png|jpe?g|gif|svg|webp)$/i;
 const DARK = window.matchMedia('(prefers-color-scheme: dark)');
+const CONTENTS = new ContentsManager();
 
 type Loaded = {
   document: ResolvedAnalysisDocument;
@@ -34,7 +38,7 @@ type State = Loaded | { error: string[] };
 
 async function load(touched: Set<string>): Promise<State> {
   try {
-    const reader = projectReader(new ContentsManager(), touched);
+    const reader = projectReader(CONTENTS, touched);
     const { document, bindings } = await resolveAnalysis(reader, { universeId: UNIVERSE });
     return {
       document,
@@ -47,18 +51,8 @@ async function load(touched: Set<string>): Promise<State> {
         error: error.issues.map(({ file, path, message }) => `${file}${path ? ` ${path}` : ''}: ${message}`)
       };
     }
-    return { error: [error instanceof Error ? error.message : String(error)] };
+    return { error: [errorMessage(error)] };
   }
-}
-
-/** Figures that exist on disk, through the server's file handler; nothing else. */
-function renderArtifact({ artifacts }: Loaded) {
-  return (output: ResolvedOutput) => {
-    const binding = artifacts.get(output.canonicalPath);
-    if (!binding || !IMAGE.test(binding.path)) return null;
-    const url = URLExt.join(PageConfig.getBaseUrl(), 'files', URLExt.encodeParts(binding.path));
-    return <img className="lc-Artifact" src={`${url}?${binding.cacheToken}`} alt="" />;
-  };
 }
 
 /**
@@ -112,11 +106,14 @@ function opening(record: string, { document, index }: Loaded) {
 /**
  * The project's baseline analysis, resolved here in the browser from files
  * read through Jupyter's Contents API and shown as astra-ui's Inventory: each
- * record opens in its own dialog, and `?record=` opens one at load. It is
- * resolved again whenever a file it read changes on disk.
+ * record opens in its own dialog, and `?record=` opens one at load. Outputs
+ * preview their artifacts and show the run lc recorded; cited papers read in
+ * place, from astra's paper cache or arXiv. It is resolved again whenever a
+ * file it read changes on disk.
  */
 function App({ record }: { record: string | null }) {
   const [state, setState] = useState<State>();
+  const [papers, setPapers] = useState<InventoryPaperMetadataMap>({});
   const [dark, setDark] = useState(DARK.matches);
   useEffect(() => {
     let live = true;
@@ -148,6 +145,20 @@ function App({ record }: { record: string | null }) {
       watching.close();
     };
   }, []);
+  // Papers follow the cited DOIs rather than every change on disk (astra's
+  // cache is outside the project), and arrive after the analysis is shown.
+  const analysis = state && 'document' in state ? state.document : undefined;
+  const cited = analysis ? collectCitedDois(analysis).join(' ') : '';
+  useEffect(() => {
+    if (!analysis) return;
+    let live = true;
+    void citedPapers(analysis).then(found => {
+      if (live) setPapers(found);
+    });
+    return () => {
+      live = false;
+    };
+  }, [cited]);
   useEffect(() => {
     const follow = () => setDark(DARK.matches);
     DARK.addEventListener('change', follow);
@@ -164,7 +175,13 @@ function App({ record }: { record: string | null }) {
         <Inventory
           document={state.document}
           index={state.index}
-          renderArtifact={renderArtifact(state)}
+          renderArtifact={artifactRenderer(state.artifacts)}
+          renderProvenance={output => {
+            const binding = state.artifacts.get(output.canonicalPath);
+            return <Provenance key={`${output.canonicalPath}:${binding?.cacheToken}`} path={binding?.path} />;
+          }}
+          paperMetadata={papers}
+          loadPdfJs={loadPdfJs}
           defaultDetail={record ? [opening(record, state)] : undefined}
         />
       )}

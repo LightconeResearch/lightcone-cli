@@ -4,7 +4,13 @@ const rspack = require('@rspack/core');
 // One build, the one the wheel ships: production, without a source map.
 module.exports = {
   entry: './lib/index.js',
-  output: { path: path.resolve(__dirname, '../src/lightcone/app/static'), filename: 'bundle.js' },
+  output: {
+    path: path.resolve(__dirname, '../src/lightcone/app/static'),
+    filename: 'bundle.js',
+    // Jupyter serves this directory as immutable, so a lazy chunk (pdf.js and
+    // its worker) is named by its content; bundle.js is versioned by the page.
+    chunkFilename: '[contenthash].js'
+  },
   bail: true,
   mode: 'production',
   // Served from localhost, once per session: size hints are for the web.
