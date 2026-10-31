@@ -2263,9 +2263,20 @@ or left empty:**
   validates, its worker created through `new Worker(new URL(...))` so
   rspack emits it. There is no fetch route: the page never writes the
   cache.
-- **Left empty, deliberately:** `getOutputStatus` (current/behind/stale is
-  `assets.classify`'s answer — a browser copy would be the second
-  implementation layer 4 forbids), `renderCodeLink` (no editor to open
+- `getOutputStatus` — `GET /lightcone/api/status`, answered by
+  `materialize.status`, the call `lc status` makes, keyed
+  `<universe>/<output id>` with the engine's own `why` as the detail.
+  Current/behind/stale is `assets.classify`'s answer, and the page holds
+  no copy of it — asking the engine is how jupyterlab-lightcone fills
+  the same slot. The report's warnings travel with the verdicts and the
+  page shows them above the inventory, because an unfetched input's
+  verdict reads "changed" and only the warning says it is merely not in
+  this clone — the same two lines `lc status` prints. Asked after every
+  resolution, inside the resolution loop, since whatever changed on disk
+  may have changed it and the walk hashes every declared input: one walk
+  at a time, a change during one asks for one more. A project the engine
+  cannot read is a 422 and the page shows no state rather than an error.
+- **Left empty, deliberately:** `renderCodeLink` (no editor to open
   in), `onFetchPaper` (it writes astra's cache, from a click).
 
 **Every route needs the token** (2026-10, with the routes, reversing "the

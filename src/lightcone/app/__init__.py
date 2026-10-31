@@ -5,9 +5,10 @@ Jupyter Development Team): a ``LabServerApp`` serving one page, with its
 token, its page config and Jupyter's Contents API. The page reads the
 project through that API and resolves the spec itself; the app's own routes
 (see ``routes``) answer what that API cannot: an output's recorded run, read
-by lc's manifest reader, and the cited papers in astra's cache, outside the
-project. It serves no settings or themes: the page has no
-JupyterLab interface to configure. The one other extension it loads is
+by lc's manifest reader; every output's state, from the engine's own
+classification; and the cited papers in astra's cache, outside the project.
+It serves no settings or themes: the page has no JupyterLab interface to
+configure. The one other extension it loads is
 jupyter-live-content, whose WebSocket tells the page when a file it read
 changed on disk.
 

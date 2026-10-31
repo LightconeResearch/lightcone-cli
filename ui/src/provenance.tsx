@@ -1,5 +1,5 @@
 import { OutputProvenance } from '@astra-spec/ui/components';
-import type { OutputRun } from '@astra-spec/ui/model';
+import type { OutputRun, OutputStatus } from '@astra-spec/ui/model';
 import { useEffect, useState } from 'react';
 
 import { errorMessage, getJson } from './api';
@@ -8,10 +8,19 @@ type Recorded = { run?: OutputRun | null; error?: string };
 
 /**
  * The run lc recorded for the output at `path`, read by lc itself on the
- * server. Mounted only for the open output detail, so no other run is read;
- * refreshed with the analysis, including notifications for the run sidecar.
+ * server, beside the state lc classifies the output in. Mounted only for the
+ * open output detail, so no other run is read; refreshed with the analysis,
+ * including notifications for the run sidecar.
  */
-export function Provenance({ path, revision }: { path: string | undefined; revision: object }) {
+export function Provenance({
+  path,
+  revision,
+  status
+}: {
+  path: string | undefined;
+  revision: object;
+  status: OutputStatus | undefined;
+}) {
   const [recorded, setRecorded] = useState<Recorded>(path ? {} : { run: null });
   useEffect(() => {
     if (!path) {
@@ -28,5 +37,5 @@ export function Provenance({ path, revision }: { path: string | undefined; revis
       live = false;
     };
   }, [path, revision]);
-  return <OutputProvenance {...recorded} />;
+  return <OutputProvenance status={status} {...recorded} />;
 }

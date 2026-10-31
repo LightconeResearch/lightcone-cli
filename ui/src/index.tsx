@@ -12,14 +12,14 @@ import {
   type ResolvedAnalysisDocument
 } from '@astra-spec/sdk';
 import { recordEntry } from '@astra-spec/ui/lib';
-import { locateRecord, type InventoryPaperMetadataMap } from '@astra-spec/ui/model';
+import { locateRecord, type InventoryPaperMetadataMap, type OutputStatus } from '@astra-spec/ui/model';
 import { Inventory } from '@astra-spec/ui/views';
 import { URLExt } from '@jupyterlab/coreutils';
 import { ContentsManager, ServerConnection } from '@jupyterlab/services';
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { errorMessage } from './api';
+import { errorMessage, getJson } from './api';
 import { artifactRenderer } from './artifacts';
 import { citedPapers, loadPdfJs } from './papers';
 import { projectReader } from './project-reader';
@@ -35,6 +35,9 @@ type Loaded = {
   artifacts: ReadonlyMap<string, ArtifactBinding>;
 };
 type State = Loaded | { error: string[] };
+/** `lc status`: a verdict per output, keyed `<universe>/<output id>`, and its warnings. */
+type Report = { outputs: Record<string, OutputStatus>; warnings: string[] };
+const UNCLASSIFIED: Report = { outputs: {}, warnings: [] };
 
 async function load(touched: Set<string>): Promise<State> {
   try {
@@ -136,12 +139,13 @@ function opening(record: string, { document, index }: Loaded) {
  * The project's baseline analysis, resolved here in the browser from files
  * read through Jupyter's Contents API and shown as astra-ui's Inventory: each
  * record opens in its own dialog, and `?record=` opens one at load. Outputs
- * preview their artifacts and show the run lc recorded; cited papers read in
- * place, from astra's paper cache or arXiv. It is resolved again whenever a
- * file it read changes on disk.
+ * preview their artifacts and show the run lc recorded and the state lc
+ * classifies them in; cited papers read in place, from astra's paper cache or
+ * arXiv. It is resolved again whenever a file it read changes on disk.
  */
 function App({ record }: { record: string | null }) {
   const [state, setState] = useState<State>();
+  const [report, setReport] = useState(UNCLASSIFIED);
   const [papers, setPapers] = useState<InventoryPaperMetadataMap>({});
   const [dark, setDark] = useState(DARK.matches);
   const [following, setFollowing] = useState(true);
@@ -166,6 +170,16 @@ function App({ record }: { record: string | null }) {
         // The tab names the analysis: several projects can be open at once.
         window.document.title = 'document' in next ? next.document.analysis.name : 'Lightcone';
         watching.follow(touched);
+        // Each output's state is the engine's own classification, asked after
+        // the analysis is shown. It hashes every declared input, so it rides
+        // this loop: one walk at a time, and a change during one asks for one
+        // more. A project lc cannot classify shows no state rather than an error.
+        const classified =
+          'document' in next
+            ? await getJson<Report>('status', new URLSearchParams()).catch(() => UNCLASSIFIED)
+            : UNCLASSIFIED;
+        if (!live) return;
+        setReport(classified);
       } while (again);
       loading = false;
     };
@@ -175,9 +189,11 @@ function App({ record }: { record: string | null }) {
       watching.close();
     };
   }, []);
+  const analysis = state && 'document' in state ? state.document : undefined;
+  const statusOf = (output: { id: string }) =>
+    analysis && report.outputs[`${analysis.universe.universeId}/${output.id}`];
   // Papers follow the cited DOIs rather than every change on disk (astra's
   // cache is outside the project), and arrive after the analysis is shown.
-  const analysis = state && 'document' in state ? state.document : undefined;
   const cited = analysis ? collectCitedDois(analysis).join(' ') : '';
   useEffect(() => {
     if (!analysis) return;
@@ -197,11 +213,16 @@ function App({ record }: { record: string | null }) {
   return (
     <div className="astra-ui astra-isolate lc-Surface" data-astra-color-scheme={dark ? 'dark' : 'light'}>
       {following ? null : (
-        <div className="lc-Offline" role="status">
+        <div className="lc-Notice" role="status">
           Not following changes on disk: the connection to the server was lost. Retrying — if this
           persists, run <code>lc view</code> again for a new link.
         </div>
       )}
+      {report.warnings.map(warning => (
+        <div className="lc-Notice" role="status" key={warning}>
+          {warning}
+        </div>
+      ))}
       {state === undefined ? null : 'error' in state ? (
         <div className="lc-Error">
           <h2>This analysis cannot be read</h2>
@@ -212,9 +233,17 @@ function App({ record }: { record: string | null }) {
           document={state.document}
           index={state.index}
           renderArtifact={artifactRenderer(state.artifacts)}
+          getOutputStatus={statusOf}
           renderProvenance={output => {
             const binding = state.artifacts.get(output.canonicalPath);
-            return <Provenance key={output.canonicalPath} path={binding?.path} revision={state} />;
+            return (
+              <Provenance
+                key={output.canonicalPath}
+                path={binding?.path}
+                revision={state}
+                status={statusOf(output)}
+              />
+            );
           }}
           paperMetadata={papers}
           loadPdfJs={loadPdfJs}

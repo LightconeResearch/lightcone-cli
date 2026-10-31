@@ -18,7 +18,7 @@ import stat
 import sys
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -219,6 +219,34 @@ def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project
     assert _request(hidden)[0] == 404
 
 
+def test_an_outputs_state_is_the_engines(
+    state: Path, papers: PaperCache, analysis: Callable[..., Path]
+) -> None:
+    """The page shows what `lc status` would print, from the same call —
+    it holds no classification of its own."""
+    from lightcone.engine import materialize
+
+    root = analysis(
+        'version: "0.0.13"\nname: analysis\ninputs: []\ndecisions: {}\n'
+        "outputs:\n  - id: fit\n    type: metric\n    format: json\n"
+        "    recipe:\n      command: 'echo 1 > {output}'\n"
+    )
+    url = urlsplit(engine.serve(root).url)
+    status, body = _request(f"{url.scheme}://{url.netloc}/lightcone/api/status?{url.query}")
+    assert status == 200
+    report = materialize.status(root)
+    assert json.loads(body) == {
+        "outputs": {o.output: {"state": o.status, "detail": o.why} for o in report.outputs},
+        "warnings": report.warnings,
+    }
+    assert json.loads(body)["outputs"]["baseline/fit"]["state"] == "stale"
+
+
+def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) -> None:
+    base, token = served
+    assert _request(f"{base}/lightcone/api/status?token={token}")[0] == 422
+
+
 def test_a_run_record_beyond_a_symlink_is_not_read(
     served: tuple[str, str], project: Path, tmp_path: Path
 ) -> None:
@@ -332,6 +360,7 @@ def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
         "/lightcone",
         "/lightcone/api/papers?doi=10.1/x",
         "/lightcone/api/run?path=x",
+        "/lightcone/api/status",
         "/lightcone/papers/x/paper.pdf",
     )
     for route in routes:

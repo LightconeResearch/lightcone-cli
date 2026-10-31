@@ -21,7 +21,7 @@ body {
   }
 }
 
-.lc-Offline {
+.lc-Notice {
   position: sticky;
   top: 0;
   z-index: 1;
