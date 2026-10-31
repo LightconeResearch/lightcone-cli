@@ -5,7 +5,4 @@ requires-python = "${requires_python}"
 dependencies = []
 
 [tool.uv]
-# The oldest uv that has every flag lc runs: `uv sync --check` arrived in
-# 0.7, and an older uv rejects it, which reads as a never-converged project
-# rather than an error.
 required-version = ">=0.7"
