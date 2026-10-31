@@ -14,7 +14,9 @@ changed on disk.
 The token reads and nothing more. The page only reads, so the server keeps
 two of Jupyter's services, the Contents API and ``/files/``, and Jupyter's
 authorizer refuses every write; there are no kernels, sessions or terminals
-for the token to run code with, and no config to write.
+for the token to run code with, and no config to write. Two writes Jupyter
+makes outside its authorizer are switched off as well: the login form's
+password change, and the notebook trust store a read would create.
 
 Run as ``python -m lightcone.app``; ``lc view`` is what starts it.
 """
@@ -22,14 +24,18 @@ Run as ``python -m lightcone.app``; ``lc view`` is what starts it.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
 from jupyter_server.auth.authorizer import Authorizer
-from jupyter_server.auth.identity import User
+from jupyter_server.auth.identity import PasswordIdentityProvider, User
 from jupyter_server.base.handlers import JupyterHandler
 from jupyter_server.serverapp import ServerApp
+from jupyter_server.services.contents.largefilemanager import AsyncLargeFileManager
 from jupyterlab_server import LabServerApp
+from nbformat.sign import NotebookNotary
+from traitlets import Bool, default
 
 from lightcone.app import routes
 from lightcone.engine.serve import BUNDLE
@@ -49,6 +55,26 @@ class ReadOnly(Authorizer):
     ) -> bool:
         """Allow ``read``; refuse ``write`` and ``execute`` with a 403."""
         return action == "read"
+
+
+class TokenLogin(PasswordIdentityProvider):
+    """Jupyter's token login, without the form's offer to set a password."""
+
+    # Accepting one writes a Jupyter config file and lets that password in
+    # beside the token. Not configurable, so no config can turn it back on.
+    allow_password_change = Bool(False)
+
+
+class TrustInMemory(AsyncLargeFileManager):
+    """Jupyter's contents manager, with notebook trust kept in memory."""
+
+    @default("notary")
+    def _notary_default(self) -> NotebookNotary:
+        # Reading a notebook checks its signature, which by default creates
+        # Jupyter's signature database and secret in the user's data directory.
+        return NotebookNotary(  # type: ignore[no-untyped-call]
+            parent=self, db_file=":memory:", secret=os.urandom(32)
+        )
 
 
 class LightconeServer(ServerApp):
@@ -79,6 +105,8 @@ class LightconeApp(LabServerApp):
         # anyone; refused instead, every route needs the token, ours included.
         "allow_unauthenticated_access": False,
         "authorizer_class": ReadOnly,
+        "identity_provider_class": TokenLogin,
+        "contents_manager_class": TrustInMemory,
     }
     static_dir = str(BUNDLE.parent)
     templates_dir = str(_HERE / "templates")

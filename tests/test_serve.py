@@ -9,6 +9,8 @@ smoke suites: a checkout without ``ui/`` built skips, and
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import http.cookiejar
 import json
 import os
 import signal
@@ -18,7 +20,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
 import pytest
@@ -260,6 +262,44 @@ def test_the_token_reads_and_runs_nothing(served: tuple[str, str], project: Path
     assert sorted(path.name for path in project.iterdir()) == ["astra.yaml"]
     # Reading is what it is for.
     assert _request(f"{base}/api/contents/astra.yaml", token=token)[0] == 200
+
+
+def test_the_login_form_sets_no_password(served: tuple[str, str]) -> None:
+    """Jupyter's login form offers to trade the token for a password, which
+    it writes to a config file and then accepts; the token stays the only
+    way in."""
+    base, token = served
+
+    def login(**form: str) -> bool:
+        jar = http.cookiejar.CookieJar()
+        browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        browser.open(f"{base}/login").read()
+        xsrf = next(cookie.value for cookie in jar if cookie.name == "_xsrf")
+        with contextlib.suppress(urllib.error.HTTPError):
+            browser.open(f"{base}/login", data=urlencode({**form, "_xsrf": xsrf}).encode())
+        try:
+            return bool(browser.open(f"{base}/api/contents/astra.yaml").status == 200)
+        except urllib.error.HTTPError:
+            return False
+
+    assert login(password=token, new_password="chosen")
+    assert not login(password="chosen")
+
+
+def test_reading_a_notebook_leaves_jupyters_data_directory_alone(
+    state: Path, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A notebook read through the Contents API has its trust signature
+    checked, which would create Jupyter's signature database and secret."""
+    data = tmp_path / "jupyter-data"
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(data))
+    notebook = {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (project / "notes.ipynb").write_text(json.dumps(notebook))
+    url = urlsplit(engine.serve(project).url)
+    (token,) = parse_qs(url.query)["token"]
+    status, _ = _request(f"{url.scheme}://{url.netloc}/api/contents/notes.ipynb", token=token)
+    assert status == 200
+    assert not list(data.glob("*"))
 
 
 def test_a_cited_paper_comes_from_astras_cache(

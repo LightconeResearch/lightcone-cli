@@ -2296,6 +2296,29 @@ off. `test_the_token_reads_and_runs_nothing` pins both halves, each
 mutation-checked. Kernels being gone also keeps `shutdown_no_activity`
 honest, since a live kernel or terminal holds the server up.
 
+Two writes happen outside the authorizer, and each is switched off by
+the class Jupyter lets the app name (found by probing, 2026-10):
+- **The login form's password change.** A POST to `/login` with the token
+  as `password` and a `new_password` makes jupyter write a hashed
+  password into `jupyter_server_config.json` and accept it from then on.
+  (Under `JUPYTER_NO_CONFIG` that file lands in a throwaway temp dir, not
+  `~/.jupyter`, but the password still works on this server.)
+  `TokenLogin` redefines `allow_password_change` as `False` and *not*
+  configurable.
+- **The notebook trust store.** Any Contents API read of an `.ipynb`
+  checks its signature, which creates `nbsignatures.db` and
+  `notebook_secret` in the user's Jupyter data dir. `TrustInMemory`
+  gives the contents manager a notary with an in-memory database and a
+  random secret (nbformat's documented `:memory:`), so every notebook
+  reads as untrusted, which nothing here acts on.
+
+The WebSocket was checked too: jupyter-live-content accepts only
+`client_opened`/`client_closed`. What the server still writes is its own
+state: the runtime file, log and cookie secret under
+`~/.lightcone/serve/<host>/`, and, as with any `JUPYTER_NO_CONFIG`
+server, an empty `jupyter-clean-cfg-*` temp dir jupyter_core never
+removes.
+
 **The page is versioned by its bundle's bytes.** Jupyter serves the
 static directory as immutable by path, ignoring `?v=`, so `?v=` is the
 only thing that makes a browser fetch a rebuilt `bundle.js` — and it is
