@@ -517,6 +517,12 @@ def test_internal_and_annex_links_support_content_and_ranges(
                 f"{base}/files/{path}", token=token, headers={"Range": byte_range}
             )
             assert (status, body) == (206, expected)
+        request = urllib.request.Request(
+            f"{base}/files/{path}", method="HEAD", headers={"Authorization": f"token {token}"}
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.headers.get_content_type() == "text/plain"
+            assert response.headers["Content-Length"] == "10"
     assert _request(f"{base}/files/.git/annex/objects/abc/key", token=token)[0] == 404
 
 

@@ -79,8 +79,12 @@ class ProjectFileHandler(AuthenticatedFileHandler):
     """Jupyter's authentication and HTTP ranges over a confined, open file."""
 
     def validate_absolute_path(self, root: str, absolute_path: str) -> str:
-        resolved_path(Path(root), Path(absolute_path))
-        return super().validate_absolute_path(root, absolute_path)
+        # The opener checks containment and hidden paths, allowing annex links.
+        # Keep the requested alias for MIME detection and subsequent reads:
+        # its resolved target may legitimately live under .git/annex/objects.
+        with open_fd(Path(root), Path(absolute_path)) as fd:
+            self._stat_result = os.fstat(fd)
+        return absolute_path
 
     # Tornado's classmethod reads by path. This instance needs the serving root
     # as well; compute_etag is disabled by Jupyter, so no class-level caller runs.
