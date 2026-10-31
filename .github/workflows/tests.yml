@@ -40,6 +40,8 @@ jobs:
       # And for the crate validation: rocrate-validator is in the dev
       # group, so every runner has it and none may skip.
       LC_CRATE_TESTS_REQUIRED: "1"
+      # And for `lc view`'s front end, which the step below builds.
+      LC_UI_TESTS_REQUIRED: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +53,23 @@ jobs:
           enable-cache: true
           activate-environment: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Editable Python installs leave frontend building explicit.
+      - name: Build the app's front end
+        working-directory: ui
+        run: npm ci && npm run build
+
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Install Chromium for the viewer regressions
+        run: python -m playwright install --with-deps chromium
 
       - name: Report the sandbox this runner can build
         # Printed before the suite so a failure downstream can be read

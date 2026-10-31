@@ -365,7 +365,15 @@ def read(manifest: Path) -> Manifest | None:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text())
+        return loads(path.read_text())
+    except UnicodeDecodeError:
+        return None
+
+
+def loads(text: str) -> Manifest | None:
+    """Parse a run record already read by a caller, or return None if invalid."""
+    try:
+        data = json.loads(text)
         return Manifest(**{k: v for k, v in data.items() if k in _FIELDS})
     except (json.JSONDecodeError, TypeError, AttributeError, UnicodeDecodeError, ValueError):
         # Anything that is not a manifest object reads as "no manifest":

@@ -1,0 +1,33 @@
+@import '@astra-spec/ui/styles.css';
+@import '@astra-spec/ui/isolate.css';
+
+body {
+  margin: 0;
+}
+
+.lc-Surface {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 16px 24px;
+  background: var(--astra-color-canvas);
+  color: var(--astra-color-text);
+}
+
+/* astra-ui's isolation resets a `pre` inside it with `all: revert-layer`,
+   which falls back to layered rules: in a layer, this one survives it. */
+@layer lightcone {
+  .lc-Error pre {
+    white-space: pre-wrap;
+  }
+}
+
+.lc-Offline {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--astra-color-border);
+  border-radius: 6px;
+  background: var(--astra-color-surface-raised);
+}

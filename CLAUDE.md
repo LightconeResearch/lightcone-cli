@@ -56,6 +56,7 @@ speculatively.
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Compute** — explicit local/Slurm allocation and podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
+| 9 | **App** — `lc view`: the analysis on one page, served by Jupyter | 🔶 **landed** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -152,9 +153,14 @@ Any new `lightcone-*` package must:
 ```
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
+├── app/                    # the `lc view` app: a LabServerApp; `python -m`, never imported by the CLI
+│   ├── __init__.py         # LightconeApp — directories, URL, auth required of every route
+│   ├── routes.py           # an output's recorded run, astra's paper cache
+│   ├── templates/index.html  # the page, after JupyterLab's examples/app
+│   └── static/             # built from ui/ — gitignored, packaged by the build hook
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build
+│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build, lc view
 │   └── compute.py          # lc compute resources, launch, status, down
 └── engine/
     ├── __init__.py         # docstring only
@@ -169,6 +175,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── worker.py           # making one output; also the `python -m` entry point
     ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
     ├── run.py              # what `lc run` is: the probe + the uv hop
+    ├── serve.py            # what `lc view` is: find this project's server or start one
     ├── compute/            # explicit allocations and borrowed Dask clients
     │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
     │   ├── model.py        # the shared Pydantic models, the Provider protocol, PROVIDERS
@@ -192,6 +199,7 @@ src/lightcone/              # namespace — NO __init__.py
         ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
+ui/                         # the page (npm): astra-ui over the Contents API, built into app/static/
 evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
@@ -204,7 +212,15 @@ uv run pytest
 uv run ruff check src/ tests/    # --fix to apply
 uv run mypy src/
 uv build                         # wheel + sdist (CI runs this only to publish)
+cd ui && npm ci && npm run build # the `lc view` front end, into src/lightcone/app/
 ```
+
+The front end is the one non-Python build. `uv build` runs it through
+`hatch-jupyter-builder` (declared once, as the hook's own `dependencies`,
+which hatchling hands every PEP 517 frontend) and refuses to package
+without it; an editable `uv sync` only tries, so Python work never needs
+Node — `lc view` does, and refuses without the bundle rather than serve
+a blank page.
 
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
@@ -2135,6 +2151,238 @@ an in-place `write_text` on one dirties the other, which is the
 recorded thin hazard demonstrating itself. `test_materialize._forge`
 unlinks before writing; a new tampering test should too.
 
+## Key Invariants (layer 9)
+
+**Jupyter is the server; the page is just astra-ui.** The server is a
+`LabServerApp` — token auth, the page config, Jupyter's Contents API —
+after JupyterLab's `examples/app` (BSD-3, credited where adapted), loading
+no other server extension but jupyter-live-content
+(`serverapp_config`'s `jpserver_extensions`, which turns extension
+discovery off; `labextensions_path = []`) and serving
+no settings or themes. The page is
+not a JupyterLab front end: React renders astra-ui's `Inventory` straight
+into the body, over a `ContentsManager` from `@jupyterlab/services`.
+A `JupyterFrontEnd` (shell, plugins, LabShell's menu and tab bars) was
+built and dropped: with one view and no picker, its only remaining job
+was loading a JupyterLab theme for a page with no JupyterLab interface.
+Light or dark follows the OS (`prefers-color-scheme` →
+`data-astra-color-scheme`). The frontend depends on seven packages — the six it renders with, plus
+`pdfjs-dist` for reading papers; keep it that way.
+
+**The browser resolves the spec; the server's routes answer only what the
+Contents API cannot.**
+`@astra-spec/sdk` resolves over a `ProjectReader` on the Contents API,
+rooted at the project, and `@astra-spec/ui` renders. Python never parses
+the spec for the app — astra-tools has no serializer for the resolved
+form, and writing one would be a second resolver. A path is stat'ed from
+its parent's listing, and a directory is listed only once its own parent
+shows it: resolution asks about every unmaterialized output, and this
+answers "absent" without a failing request for each.
+
+**The page follows the disk, through the ecosystem's own watcher.**
+Jupyter has no core push for files changed outside its API (the server's
+`contents_service` events cover API calls only; jupyter-collaboration
+polls `last_modified` per open document). `jupyter-live-content`
+(jupyter-ai-contrib, built for agents rewriting files) is the piece that
+does: a server extension — the one `LightconeApp` loads beside itself,
+through `serverapp_config["jpserver_extensions"]` — watching with
+`watchfiles` and pushing `server_update` over an authenticated WebSocket
+to clients that sent `client_opened` for a path. Only its server half is
+used: the page speaks the protocol directly. The reader records every
+path a resolution asks about, present or not, and the page subscribes to
+each with its ancestor directories — the extension watches a subscribed
+path's *parent*, so a directory's own creation is what reveals a first
+output under a `results/` that did not exist — then re-resolves on any
+update (debounced) and reasserts every wanted subscription, including paths
+that were already subscribed. This makes newly created parent directories
+acquire their own watches. Contents models also carry `watchPaths`: the
+resolved file target and its sidecar named by `assets.manifest_path`. The
+reader watches these without reading hidden contents. A late manifest write refreshes provenance
+independently of the artifact's size and mtime. The contents manager ignores
+`require_hash`: live-content otherwise reads entire artifacts to hash them,
+but this page needs only change notifications. An open dialog survives it.
+A dropped socket — a sleeping laptop, a reset `ssh -L`, an idled-out
+server — is reopened with backoff (1 s doubling to 30 s), and while it
+is down the page says it is not following the disk and to run `lc view`
+again if that persists. On reopening it resubscribes and re-resolves
+once, because whatever changed meanwhile went unannounced. Reopening
+authenticates with the current server's cookie. Every server run
+has a fresh in-memory signing secret and a fresh random token independent
+of `JUPYTER_TOKEN` and `JUPYTER_TOKEN_FILE`. An expired server therefore
+requires a fresh `lc view` link; an old page cannot log into any later
+server, even for the same project. This matters on shared hosts: another
+user can bind a stopped server's port and collect the old page's cookie,
+which must not authenticate a replacement server. The tests replay that
+cookie against new servers for both the same and another project.
+Plain HTTP on localhost still does not authenticate the endpoint itself:
+a port squatter can impersonate the stopped viewer. SSH forwarding to a TCP
+port does not remove that boundary; fresh credentials prevent cross-run
+replay, not endpoint impersonation.
+`tests/test_serve.py` pins the push against a real server. Residue:
+`watchfiles` uses inotify, which does not see writes made from another
+host on a network filesystem — `WATCHFILES_FORCE_POLLING=1` is its own
+switch; lc sets nothing. The protocol is the extension's, not a published
+API, so it is pinned below 0.2.
+
+**The baseline universe, astra-ui as released, records in its dialogs.**
+The page resolves `universes/baseline.yaml` — a project without one
+shows the SDK's own error rather than a guess at another. Each record opens in `Inventory`'s own dialog, and a deep link
+(`?record=`) is that dialog open at load (`defaultDetail`). Records as
+dock tabs were built and dropped to stay on the released
+`@astra-spec/ui`.
+
+**astra-ui's host slots are filled from project files, or through the
+app's own routes (`app/routes.py`) where the Contents API cannot answer,
+or left empty:**
+
+- `renderArtifact` — astra-ui's own `ArtifactPreview` over bounded reads
+  through `/files/`: figures as images, CSV/TSV tables from a 64 KiB
+  ranged sample, JSON tables and metrics under 2 MB. The bounds are
+  jupyterlab-lightcone's, so an output previews the same in both hosts.
+  A preview is keyed on its file's cache token and loads once per
+  version, never on an unrelated change elsewhere on disk.
+- `renderProvenance` — `GET /lightcone/api/run?path=<output file>`,
+  answered by lc's manifest parser (`assets.loads`, also used by
+  `assets.read`). The route opens the sidecar through the same confined
+  descriptor-based reader as project files. Manifests remain hidden from
+  the Contents API. Provenance refetches on analysis refresh; artifact
+  previews retain their separate size/mtime cache keys.
+- `paperMetadata` + `loadPdfJs` — cited papers read in place. astra's
+  paper cache (`~/.cache/astra/papers`, what `astra paper add` fills and
+  quotes are verified against) lies outside the project:
+  `GET /lightcone/api/papers?doi=…` answers title, authors and a `pdfUrl`,
+  and the PDFs themselves are served by Jupyter's own
+  `AuthenticatedFileHandler` rooted at the cache (`/lightcone/papers/…`),
+  which brings ranges for pdf.js and 304s on reopening. A cached paper
+  wins; an arXiv DOI the cache lacks reads from `arxiv.org/pdf/<id>` (the
+  rule jupyterlab-lightcone and the published site share); any other DOI
+  keeps the viewer's link to it. A title is whatever the cache holds —
+  `astra paper add --pdf` records none, `astra paper fetch-metadata --all`
+  fills them. Papers load after the analysis is shown, and again only
+  when the cited DOIs change. pdf.js is the legacy 4.8.69 build astra-ui
+  validates, its worker created through `new Worker(new URL(...))` so
+  rspack emits it. There is no fetch route: the page never writes the
+  cache.
+- **Left empty, deliberately:** `getOutputStatus` (current/behind/stale is
+  `assets.classify`'s answer — a browser copy would be the second
+  implementation layer 4 forbids), `renderCodeLink` (no editor to open
+  in), `onFetchPaper` (it writes astra's cache, from a click).
+
+**Every route needs the token** (2026-10, with the routes, reversing "the
+server adds no routes"). jupyter_server still serves a handler that
+declares no auth rule to anyone, so the server runs with
+`allow_unauthenticated_access=False`, turning a missing rule — ours or an
+extension's — into a refusal; the routes also carry `@web.authenticated`,
+which jupyter_server expects of every extension handler.
+`test_every_route_needs_the_token` fails only with both removed. The
+routes are prepended: jupyterlab_server ends its own list with a
+`/lightcone/.*` catch-all that answers with the page.
+
+**The token reads; it never writes or runs code** (2026-10). The URL
+`lc view` prints ends up in agent transcripts, logs and `ssh -L`
+tunnels, and a stock jupyter_server token is a shell: kernels and
+sessions run code, `/api/config` writes `~/.jupyter`, and the Contents
+API writes and deletes project files. So the server is
+`LightconeServer`, a `ServerApp` whose `default_services` (jupyter's
+documented way to expose a subset) keeps only `contents` and `files`,
+and its `authorizer_class` is `ReadOnly`, which allows the `read` action
+and nothing else. Every Jupyter handler that changes something is
+`@authorized` and maps POST/PUT/PATCH/DELETE to `write`, so one rule,
+asked per request, refuses writes, checkpoints and notebook trust alike
+with a 403 — including any write path a later jupyter_server adds. (Overriding
+the contents manager's write methods was the first version: it guarded
+one service, by a list of upstream internals.) Terminals are absent
+already: jupyter_server 2 ships them as an extension, and discovery is
+off. `test_the_token_reads_and_runs_nothing` pins both halves, each
+mutation-checked. Kernels being gone also keeps `shutdown_no_activity`
+honest, since a live kernel or terminal holds the server up.
+
+Three writes happen outside the authorizer, and each is switched off by
+the class Jupyter lets the app name (found by probing, 2026-10):
+- **The login form's password change.** A POST to `/login` with the token
+  as `password` and a `new_password` makes jupyter write a hashed
+  password into `jupyter_server_config.json` and accept it from then on.
+  (Under `JUPYTER_NO_CONFIG` that file lands in a throwaway temp dir, not
+  `~/.jupyter`, but the password still works on this server.)
+  `TokenLogin` redefines `allow_password_change` as `False` and *not*
+  configurable.
+- **The notebook trust store.** Any Contents API read of an `.ipynb`
+  checks its signature, which creates `nbsignatures.db` and
+  `notebook_secret` in the user's Jupyter data dir. `ProjectContents`
+  gives the contents manager a notary with an in-memory database and a
+  random secret (nbformat's documented `:memory:`), so every notebook
+  reads as untrusted, which nothing here acts on.
+- **Corrupt-notebook recovery.** Jupyter's atomic-writing mode can rename
+  an intermediate over a corrupt notebook during GET. `ProjectContents`
+  disables that mode so a failed read cannot mutate the project.
+
+The WebSocket was checked too: jupyter-live-content accepts only
+`client_opened`/`client_closed`. What the server still writes is its own
+state: the runtime file and log under
+`~/.lightcone/serve/<host>/`, and, as with any `JUPYTER_NO_CONFIG`
+server, an empty `jupyter-clean-cfg-*` temp dir jupyter_core never
+removes.
+
+**File reads stay beneath their serving root.** `app/files.py` confines
+both Contents API reads and ranged static-file reads; the paper cache uses
+the same handler with its own root. External symlinks and aliases to hidden
+files are refused. Internal links work, including locked git-annex files
+pointing into `.git/annex/objects`. After resolution, directory-relative
+opens with `O_NOFOLLOW` anchor every step, preventing a concurrent writer
+from replacing a checked component with an escaping symlink. Only regular
+files are read; a planted FIFO cannot hang the server. Directory listings
+omit unavailable children rather than failing the whole listing.
+
+**Distribution builds always rebuild checkout frontend inputs.** The native
+Hatch hook (`hatch_build.py`) runs `npm ci` and `npm run build` when `ui/`
+is present. No timestamp heuristic can miss styles, favicons, locks, or
+compiler configuration. The sdist includes the hook and built assets but
+no `ui/`; its wheel build verifies the assets without looking for npm.
+Editable Python installs skip frontend building; build it explicitly for
+`lc view`. Browser regressions use Playwright's Chromium, installed with
+`python -m playwright install chromium`; `LC_UI_TESTS_REQUIRED=1` makes
+missing browser/build prerequisites fail instead of skip.
+
+**The page is versioned by its bundle's bytes.** Jupyter serves the
+static directory as immutable by path, ignoring `?v=`, so `?v=` is the
+only thing that makes a browser fetch a rebuilt `bundle.js` — and it is
+a hash of that file, not the package version, which a development build
+does not move. Lazy chunks (pdf.js and its worker) are named by content
+hash for the same reason.
+
+**The verb names the intent, the module the mechanism.** `lc view` is
+what an agent runs to show the user the analysis (2026-10, renamed from
+`lc serve`); `engine/serve.py`, `tests/test_serve.py` and
+`~/.lightcone/serve/` keep the server's name, because they are the
+Jupyter server and nothing else.
+
+**`lc view` is detached, idempotent and stops itself.** It prints the
+URL of this project's running server, or starts one and prints that,
+and returns — an agent's call must not block. Discovery is jupyter's own
+(`list_running_servers` over the runtime files, matched on `root_dir`);
+the idle stop is jupyter's own (`shutdown_no_activity_timeout`, 30 min).
+The page talks to the server only while it loads — it does not poll — so
+the clock runs from the last page load, open tab or not; an agent asked
+again simply starts a new server. The
+server is spawned with `python -I` and `JUPYTER_NO_CONFIG=1`, so neither
+project-local Python modules, `PYTHONPATH`, nor a user's Jupyter config
+can change what an agent gets back.
+It never opens a browser. `RECORD` is passed through to the URL
+unchecked: validating it would need the resolver this layer refuses to
+duplicate, so a record the analysis does not have opens no dialog.
+
+**Serve state is private to the user and kept per host, never in the
+project.** Runtime files and the log carry the token, and a project on
+group-shared storage would hand it to every collaborator; so they live
+in `~/.lightcone/serve/<short hostname>/`, mode 0700, log 0600. Per host
+because NERSC-style sites share `$HOME` across login nodes while jupyter
+can only tell whether a pid is alive on its own node — shared, a call on
+one node would delete a live server's file from another, or trust a
+reused pid. A call on another node starts its own server; the old one
+idles out. The URL is `localhost` on the named host (stderr, and
+`--json`'s `host`): from elsewhere, `ssh -L` to that node. Accepted
+residue: two concurrent first calls can start two servers.
+
 ### Recorded decisions
 
 - **Offers name their provider; there are no connections (2026-10).** A
@@ -2564,6 +2812,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster names or IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
+| Change what `lc view` shows | `ui/src/index.tsx` (+ `@astra-spec/ui` for anything a record looks like) | Released astra-ui only; the spec is resolved in the browser by the SDK, never in Python |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -2610,6 +2859,12 @@ written to" — a path the schema never defined. What changed, and why:
   - **`cluster_for_run(cluster_id)` is the graph-test monkeypatch point.**
     Most tests use an inline scheduler; integration tests borrow real standard
     Dask clients, including detached allocation and processes-based cases.
+- `tests/test_serve.py` — `lc view` against a **real** detached jupyter
+  server, its state under `tmp_path`. The page needs no front-end build,
+  so the lifecycle runs everywhere (the `state` fixture satisfies the
+  built-page check with an empty file); that the built bundle is served is
+  gated like the smoke suites (`LC_UI_TESTS_REQUIRED=1` in CI, two guard
+  tests). The front end itself is checked by driving it in a browser.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
   rendering, exit codes, error translation. Rich wraps output at terminal
   width, so assert on short unwrappable fragments.

@@ -1,0 +1,27 @@
+{
+  "name": "@lightcone/serve-app",
+  "private": true,
+  "description": "The page `lc view` serves: astra-ui's Inventory over Jupyter's Contents API.",
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "build": "tsc && rspack"
+  },
+  "dependencies": {
+    "@astra-spec/sdk": "^0.1.2",
+    "@astra-spec/ui": "^0.0.7",
+    "@jupyterlab/coreutils": "^6.6.4",
+    "@jupyterlab/services": "^7.6.4",
+    "pdfjs-dist": "4.8.69",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^2.0.2",
+    "@rspack/core": "^2.2.8",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "css-loader": "^7.1.4",
+    "style-loader": "^4.0.0",
+    "typescript": "~5.7.0"
+  }
+}
