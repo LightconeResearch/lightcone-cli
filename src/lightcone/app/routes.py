@@ -2,7 +2,9 @@
 
 An output's recorded run, read by lc's own manifest reader, so the page
 never parses lc's format and the server never has to open dotfiles to it;
-and the cited papers in astra's paper cache, which lies outside the
+every output's state, classified by the engine exactly as ``lc status``
+does, so the page holds no copy of that rule; and the cited papers in
+astra's paper cache, which lies outside the
 project (``astra paper add`` fills it, and quotes are verified against it).
 The paper routes are adapted from jupyterlab-lightcone's ``routes.py``
 (BSD-3-Clause, Lightcone Research), without its fetch route: nothing here
@@ -23,7 +25,8 @@ from jupyter_server.utils import url_path_join
 from tornado import web
 
 from lightcone.app.files import ProjectFileHandler, open_fd
-from lightcone.engine import assets
+from lightcone.engine import assets, materialize
+from lightcone.engine.project import ProjectError, current_project
 
 _PAPERS = PaperCache().cache_dir
 
@@ -97,9 +100,27 @@ class RunHandler(APIHandler):
         self.finish({"run": run})
 
 
+class StatusHandler(APIHandler):
+    """What state every output is in: the engine's answer, as `lc status` gives it."""
+
+    @web.authenticated
+    async def get(self) -> None:
+        """Classify every output; a project the engine cannot read is a 422."""
+        root = Path(self.contents_manager.root_dir)
+        try:
+            # Classification hashes the declared inputs, so it runs off the loop.
+            report = await asyncio.to_thread(lambda: materialize.status(current_project(root)))
+        except ProjectError as error:
+            raise web.HTTPError(422, str(error)) from error
+        outputs = {o.output: {"state": o.status, "detail": o.why} for o in report.outputs}
+        self.set_header("Cache-Control", "private, no-store")
+        self.finish({"outputs": outputs})
+
+
 HANDLERS = [
     ("/lightcone/api/papers", PapersHandler),
     ("/lightcone/api/run", RunHandler),
+    ("/lightcone/api/status", StatusHandler),
     # Jupyter's own file handler: ranges for pdf.js, 304s on reopening.
     ("/lightcone/papers/(.*)", ProjectFileHandler, {"path": str(_PAPERS)}),
 ]
