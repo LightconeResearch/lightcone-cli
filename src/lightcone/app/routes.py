@@ -109,12 +109,14 @@ class StatusHandler(APIHandler):
         root = Path(self.contents_manager.root_dir)
         try:
             # Classification hashes the declared inputs, so it runs off the loop.
-            report = await asyncio.to_thread(lambda: materialize.status(current_project(root)))
+            report = await asyncio.to_thread(materialize.status, current_project(root))
         except ProjectError as error:
             raise web.HTTPError(422, str(error)) from error
         outputs = {o.output: {"state": o.status, "detail": o.why} for o in report.outputs}
         self.set_header("Cache-Control", "private, no-store")
-        self.finish({"outputs": outputs})
+        # The warnings qualify the verdicts — an unfetched input reads as
+        # "changed" without the line saying it is merely not in this clone.
+        self.finish({"outputs": outputs, "warnings": report.warnings})
 
 
 HANDLERS = [

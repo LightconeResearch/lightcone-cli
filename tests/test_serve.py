@@ -234,10 +234,10 @@ def test_an_outputs_state_is_the_engines(
     url = urlsplit(engine.serve(root).url)
     status, body = _request(f"{url.scheme}://{url.netloc}/lightcone/api/status?{url.query}")
     assert status == 200
+    report = materialize.status(root)
     assert json.loads(body) == {
-        "outputs": {
-            o.output: {"state": o.status, "detail": o.why} for o in materialize.status(root).outputs
-        }
+        "outputs": {o.output: {"state": o.status, "detail": o.why} for o in report.outputs},
+        "warnings": report.warnings,
     }
     assert json.loads(body)["outputs"]["baseline/fit"]["state"] == "stale"
 
