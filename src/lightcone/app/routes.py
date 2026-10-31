@@ -12,11 +12,11 @@ writes the cache. Every route needs the token, like the rest of the server.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
 from astra.papers.cache import CachedPaper, PaperCache
+from jupyter_core.utils import ensure_async
 from jupyter_server.base.handlers import APIHandler, AuthenticatedFileHandler
 from jupyter_server.utils import url_path_join
 from tornado import web
@@ -62,13 +62,23 @@ class RunHandler(APIHandler):
     """The run lc recorded for one output, or ``null`` when there is none."""
 
     @web.authenticated
-    def get(self) -> None:
+    async def get(self) -> None:
         """Read the manifest beside the output the ``path`` argument names."""
-        root = Path(self.contents_manager.root_dir)
-        output = Path(os.path.normpath(root / self.get_query_argument("path")))
-        if not output.is_relative_to(root):
-            raise web.HTTPError(400, "the path is outside the project")
-        manifest = assets.read(assets.manifest_path(output))
+        # Whether the path is a file in the project is the contents manager's
+        # to say, as it does for /files/: outside the root, hidden, absent or
+        # a directory is refused before anything is read.
+        cm: Any = self.contents_manager  # its methods are untyped
+        path = self.get_query_argument("path")
+        if not cm.allow_hidden and await ensure_async(cm.is_hidden(path)):
+            raise web.HTTPError(404)
+        model = await ensure_async(cm.get(path, type="file", content=False))
+        # The manager follows symlinks, so where the sidecar really is gets
+        # its own check.
+        root = Path(cm.root_dir).resolve()
+        sidecar = assets.manifest_path(root / model["path"]).resolve()
+        if not sidecar.is_relative_to(root):
+            raise web.HTTPError(404, "the run record is outside the project")
+        manifest = assets.read(sidecar)
         run: dict[str, Any] | None = None
         if manifest is not None:
             run = {

@@ -57,31 +57,64 @@ async function load(touched: Set<string>): Promise<State> {
 
 /**
  * Call `changed` when a followed path is created, modified or deleted on
- * disk, through one jupyter-live-content WebSocket for the page's life;
- * `follow` moves its subscriptions to a new set of paths. Each path's
- * ancestor directories are subscribed too, so a file appearing in a
- * directory that did not exist yet is still seen: the directory's own
- * creation is. The socket authenticates with the page's login cookie.
+ * disk, through a jupyter-live-content WebSocket; `follow` moves its
+ * subscriptions to a new set of paths. Each path's ancestor directories are
+ * subscribed too, so a file appearing in a directory that did not exist yet
+ * is still seen: the directory's own creation is. The socket authenticates
+ * with the page's login cookie.
+ *
+ * A dropped socket (a sleeping laptop, a reset tunnel, a stopped server) is
+ * reopened with backoff, and `connected` says whether the page is following
+ * the disk meanwhile. Reopened, it resubscribes and calls `changed`, since
+ * whatever moved while it was down went unannounced.
  */
-function watcher(changed: () => void) {
+function watcher(changed: () => void, connected: (following: boolean) => void) {
   const settings = ServerConnection.makeSettings();
-  const socket = new settings.WebSocket(URLExt.join(settings.wsUrl, 'api/live-content/ws'));
+  let socket: WebSocket | undefined;
   let subscribed = new Set<string>();
   let wanted = new Set<string>();
-  const send = (type: string, path: string) => socket.send(JSON.stringify({ type, path }));
+  let pending: number | undefined;
+  let retry: number | undefined;
+  let delay = 1000;
+  let dropped = false;
+  let closed = false;
   const sync = () => {
-    if (socket.readyState !== socket.OPEN) return;
+    const ws = socket;
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    const send = (type: string, path: string) => ws.send(JSON.stringify({ type, path }));
     for (const path of subscribed) if (!wanted.has(path)) send('client_closed', path);
     for (const path of wanted) if (!subscribed.has(path)) send('client_opened', path);
     subscribed = wanted;
   };
-  socket.onopen = sync;
-  // A save is several events in a burst; one re-resolve answers them all.
-  let pending: number | undefined;
-  socket.onmessage = () => {
-    window.clearTimeout(pending);
-    pending = window.setTimeout(changed, 200);
+  const open = () => {
+    socket = new settings.WebSocket(URLExt.join(settings.wsUrl, 'api/live-content/ws'));
+    socket.onopen = () => {
+      delay = 1000;
+      sync();
+      if (dropped) {
+        dropped = false;
+        connected(true);
+        changed();
+      }
+    };
+    // A save is several events in a burst; one re-resolve answers them all.
+    socket.onmessage = () => {
+      window.clearTimeout(pending);
+      pending = window.setTimeout(changed, 200);
+    };
+    // An error is always followed by a close, so the close alone reconnects.
+    socket.onclose = () => {
+      if (closed) return;
+      subscribed = new Set();
+      if (!dropped) {
+        dropped = true;
+        connected(false);
+      }
+      retry = window.setTimeout(open, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
   };
+  open();
   return {
     follow(paths: Set<string>) {
       wanted = new Set();
@@ -91,8 +124,10 @@ function watcher(changed: () => void) {
       sync();
     },
     close() {
+      closed = true;
       window.clearTimeout(pending);
-      socket.close();
+      window.clearTimeout(retry);
+      socket?.close();
     }
   };
 }
@@ -115,12 +150,13 @@ function App({ record }: { record: string | null }) {
   const [state, setState] = useState<State>();
   const [papers, setPapers] = useState<InventoryPaperMetadataMap>({});
   const [dark, setDark] = useState(DARK.matches);
+  const [following, setFollowing] = useState(true);
   useEffect(() => {
     let live = true;
     // One resolution at a time; changes during one ask for exactly one more.
     let loading = false;
     let again = false;
-    const watching = watcher(() => void refresh());
+    const watching = watcher(() => void refresh(), setFollowing);
     const refresh = async () => {
       if (loading) {
         again = true;
@@ -166,6 +202,12 @@ function App({ record }: { record: string | null }) {
   }, []);
   return (
     <div className="astra-ui astra-isolate lc-Surface" data-astra-color-scheme={dark ? 'dark' : 'light'}>
+      {following ? null : (
+        <p className="lc-Offline" role="status">
+          Not following changes on disk: the connection to the server was lost. Retrying — if this
+          persists, run <code>lc view</code> again for a new link.
+        </p>
+      )}
       {state === undefined ? null : 'error' in state ? (
         <div className="lc-Error">
           <h2>This analysis cannot be read</h2>

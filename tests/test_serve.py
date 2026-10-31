@@ -28,13 +28,17 @@ from lightcone.engine import serve as engine
 from lightcone.engine.project import ProjectError
 
 REQUIRED_ENV = "LC_UI_TESTS_REQUIRED"
-_BUNDLE = Path(engine.__file__).parent.parent / "app" / "static" / "bundle.js"
+_BUNDLE = engine._BUNDLE
 
 
 @pytest.fixture
 def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Serve state under tmp_path; every server started is stopped."""
+    """Serve state under tmp_path; every server started is stopped. The
+    lifecycle needs no front-end build, so the check for one is satisfied."""
     monkeypatch.setattr(engine, "_STATE", tmp_path / "serve")
+    page = tmp_path / "bundle.js"
+    page.touch()
+    monkeypatch.setattr(engine, "_BUNDLE", page)
     yield tmp_path / "serve"
     from jupyter_server.serverapp import list_running_servers
 
@@ -51,13 +55,21 @@ def project(tmp_path: Path) -> Path:
     return root
 
 
-def _get(url: str) -> tuple[int, str]:
+def _get(
+    url: str, method: str = "GET", token: str = "", body: dict[str, str] | None = None
+) -> tuple[int, str]:
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args: object, **kwargs: object) -> None:
             return None
 
+    request = urllib.request.Request(
+        url,
+        method=method,
+        data=json.dumps(body or {}).encode() if method in ("POST", "PUT", "PATCH") else None,
+        headers={"Authorization": f"token {token}"} if token else {},
+    )
     try:
-        with urllib.request.build_opener(_NoRedirect).open(url, timeout=10) as response:
+        with urllib.request.build_opener(_NoRedirect).open(request, timeout=10) as response:
             return response.status, response.read().decode()
     except urllib.error.HTTPError as error:
         return error.code, ""
@@ -67,6 +79,32 @@ def test_a_directory_without_a_spec_is_refused(state: Path, tmp_path: Path) -> N
     with pytest.raises(ProjectError, match="no astra.yaml"):
         engine.serve(tmp_path)
     assert not state.exists()
+
+
+def test_an_installation_without_a_built_page_is_refused(
+    state: Path, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rather than a working URL to a blank page."""
+    monkeypatch.setattr(engine, "_BUNDLE", tmp_path / "unbuilt" / "bundle.js")
+    with pytest.raises(ProjectError, match="npm run build"):
+        engine.serve(project)
+    assert not state.exists()
+
+
+def test_a_runtime_file_counts_only_while_its_process_is_the_server(
+    tmp_path: Path, project: Path
+) -> None:
+    """A pid outlives its server after a reboot or a crash, and a reused one
+    is alive; and one bad file must not break every later call."""
+    root = os.path.abspath(project)
+    reused = tmp_path / "jpserver-1.json"
+    reused.write_text(json.dumps({"pid": os.getpid(), "root_dir": root, "url": "", "token": ""}))
+    malformed = [tmp_path / f"jpserver-{n}.json" for n in (2, 3, 4)]
+    for file, text in zip(malformed, ("{}", "[]", '{"pid": "1"}'), strict=True):
+        file.write_text(text)
+    assert engine._running(tmp_path, project) is None
+    assert not reused.exists()
+    assert not any(file.exists() for file in malformed)
 
 
 def test_the_first_call_starts_a_server_and_the_next_reuses_it(
@@ -135,11 +173,59 @@ def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project
         "cliVersion": "0.5.0",
         "inputVersions": {"catalog": "sha256:c"},
     }
-    assert json.loads(_get(f"{api}results/baseline/other.json")[1]) == {"run": None}
-    assert _get(f"{api}../outside.json")[0] == 400
+    (output.parent / "unrecorded.json").write_text("{}")
+    assert json.loads(_get(f"{api}results/baseline/unrecorded.json")[1]) == {"run": None}
+    # Not a file in the project: what the Contents API would refuse is refused.
+    for path in ("results/baseline/absent.json", "../outside.json", "", "results/baseline"):
+        assert _get(f"{api}{path}")[0] in (400, 404), path
     # The manifest stays a dotfile to everything else.
     hidden = f"{base}/api/contents/results/baseline/.best_fit.manifest.json?token={token}"
     assert _get(hidden)[0] == 404
+
+
+def test_a_run_record_beyond_a_symlink_is_not_read(
+    served: tuple[str, str], project: Path, tmp_path: Path
+) -> None:
+    """The contents manager follows symlinks, so the sidecar the route would
+    read is checked where it really is."""
+    base, token = served
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "fit.json").write_text("{}")
+    (elsewhere / ".fit.manifest.json").write_text("{}")
+    (project / "results").symlink_to(elsewhere)
+    status, _ = _get(f"{base}/lightcone/api/run?token={token}&path=results/fit.json")
+    assert status == 404
+
+
+def test_the_token_reads_and_runs_nothing(served: tuple[str, str], project: Path) -> None:
+    """The page only reads: no kernel, session or terminal to run code with,
+    no config to write, and the Contents API refuses every write."""
+    base, token = served
+    spec = project / "astra.yaml"
+    before = spec.read_text()
+    for method, route in (
+        ("POST", "/api/kernels"),
+        ("POST", "/api/sessions"),
+        ("POST", "/api/terminals"),
+        ("PUT", "/api/config/notebook"),
+    ):
+        assert _get(f"{base}{route}", method, token)[0] == 404, route
+    overwrite = {"type": "file", "format": "text", "content": "name: overwritten\n"}
+    for method, route, body in (
+        ("PUT", "/api/contents/astra.yaml", overwrite),
+        ("PUT", "/api/contents/new.yaml", overwrite),
+        ("PATCH", "/api/contents/astra.yaml", {"path": "renamed.yaml"}),
+        ("DELETE", "/api/contents/astra.yaml", None),
+        ("POST", "/api/contents", {"type": "directory"}),
+        ("POST", "/api/contents", {"copy_from": "astra.yaml"}),
+        ("POST", "/api/contents/astra.yaml/checkpoints", None),
+    ):
+        assert _get(f"{base}{route}", method, token, body)[0] == 403, (method, route, body)
+    assert spec.read_text() == before
+    assert sorted(path.name for path in project.iterdir()) == ["astra.yaml"]
+    # Reading is what it is for.
+    assert _get(f"{base}/api/contents/astra.yaml", token=token)[0] == 200
 
 
 def test_a_cited_paper_comes_from_astras_cache(

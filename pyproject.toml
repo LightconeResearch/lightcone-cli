@@ -69,7 +69,7 @@ git-remote-annex = "git_annex:cli"
 git-remote-tor-annex = "git_annex:cli"
 
 [build-system]
-requires = ["hatchling", "hatch-vcs", "hatch-jupyter-builder>=0.9"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]

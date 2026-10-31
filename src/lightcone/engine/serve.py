@@ -31,6 +31,8 @@ from lightcone.engine.project import SPEC_FILENAME, ProjectError
 IDLE_TIMEOUT = 30 * 60
 _STARTUP_TIMEOUT = 60.0
 _STATE = Path("~/.lightcone/serve")
+# The app's page, found without importing the app, which imports jupyterlab_server.
+_BUNDLE = Path(__file__).parents[1] / "app" / "static" / "bundle.js"
 
 
 @dataclass(frozen=True)
@@ -60,11 +62,18 @@ def serve(root: Path, record: str | None = None) -> Served:
         call started it.
 
     Raises:
-        ProjectError: If ``root`` holds no ``astra.yaml``, or the server
-            does not come up.
+        ProjectError: If ``root`` holds no ``astra.yaml``, this installation
+            has no built page, or the server does not come up.
     """
     if not (root / SPEC_FILENAME).is_file():
         raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc view` from the project root")
+    # A wheel always carries the page; an editable install built without Node
+    # does not, and would otherwise serve a blank one.
+    if not _BUNDLE.is_file():
+        raise ProjectError(
+            f"this installation has no built page ({_BUNDLE} is missing) — "
+            "build it in the lightcone-cli checkout: `cd ui && npm ci && npm run build`"
+        )
     host = socket.gethostname().split(".", 1)[0]
     runtime = _STATE.expanduser() / host
     runtime.mkdir(parents=True, exist_ok=True)
@@ -83,14 +92,25 @@ def _running(runtime: Path, root: Path) -> dict[str, Any] | None:
     # jupyter_server's `list_running_servers`, without the second its import costs.
     for file in runtime.glob("jpserver-*.json"):
         try:
-            info: dict[str, Any] = json.loads(file.read_text())
+            info = json.loads(file.read_text())
         except (OSError, ValueError):
             continue  # being written, or being removed
-        if not psutil.pid_exists(info["pid"]):
-            file.unlink(missing_ok=True)
+        if not (isinstance(info, dict) and _serving(info.get("pid"))):
+            file.unlink(missing_ok=True)  # malformed, or its server is gone
         elif info.get("root_dir") == os.path.abspath(root):
             return info
     return None
+
+
+def _serving(pid: object) -> bool:
+    # A dead server's pid is reused — after a reboot, or a node crash — so the
+    # process must still be the app, not merely exist.
+    if not isinstance(pid, int):
+        return False
+    try:
+        return "lightcone.app" in psutil.Process(pid).cmdline()
+    except psutil.Error:
+        return False
 
 
 def _start(runtime: Path, root: Path) -> dict[str, Any]:

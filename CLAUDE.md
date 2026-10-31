@@ -216,8 +216,11 @@ cd ui && npm ci && npm run build # the `lc view` front end, into src/lightcone/a
 ```
 
 The front end is the one non-Python build. `uv build` runs it through
-`hatch-jupyter-builder` and refuses to package without it; an editable
-`uv sync` only tries, so Python work never needs Node — `lc view` does.
+`hatch-jupyter-builder` (declared once, as the hook's own `dependencies`,
+which hatchling hands every PEP 517 frontend) and refuses to package
+without it; an editable `uv sync` only tries, so Python work never needs
+Node — `lc view` does, and refuses without the bundle rather than serve
+a blank page.
 
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
@@ -2191,6 +2194,12 @@ each with its ancestor directories — the extension watches a subscribed
 path's *parent*, so a directory's own creation is what reveals a first
 output under a `results/` that did not exist — then re-resolves on any
 update (debounced) and resubscribes. An open dialog survives it.
+A dropped socket — a sleeping laptop, a reset `ssh -L`, an idled-out
+server — is reopened with backoff (1 s doubling to 30 s), and while it
+is down the page says it is not following the disk and to run `lc view`
+again if that persists. On reopening it resubscribes and re-resolves
+once, because whatever changed meanwhile went unannounced (verified in a
+browser against a restarted server).
 `tests/test_serve.py` pins the push against a real server. Residue:
 `watchfiles` uses inotify, which does not see writes made from another
 host on a network filesystem — `WATCHFILES_FORCE_POLLING=1` is its own
@@ -2219,7 +2228,13 @@ or left empty:**
   its own format, so the page parses none of it, and manifests stay
   dotfiles the Contents API refuses. (A first version read them in the
   browser under `ContentsManager.allow_hidden=True`, which also let the
-  token write `.git/hooks`; replaced before merge.)
+  token write `.git/hooks`; replaced before merge.) Whether `path` names
+  a file in the project is the contents manager's answer, asked the way
+  `/files/` asks it (`is_hidden`, then `get(type="file")`), never a
+  containment check of our own: one answer for every read the page
+  makes. The sidecar is then checked where it *resolves*, because the
+  manager follows symlinks and a `results/` linked elsewhere would
+  otherwise read a manifest outside the project.
 - `paperMetadata` + `loadPdfJs` — cited papers read in place. astra's
   paper cache (`~/.cache/astra/papers`, what `astra paper add` fills and
   quotes are verified against) lies outside the project:
@@ -2250,6 +2265,23 @@ which jupyter_server expects of every extension handler.
 `test_every_route_needs_the_token` fails only with both removed. The
 routes are prepended: jupyterlab_server ends its own list with a
 `/lightcone/.*` catch-all that answers with the page.
+
+**The token reads; it never writes or runs code** (2026-10). The URL
+`lc view` prints ends up in agent transcripts, logs and `ssh -L`
+tunnels, and a stock jupyter_server token is a shell: kernels and
+sessions run code, `/api/config` writes `~/.jupyter`, and the Contents
+API writes and deletes project files. So the server is
+`LightconeServer`, a `ServerApp` whose `default_services` (jupyter's
+documented way to expose a subset) keeps only `contents` and `files`,
+and its contents manager is `ReadOnlyContents`, Jupyter's own with every
+write leaf refused with a 403 — `save` (which `new`, `copy` and uploads
+go through), `delete_file`, `rename_file`, the three checkpoint writes,
+and `trust_notebook`, which signs into the user's trust database.
+Terminals are absent already: jupyter_server 2 ships them as an
+extension, and discovery is off. `test_the_token_reads_and_runs_nothing`
+pins both halves, each mutation-checked. Kernels stopping also keeps
+`shutdown_no_activity` honest, since a live kernel or terminal holds
+the server up.
 
 **The page is versioned by its bundle's bytes.** Jupyter serves the
 static directory as immutable by path, ignoring `?v=`, so `?v=` is the
@@ -2768,7 +2800,8 @@ written to" — a path the schema never defined. What changed, and why:
     Dask clients, including detached allocation and processes-based cases.
 - `tests/test_serve.py` — `lc view` against a **real** detached jupyter
   server, its state under `tmp_path`. The page needs no front-end build,
-  so the lifecycle runs everywhere; that the built bundle is served is
+  so the lifecycle runs everywhere (the `state` fixture satisfies the
+  built-page check with an empty file); that the built bundle is served is
   gated like the smoke suites (`LC_UI_TESTS_REQUIRED=1` in CI, two guard
   tests). The front end itself is checked by driving it in a browser.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
