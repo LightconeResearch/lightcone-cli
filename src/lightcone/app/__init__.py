@@ -12,9 +12,9 @@ jupyter-live-content, whose WebSocket tells the page when a file it read
 changed on disk.
 
 The token reads and nothing more. The page only reads, so the server keeps
-two of Jupyter's services, the Contents API and ``/files/``, and refuses
-every write through them; there are no kernels, sessions or terminals for the
-token to run code with, and no config to write.
+two of Jupyter's services, the Contents API and ``/files/``, and Jupyter's
+authorizer refuses every write; there are no kernels, sessions or terminals
+for the token to run code with, and no config to write.
 
 Run as ``python -m lightcone.app``; ``lc view`` is what starts it.
 """
@@ -23,36 +23,32 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
+from jupyter_server.auth.authorizer import Authorizer
+from jupyter_server.auth.identity import User
+from jupyter_server.base.handlers import JupyterHandler
 from jupyter_server.serverapp import ServerApp
-from jupyter_server.services.contents.largefilemanager import AsyncLargeFileManager
 from jupyterlab_server import LabServerApp
-from tornado import web
 
 from lightcone.app import routes
+from lightcone.engine.serve import BUNDLE
 
 _HERE = Path(__file__).parent
-_BUNDLE = _HERE / "static" / "bundle.js"
 
 
 def _jupyter_server_extension_points() -> list[dict[str, Any]]:
     return [{"module": __name__, "app": LightconeApp}]
 
 
-def _refuse(*args: Any, **kwargs: Any) -> NoReturn:
-    raise web.HTTPError(403, "lc view serves the project read-only")
+class ReadOnly(Authorizer):
+    """Let the token read and nothing else."""
 
-
-class ReadOnlyContents(AsyncLargeFileManager):
-    """Jupyter's own contents manager, with every write refused."""
-
-    # The leaves every write reaches: `new`, `copy` and uploads go through
-    # `save`, `update` through `rename_file`.
-    save = delete_file = rename_file = _refuse
-    create_checkpoint = restore_checkpoint = delete_checkpoint = _refuse
-    # Signing writes the user's notebook trust database, outside the project.
-    trust_notebook = _refuse
+    def is_authorized(
+        self, handler: JupyterHandler, user: User, action: str, resource: str
+    ) -> bool:
+        """Allow ``read``; refuse ``write`` and ``execute`` with a 403."""
+        return action == "read"
 
 
 class LightconeServer(ServerApp):
@@ -73,7 +69,7 @@ class LightconeApp(LabServerApp):
     # is all that makes a browser fetch a rebuilt bundle: its bytes, not the
     # package version, which a development build does not move.
     app_version = hashlib.sha256(
-        _BUNDLE.read_bytes() if _BUNDLE.is_file() else b""
+        BUNDLE.read_bytes() if BUNDLE.is_file() else b""
     ).hexdigest()[:16]
     default_url = "/lightcone"
     app_url = "/lightcone"
@@ -82,9 +78,9 @@ class LightconeApp(LabServerApp):
         # jupyter_server still serves a handler that declares no auth rule to
         # anyone; refused instead, every route needs the token, ours included.
         "allow_unauthenticated_access": False,
-        "contents_manager_class": ReadOnlyContents,
+        "authorizer_class": ReadOnly,
     }
-    static_dir = str(_HERE / "static")
+    static_dir = str(BUNDLE.parent)
     templates_dir = str(_HERE / "templates")
     # The page loads no lab extension, so none is advertised to it.
     labextensions_path: list[str] = []

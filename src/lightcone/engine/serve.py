@@ -31,8 +31,11 @@ from lightcone.engine.project import SPEC_FILENAME, ProjectError
 IDLE_TIMEOUT = 30 * 60
 _STARTUP_TIMEOUT = 60.0
 _STATE = Path("~/.lightcone/serve")
-# The app's page, found without importing the app, which imports jupyterlab_server.
-_BUNDLE = Path(__file__).parents[1] / "app" / "static" / "bundle.js"
+# The module the server runs as, and what tells a live server from a reused pid.
+_APP = "lightcone.app"
+# The page the app serves; defined here, where `lc view` must find it without
+# importing the app (which imports jupyterlab_server).
+BUNDLE = Path(__file__).parents[1] / "app" / "static" / "bundle.js"
 
 
 @dataclass(frozen=True)
@@ -69,9 +72,9 @@ def serve(root: Path, record: str | None = None) -> Served:
         raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc view` from the project root")
     # A wheel always carries the page; an editable install built without Node
     # does not, and would otherwise serve a blank one.
-    if not _BUNDLE.is_file():
+    if not BUNDLE.is_file():
         raise ProjectError(
-            f"this installation has no built page ({_BUNDLE} is missing) — "
+            f"this installation has no built page ({BUNDLE} is missing) — "
             "build it in the lightcone-cli checkout: `cd ui && npm ci && npm run build`"
         )
     host = socket.gethostname().split(".", 1)[0]
@@ -108,23 +111,29 @@ def _serving(pid: object) -> bool:
     if not isinstance(pid, int):
         return False
     try:
-        return "lightcone.app" in psutil.Process(pid).cmdline()
+        return _APP in psutil.Process(pid).cmdline()
     except psutil.Error:
         return False
 
 
 def _start(runtime: Path, root: Path) -> dict[str, Any]:
-    log = runtime / f"{hashlib.sha256(os.fsencode(os.path.abspath(root))).hexdigest()[:16]}.log"
+    project = runtime / hashlib.sha256(os.fsencode(os.path.abspath(root))).hexdigest()[:16]
+    log = project.with_suffix(".log")
     env = {**os.environ, "JUPYTER_RUNTIME_DIR": str(runtime), "JUPYTER_NO_CONFIG": "1"}
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         # The server outlives this command, so it is not a `project._run` call.
         process = subprocess.Popen(
             [
-                sys.executable, "-m", "lightcone.app",
+                sys.executable, "-m", _APP,
                 "--no-browser",
                 f"--ServerApp.root_dir={root}",
                 f"--ServerApp.shutdown_no_activity_timeout={IDLE_TIMEOUT}",
+                # A page's login cookie is signed with this secret, and jupyter
+                # keeps one per runtime directory. One per project instead, so a
+                # page left open reconnects to a later server for its project,
+                # never to another project's on the port its own one freed.
+                f"--ServerApp.cookie_secret_file={project.with_suffix('.secret')}",
             ],
             cwd=root,
             env=env,

@@ -2199,7 +2199,18 @@ server — is reopened with backoff (1 s doubling to 30 s), and while it
 is down the page says it is not following the disk and to run `lc view`
 again if that persists. On reopening it resubscribes and re-resolves
 once, because whatever changed meanwhile went unannounced (verified in a
-browser against a restarted server).
+browser against a restarted server). What it may reopen *to* is decided
+by the login cookie's secret, and jupyter keeps one per runtime
+directory — so every project's server on a host would accept every
+page, and a page whose server idled out would reconnect to the next
+project's on the freed port and show that analysis instead. `lc view`
+therefore passes a **cookie secret per project**
+(`<runtime>/<root hash>.secret`, beside the log): a later server for the
+same project still accepts the page, another project's refuses it and
+the page keeps its banner. `test_a_page_reconnects_only_to_a_server_for_its_own_project`
+pins both directions by sending the old page's cookie with its old
+`Host` (a signed cookie's name carries the port), so it does not depend
+on the port actually being reused.
 `tests/test_serve.py` pins the push against a real server. Residue:
 `watchfiles` uses inotify, which does not see writes made from another
 host on a network filesystem — `WATCHFILES_FORCE_POLLING=1` is its own
@@ -2273,15 +2284,17 @@ sessions run code, `/api/config` writes `~/.jupyter`, and the Contents
 API writes and deletes project files. So the server is
 `LightconeServer`, a `ServerApp` whose `default_services` (jupyter's
 documented way to expose a subset) keeps only `contents` and `files`,
-and its contents manager is `ReadOnlyContents`, Jupyter's own with every
-write leaf refused with a 403 — `save` (which `new`, `copy` and uploads
-go through), `delete_file`, `rename_file`, the three checkpoint writes,
-and `trust_notebook`, which signs into the user's trust database.
-Terminals are absent already: jupyter_server 2 ships them as an
-extension, and discovery is off. `test_the_token_reads_and_runs_nothing`
-pins both halves, each mutation-checked. Kernels stopping also keeps
-`shutdown_no_activity` honest, since a live kernel or terminal holds
-the server up.
+and its `authorizer_class` is `ReadOnly`, which allows the `read` action
+and nothing else. Every Jupyter handler that changes something is
+`@authorized` and maps POST/PUT/PATCH/DELETE to `write`, so one rule,
+asked per request, refuses writes, checkpoints and notebook trust alike
+with a 403 — including any write path a later jupyter_server adds. (Overriding
+the contents manager's write methods was the first version: it guarded
+one service, by a list of upstream internals.) Terminals are absent
+already: jupyter_server 2 ships them as an extension, and discovery is
+off. `test_the_token_reads_and_runs_nothing` pins both halves, each
+mutation-checked. Kernels being gone also keeps `shutdown_no_activity`
+honest, since a live kernel or terminal holds the server up.
 
 **The page is versioned by its bundle's bytes.** Jupyter serves the
 static directory as immutable by path, ignoring `?v=`, so `?v=` is the

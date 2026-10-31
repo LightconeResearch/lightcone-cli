@@ -13,8 +13,12 @@ body {
   color: var(--astra-color-text);
 }
 
-.lc-Error pre {
-  white-space: pre-wrap;
+/* astra-ui's isolation resets a `pre` inside it with `all: revert-layer`,
+   which falls back to layered rules: in a layer, this one survives it. */
+@layer lightcone {
+  .lc-Error pre {
+    white-space: pre-wrap;
+  }
 }
 
 .lc-Offline {
@@ -26,5 +30,4 @@ body {
   border: 1px solid var(--astra-color-border);
   border-radius: 6px;
   background: var(--astra-color-surface-raised);
-  color: var(--astra-color-text);
 }

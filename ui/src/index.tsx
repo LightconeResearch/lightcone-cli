@@ -70,51 +70,43 @@ async function load(touched: Set<string>): Promise<State> {
  */
 function watcher(changed: () => void, connected: (following: boolean) => void) {
   const settings = ServerConnection.makeSettings();
-  let socket: WebSocket | undefined;
   let subscribed = new Set<string>();
   let wanted = new Set<string>();
   let pending: number | undefined;
   let retry: number | undefined;
   let delay = 1000;
-  let dropped = false;
-  let closed = false;
+  const send = (type: string, path: string) => socket.send(JSON.stringify({ type, path }));
   const sync = () => {
-    const ws = socket;
-    if (ws?.readyState !== WebSocket.OPEN) return;
-    const send = (type: string, path: string) => ws.send(JSON.stringify({ type, path }));
+    if (socket.readyState !== socket.OPEN) return;
     for (const path of subscribed) if (!wanted.has(path)) send('client_closed', path);
     for (const path of wanted) if (!subscribed.has(path)) send('client_opened', path);
     subscribed = wanted;
   };
-  const open = () => {
-    socket = new settings.WebSocket(URLExt.join(settings.wsUrl, 'api/live-content/ws'));
-    socket.onopen = () => {
+  const open = (reopening: boolean) => {
+    const ws = new settings.WebSocket(URLExt.join(settings.wsUrl, 'api/live-content/ws'));
+    ws.onopen = () => {
       delay = 1000;
       sync();
-      if (dropped) {
-        dropped = false;
+      if (reopening) {
         connected(true);
         changed();
       }
     };
     // A save is several events in a burst; one re-resolve answers them all.
-    socket.onmessage = () => {
+    ws.onmessage = () => {
       window.clearTimeout(pending);
       pending = window.setTimeout(changed, 200);
     };
     // An error is always followed by a close, so the close alone reconnects.
-    socket.onclose = () => {
-      if (closed) return;
+    ws.onclose = () => {
       subscribed = new Set();
-      if (!dropped) {
-        dropped = true;
-        connected(false);
-      }
-      retry = window.setTimeout(open, delay);
+      connected(false);
+      retry = window.setTimeout(() => (socket = open(true)), delay);
       delay = Math.min(delay * 2, 30_000);
     };
+    return ws;
   };
-  open();
+  let socket = open(false);
   return {
     follow(paths: Set<string>) {
       wanted = new Set();
@@ -124,10 +116,10 @@ function watcher(changed: () => void, connected: (following: boolean) => void) {
       sync();
     },
     close() {
-      closed = true;
+      socket.onclose = null;
       window.clearTimeout(pending);
       window.clearTimeout(retry);
-      socket?.close();
+      socket.close();
     }
   };
 }
@@ -203,10 +195,10 @@ function App({ record }: { record: string | null }) {
   return (
     <div className="astra-ui astra-isolate lc-Surface" data-astra-color-scheme={dark ? 'dark' : 'light'}>
       {following ? null : (
-        <p className="lc-Offline" role="status">
+        <div className="lc-Offline" role="status">
           Not following changes on disk: the connection to the server was lost. Retrying — if this
           persists, run <code>lc view</code> again for a new link.
-        </p>
+        </div>
       )}
       {state === undefined ? null : 'error' in state ? (
         <div className="lc-Error">
