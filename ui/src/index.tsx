@@ -79,7 +79,9 @@ function watcher(changed: () => void, connected: (following: boolean) => void) {
   const sync = () => {
     if (socket.readyState !== socket.OPEN) return;
     for (const path of subscribed) if (!wanted.has(path)) send('client_closed', path);
-    for (const path of wanted) if (!subscribed.has(path)) send('client_opened', path);
+    // Even an existing subscription must reconcile watches when a previously
+    // missing parent directory has appeared.
+    for (const path of wanted) send('client_opened', path);
     subscribed = wanted;
   };
   const open = (reopening: boolean) => {
@@ -212,7 +214,7 @@ function App({ record }: { record: string | null }) {
           renderArtifact={artifactRenderer(state.artifacts)}
           renderProvenance={output => {
             const binding = state.artifacts.get(output.canonicalPath);
-            return <Provenance key={`${output.canonicalPath}:${binding?.cacheToken}`} path={binding?.path} />;
+            return <Provenance key={output.canonicalPath} path={binding?.path} revision={state} />;
           }}
           paperMetadata={papers}
           loadPdfJs={loadPdfJs}

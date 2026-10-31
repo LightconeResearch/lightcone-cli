@@ -9,12 +9,15 @@ type Recorded = { run?: OutputRun | null; error?: string };
 /**
  * The run lc recorded for the output at `path`, read by lc itself on the
  * server. Mounted only for the open output detail, so no other run is read;
- * its key carries the output's cache token, so a new run remounts it.
+ * refreshed with the analysis, including notifications for the run sidecar.
  */
-export function Provenance({ path }: { path: string | undefined }) {
+export function Provenance({ path, revision }: { path: string | undefined; revision: object }) {
   const [recorded, setRecorded] = useState<Recorded>(path ? {} : { run: null });
   useEffect(() => {
-    if (!path) return;
+    if (!path) {
+      setRecorded({ run: null });
+      return;
+    }
     let live = true;
     getJson<Recorded>('run', new URLSearchParams({ path }))
       .catch((error: unknown) => ({ error: errorMessage(error) }))
@@ -24,6 +27,6 @@ export function Provenance({ path }: { path: string | undefined }) {
     return () => {
       live = false;
     };
-  }, []);
+  }, [path, revision]);
   return <OutputProvenance {...recorded} />;
 }

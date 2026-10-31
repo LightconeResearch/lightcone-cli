@@ -2193,24 +2193,31 @@ path a resolution asks about, present or not, and the page subscribes to
 each with its ancestor directories — the extension watches a subscribed
 path's *parent*, so a directory's own creation is what reveals a first
 output under a `results/` that did not exist — then re-resolves on any
-update (debounced) and resubscribes. An open dialog survives it.
+update (debounced) and reasserts every wanted subscription, including paths
+that were already subscribed. This makes newly created parent directories
+acquire their own watches. Contents models also carry `watchPaths`: the
+resolved file target and its sidecar named by `assets.manifest_path`. The
+reader watches these without reading hidden contents. A late manifest write refreshes provenance
+independently of the artifact's size and mtime. The contents manager ignores
+`require_hash`: live-content otherwise reads entire artifacts to hash them,
+but this page needs only change notifications. An open dialog survives it.
 A dropped socket — a sleeping laptop, a reset `ssh -L`, an idled-out
 server — is reopened with backoff (1 s doubling to 30 s), and while it
 is down the page says it is not following the disk and to run `lc view`
 again if that persists. On reopening it resubscribes and re-resolves
-once, because whatever changed meanwhile went unannounced (verified in a
-browser against a restarted server). What it may reopen *to* is decided
-by the login cookie's secret, and jupyter keeps one per runtime
-directory — so every project's server on a host would accept every
-page, and a page whose server idled out would reconnect to the next
-project's on the freed port and show that analysis instead. `lc view`
-therefore passes a **cookie secret per project**
-(`<runtime>/<root hash>.secret`, beside the log): a later server for the
-same project still accepts the page, another project's refuses it and
-the page keeps its banner. `test_a_page_reconnects_only_to_a_server_for_its_own_project`
-pins both directions by sending the old page's cookie with its old
-`Host` (a signed cookie's name carries the port), so it does not depend
-on the port actually being reused.
+once, because whatever changed meanwhile went unannounced. Reopening
+authenticates with the current server's cookie. Every server run
+has a fresh in-memory signing secret and a fresh random token independent
+of `JUPYTER_TOKEN` and `JUPYTER_TOKEN_FILE`. An expired server therefore
+requires a fresh `lc view` link; an old page cannot log into any later
+server, even for the same project. This matters on shared hosts: another
+user can bind a stopped server's port and collect the old page's cookie,
+which must not authenticate a replacement server. The tests replay that
+cookie against new servers for both the same and another project.
+Plain HTTP on localhost still does not authenticate the endpoint itself:
+a port squatter can impersonate the stopped viewer. SSH forwarding to a TCP
+port does not remove that boundary; fresh credentials prevent cross-run
+replay, not endpoint impersonation.
 `tests/test_serve.py` pins the push against a real server. Residue:
 `watchfiles` uses inotify, which does not see writes made from another
 host on a network filesystem — `WATCHFILES_FORCE_POLLING=1` is its own
@@ -2235,17 +2242,11 @@ or left empty:**
   A preview is keyed on its file's cache token and loads once per
   version, never on an unrelated change elsewhere on disk.
 - `renderProvenance` — `GET /lightcone/api/run?path=<output file>`,
-  answered by `assets.read(assets.manifest_path(…))`: lc's one reader of
-  its own format, so the page parses none of it, and manifests stay
-  dotfiles the Contents API refuses. (A first version read them in the
-  browser under `ContentsManager.allow_hidden=True`, which also let the
-  token write `.git/hooks`; replaced before merge.) Whether `path` names
-  a file in the project is the contents manager's answer, asked the way
-  `/files/` asks it (`is_hidden`, then `get(type="file")`), never a
-  containment check of our own: one answer for every read the page
-  makes. The sidecar is then checked where it *resolves*, because the
-  manager follows symlinks and a `results/` linked elsewhere would
-  otherwise read a manifest outside the project.
+  answered by lc's manifest parser (`assets.loads`, also used by
+  `assets.read`). The route opens the sidecar through the same confined
+  descriptor-based reader as project files. Manifests remain hidden from
+  the Contents API. Provenance refetches on analysis refresh; artifact
+  previews retain their separate size/mtime cache keys.
 - `paperMetadata` + `loadPdfJs` — cited papers read in place. astra's
   paper cache (`~/.cache/astra/papers`, what `astra paper add` fills and
   quotes are verified against) lies outside the project:
@@ -2296,7 +2297,7 @@ off. `test_the_token_reads_and_runs_nothing` pins both halves, each
 mutation-checked. Kernels being gone also keeps `shutdown_no_activity`
 honest, since a live kernel or terminal holds the server up.
 
-Two writes happen outside the authorizer, and each is switched off by
+Three writes happen outside the authorizer, and each is switched off by
 the class Jupyter lets the app name (found by probing, 2026-10):
 - **The login form's password change.** A POST to `/login` with the token
   as `password` and a `new_password` makes jupyter write a hashed
@@ -2307,17 +2308,40 @@ the class Jupyter lets the app name (found by probing, 2026-10):
   configurable.
 - **The notebook trust store.** Any Contents API read of an `.ipynb`
   checks its signature, which creates `nbsignatures.db` and
-  `notebook_secret` in the user's Jupyter data dir. `TrustInMemory`
+  `notebook_secret` in the user's Jupyter data dir. `ProjectContents`
   gives the contents manager a notary with an in-memory database and a
   random secret (nbformat's documented `:memory:`), so every notebook
   reads as untrusted, which nothing here acts on.
+- **Corrupt-notebook recovery.** Jupyter's atomic-writing mode can rename
+  an intermediate over a corrupt notebook during GET. `ProjectContents`
+  disables that mode so a failed read cannot mutate the project.
 
 The WebSocket was checked too: jupyter-live-content accepts only
 `client_opened`/`client_closed`. What the server still writes is its own
-state: the runtime file, log and cookie secret under
+state: the runtime file and log under
 `~/.lightcone/serve/<host>/`, and, as with any `JUPYTER_NO_CONFIG`
 server, an empty `jupyter-clean-cfg-*` temp dir jupyter_core never
 removes.
+
+**File reads stay beneath their serving root.** `app/files.py` confines
+both Contents API reads and ranged static-file reads; the paper cache uses
+the same handler with its own root. External symlinks and aliases to hidden
+files are refused. Internal links work, including locked git-annex files
+pointing into `.git/annex/objects`. After resolution, directory-relative
+opens with `O_NOFOLLOW` anchor every step, preventing a concurrent writer
+from replacing a checked component with an escaping symlink. Only regular
+files are read; a planted FIFO cannot hang the server. Directory listings
+omit unavailable children rather than failing the whole listing.
+
+**Distribution builds always rebuild checkout frontend inputs.** The native
+Hatch hook (`hatch_build.py`) runs `npm ci` and `npm run build` when `ui/`
+is present. No timestamp heuristic can miss styles, favicons, locks, or
+compiler configuration. The sdist includes the hook and built assets but
+no `ui/`; its wheel build verifies the assets without looking for npm.
+Editable Python installs skip frontend building; build it explicitly for
+`lc view`. Browser regressions use Playwright's Chromium, installed with
+`python -m playwright install chromium`; `LC_UI_TESTS_REQUIRED=1` makes
+missing browser/build prerequisites fail instead of skip.
 
 **The page is versioned by its bundle's bytes.** Jupyter serves the
 static directory as immutable by path, ignoring `?v=`, so `?v=` is the
@@ -2340,8 +2364,9 @@ the idle stop is jupyter's own (`shutdown_no_activity_timeout`, 30 min).
 The page talks to the server only while it loads — it does not poll — so
 the clock runs from the last page load, open tab or not; an agent asked
 again simply starts a new server. The
-server is spawned with `JUPYTER_NO_CONFIG=1`, as upstream's example
-does, so a user's jupyter config cannot change what an agent gets back.
+server is spawned with `python -I` and `JUPYTER_NO_CONFIG=1`, so neither
+project-local Python modules, `PYTHONPATH`, nor a user's Jupyter config
+can change what an agent gets back.
 It never opens a browser. `RECORD` is passed through to the URL
 unchecked: validating it would need the resolver this layer refuses to
 duplicate, so a record the analysis does not have opens no dialog.

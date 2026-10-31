@@ -60,14 +60,16 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      # Before the sync, so the editable install finds the bundle built
-      # rather than trying (and, by design, quietly failing) to build it.
+      # Editable Python installs leave frontend building explicit.
       - name: Build the app's front end
         working-directory: ui
         run: npm ci && npm run build
 
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Install Chromium for the viewer regressions
+        run: python -m playwright install --with-deps chromium
 
       - name: Report the sandbox this runner can build
         # Printed before the suite so a failure downstream can be read

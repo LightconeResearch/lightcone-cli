@@ -12,15 +12,17 @@ writes the cache. Every route needs the token, like the rest of the server.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
 from astra.papers.cache import CachedPaper, PaperCache
 from jupyter_core.utils import ensure_async
-from jupyter_server.base.handlers import APIHandler, AuthenticatedFileHandler
+from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
 from tornado import web
 
+from lightcone.app.files import ProjectFileHandler, open_fd
 from lightcone.engine import assets
 
 _PAPERS = PaperCache().cache_dir
@@ -72,13 +74,15 @@ class RunHandler(APIHandler):
         if not cm.allow_hidden and await ensure_async(cm.is_hidden(path)):
             raise web.HTTPError(404)
         model = await ensure_async(cm.get(path, type="file", content=False))
-        # The manager follows symlinks, so where the sidecar really is gets
-        # its own check.
+        # The sidecar is hidden, but uses the same confined opener as artifacts.
         root = Path(cm.root_dir).resolve()
-        sidecar = assets.manifest_path(root / model["path"]).resolve()
-        if not sidecar.is_relative_to(root):
-            raise web.HTTPError(404, "the run record is outside the project")
-        manifest = assets.read(sidecar)
+        sidecar = assets.manifest_path(root / model["path"])
+        try:
+            with open_fd(root, sidecar, hidden=True) as fd:
+                with os.fdopen(fd, "r", closefd=False) as file:
+                    manifest = assets.loads(file.read())
+        except (web.HTTPError, UnicodeDecodeError):
+            manifest = None
         run: dict[str, Any] | None = None
         if manifest is not None:
             run = {
@@ -97,5 +101,5 @@ HANDLERS = [
     ("/lightcone/api/papers", PapersHandler),
     ("/lightcone/api/run", RunHandler),
     # Jupyter's own file handler: ranges for pdf.js, 304s on reopening.
-    ("/lightcone/papers/(.*)", AuthenticatedFileHandler, {"path": str(_PAPERS)}),
+    ("/lightcone/papers/(.*)", ProjectFileHandler, {"path": str(_PAPERS)}),
 ]

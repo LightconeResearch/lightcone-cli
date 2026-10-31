@@ -125,13 +125,13 @@ def test_the_first_call_starts_a_server_and_the_next_reuses_it(
     assert again.url.endswith("&record=decisions.binning")
 
 
-def test_a_page_reconnects_only_to_a_server_for_its_own_project(
+def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
     state: Path, project: Path, tmp_path: Path
 ) -> None:
     """A page outlives its server, and the next server may take the port the
-    first one freed: a later server for the same project accepts the page's
-    login cookie, another project's refuses it. Each request names the first
-    server's host, as the open page's would."""
+    first one freed and collect its cookie. Neither a new server for the
+    same project nor another project may accept that captured credential.
+    Each request names the first server's host, as the open page's would."""
     other = tmp_path / "other"
     other.mkdir()
     (other / "astra.yaml").write_text("name: other\n")
@@ -154,7 +154,7 @@ def test_a_page_reconnects_only_to_a_server_for_its_own_project(
         )
         return status == 200
 
-    assert accepts(engine.serve(project))
+    assert not accepts(engine.serve(project))
     assert not accepts(engine.serve(other))
 
 
@@ -441,3 +441,203 @@ def test_the_page_loads_the_built_front_end(state: Path, project: Path) -> None:
         assert f"/static/lightcone/{asset}?v=" in page
         status, _ = _request(f"{base}/static/lightcone/{asset}")
         assert status == 200
+
+
+def test_startup_ignores_project_modules_and_pythonpath(
+    state: Path, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Viewing a shared project must not import Python planted by its writers."""
+    marker = tmp_path / "executed"
+    payload = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    for name in ("lightcone.py", "json.py", "sitecustomize.py"):
+        (project / name).write_text(payload)
+    monkeypatch.setenv("PYTHONPATH", str(project))
+    served = engine.serve(project)
+    assert _request(served.url)[0] == 200
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("source", ["token", "file", "empty-file"])
+def test_inherited_tokens_cannot_replace_viewer_authentication(
+    source: str, state: Path, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("JUPYTER_TOKEN", raising=False)
+    monkeypatch.delenv("JUPYTER_TOKEN_FILE", raising=False)
+    if source == "token":
+        monkeypatch.setenv("JUPYTER_TOKEN", "inherited")
+    else:
+        token_file = tmp_path / "token"
+        token_file.write_text("" if source == "empty-file" else "inherited")
+        monkeypatch.setenv("JUPYTER_TOKEN_FILE", str(token_file))
+    url = urlsplit(engine.serve(project).url)
+    (token,) = parse_qs(url.query)["token"]
+    assert token and token != "inherited"
+    endpoint = f"{url.scheme}://{url.netloc}/api/contents/astra.yaml"
+    assert _request(endpoint)[0] in (302, 403)
+    assert _request(endpoint, token="inherited")[0] in (302, 403)
+    assert _request(endpoint, token=token)[0] == 200
+
+
+def test_file_routes_confine_links_without_breaking_directory_listings(
+    served: tuple[str, str], project: Path, tmp_path: Path
+) -> None:
+    base, token = served
+    private = tmp_path / ".private"
+    private.mkdir(mode=0o700)
+    (private / "secret").write_text("not for the viewer")
+    (project / "escape").symlink_to(private / "secret")
+    (project / "directory").symlink_to(private)
+    (project / ".env").write_text("private environment")
+    (project / "hidden-alias").symlink_to(project / ".env")
+    (project / "broken").symlink_to(project / "absent")
+    (project / "loop").symlink_to(project / "loop")
+    for path in ("escape", "directory/secret", "hidden-alias", "broken", "loop"):
+        for route in ("api/contents", "files"):
+            assert _request(f"{base}/{route}/{path}", token=token)[0] == 404, (route, path)
+    status, body = _request(f"{base}/api/contents", token=token)
+    assert status == 200
+    assert [entry["name"] for entry in json.loads(body)["content"]] == ["astra.yaml"]
+
+
+def test_internal_and_annex_links_support_content_and_ranges(
+    served: tuple[str, str], project: Path
+) -> None:
+    base, token = served
+    annex = project / ".git" / "annex" / "objects" / "abc" / "key"
+    annex.parent.mkdir(parents=True)
+    annex.write_text("0123456789")
+    (project / "locked.txt").symlink_to(annex)
+    (project / "alias.txt").symlink_to(project / "locked.txt")
+    for path in ("locked.txt", "alias.txt"):
+        status, body = _request(f"{base}/api/contents/{path}", token=token)
+        assert status == 200
+        assert json.loads(body)["content"] == "0123456789"
+        for byte_range, expected in (("bytes=2-5", "2345"), ("bytes=-3", "789")):
+            status, body = _request(
+                f"{base}/files/{path}", token=token, headers={"Range": byte_range}
+            )
+            assert (status, body) == (206, expected)
+    assert _request(f"{base}/files/.git/annex/objects/abc/key", token=token)[0] == 404
+
+
+def test_metadata_hash_requests_never_read_artifact_bytes(project: Path) -> None:
+    from unittest.mock import patch
+
+    from lightcone.app.files import ProjectContents
+
+    artifact = project / "large.json"
+    with artifact.open("wb") as file:
+        file.truncate(3 * 1024**3)
+    manager = ProjectContents(root_dir=str(project))
+    with patch.object(manager, "open", side_effect=AssertionError("artifact was read")):
+        model = asyncio.run(manager.get("large.json", content=False, require_hash=True))
+    assert model["size"] == 3 * 1024**3
+    assert model["hash"] is None
+    assert model["watchPaths"] == ["large.json", ".large.manifest.json"]
+
+
+def test_confined_open_refuses_a_directory_swap(project: Path, tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from tornado.web import HTTPError
+
+    from lightcone.app.files import open_fd
+
+    directory = project / "results"
+    directory.mkdir()
+    (directory / "metric.json").write_text("public")
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "metric.json").write_text("secret")
+    original_open = os.open
+
+    def swap(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if path == "results":
+            directory.rename(project / "old-results")
+            directory.symlink_to(private)
+        return original_open(path, flags, *args, **kwargs)  # type: ignore[call-overload]
+
+    with patch("os.open", side_effect=swap), pytest.raises(HTTPError) as error:
+        with open_fd(project, directory / "metric.json"):
+            pytest.fail("followed a swapped directory")
+    assert error.value.status_code == 404
+
+
+def test_confined_open_rejects_special_files(project: Path) -> None:
+    from tornado.web import HTTPError
+
+    from lightcone.app.files import open_fd
+
+    fifo = project / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(HTTPError) as error:
+        with open_fd(project, fifo):
+            pytest.fail("opened a FIFO")
+    assert error.value.status_code == 404
+
+
+def test_late_run_record_is_announced_without_changing_the_artifact(
+    state: Path, project: Path
+) -> None:
+    from tornado.websocket import websocket_connect
+
+    artifact = project / "metric.json"
+    artifact.write_text("{}")
+    before = artifact.stat()
+    url = urlsplit(engine.serve(project).url)
+    base = f"{url.scheme}://{url.netloc}"
+    _, body = _request(f"{base}/api/contents/metric.json?{url.query}")
+    watch_path = json.loads(body)["watchPaths"][1]
+    assert watch_path == assets.manifest_path(artifact).relative_to(project).as_posix()
+
+    async def write_run() -> dict[str, object]:
+        socket = await websocket_connect(f"ws://{url.netloc}/api/live-content/ws?{url.query}")
+        try:
+            await socket.write_message(json.dumps({"type": "client_opened", "path": watch_path}))
+            await asyncio.sleep(0.5)
+            (project / watch_path).write_text("{}")
+            message = await asyncio.wait_for(socket.read_message(), timeout=10)
+            return dict(json.loads(message))
+        finally:
+            socket.close()
+
+    update = asyncio.run(write_run())
+    assert update == {"type": "server_update", "path": watch_path, "hash": None}
+    assert artifact.stat().st_mtime_ns == before.st_mtime_ns
+    assert _request(f"{base}/api/contents/{watch_path}?{url.query}")[0] == 404
+
+
+def test_symlink_metadata_describes_the_target(project: Path) -> None:
+    from lightcone.app.files import ProjectContents
+
+    target = project / "target.json"
+    with target.open("wb") as file:
+        file.truncate(2_500_000)
+    (project / "alias.json").symlink_to(target)
+    manager = ProjectContents(root_dir=str(project))
+    before = asyncio.run(manager.get("alias.json", content=False))
+    assert before["path"] == "alias.json"
+    assert before["size"] == 2_500_000
+    assert before["watchPaths"] == ["target.json", ".alias.manifest.json"]
+    os.utime(target, (1_700_000_000, 1_700_000_000))
+    after = asyncio.run(manager.get("alias.json", content=False))
+    assert after["last_modified"] != before["last_modified"]
+    assert after["last_modified"].timestamp() == 1_700_000_000
+
+
+def test_reading_a_corrupt_notebook_does_not_recover_it(
+    served: tuple[str, str], project: Path
+) -> None:
+    from jupyter_server.services.contents.fileio import path_to_intermediate
+
+    base, token = served
+    notebook = project / "notes.ipynb"
+    notebook.write_text("invalid notebook")
+    intermediate = Path(path_to_intermediate(str(notebook)))
+    recovery = json.dumps({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
+    intermediate.write_text(recovery)
+    before = sorted(path.name for path in project.iterdir())
+    assert _request(f"{base}/api/contents/notes.ipynb", token=token)[0] == 400
+    assert notebook.read_text() == "invalid notebook"
+    assert intermediate.read_text() == recovery
+    assert sorted(path.name for path in project.iterdir()) == before

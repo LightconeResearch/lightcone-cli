@@ -20,6 +20,12 @@ const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);
  */
 export function projectReader(contents: Contents.IManager, touched: Set<string>): ProjectReader {
   const listings = new Map<string, Promise<Listing>>();
+  const follow = (model: Contents.IModel) => {
+    // lc supplies the resolved file and sidecar paths. A symlink target or
+    // a late run record can change without changing the requested path.
+    const watchPaths = (model as Contents.IModel & { watchPaths?: string[] }).watchPaths;
+    for (const watched of watchPaths ?? []) touched.add(watched);
+  };
   const list = (dir: string): Promise<Listing> => {
     let listing = listings.get(dir);
     if (!listing) {
@@ -40,6 +46,7 @@ export function projectReader(contents: Contents.IManager, touched: Set<string>)
     async readText(path) {
       touched.add(path);
       const model = await contents.get(path, { type: 'file', format: 'text', content: true });
+      follow(model);
       if (typeof model.content !== 'string') {
         throw new Error(`${path} is not a text file.`);
       }
@@ -50,6 +57,7 @@ export function projectReader(contents: Contents.IManager, touched: Set<string>)
       if (!path) return { type: 'directory' };
       const entry = (await list(projectDirname(path)))?.get(basename(path));
       if (!entry) return undefined;
+      follow(entry);
       return entry.type === 'directory'
         ? { type: 'directory' }
         : { type: 'file', size: entry.size ?? 0, modifiedAtMs: Date.parse(entry.last_modified) };

@@ -68,6 +68,7 @@ def serve(root: Path, record: str | None = None) -> Served:
         ProjectError: If ``root`` holds no ``astra.yaml``, this installation
             has no built page, or the server does not come up.
     """
+    root = root.resolve()
     if not (root / SPEC_FILENAME).is_file():
         raise ProjectError(f"no {SPEC_FILENAME} in {root} — run `lc view` from the project root")
     # A wheel always carries the page; an editable install built without Node
@@ -125,15 +126,11 @@ def _start(runtime: Path, root: Path) -> dict[str, Any]:
         # The server outlives this command, so it is not a `project._run` call.
         process = subprocess.Popen(
             [
-                sys.executable, "-m", _APP,
+                # Isolated mode excludes the project and PYTHONPATH from imports.
+                sys.executable, "-I", "-m", _APP,
                 "--no-browser",
                 f"--ServerApp.root_dir={root}",
                 f"--ServerApp.shutdown_no_activity_timeout={IDLE_TIMEOUT}",
-                # A page's login cookie is signed with this secret, and jupyter
-                # keeps one per runtime directory. One per project instead, so a
-                # page left open reconnects to a later server for its project,
-                # never to another project's on the port its own one freed.
-                f"--ServerApp.cookie_secret_file={project.with_suffix('.secret')}",
             ],
             cwd=root,
             env=env,
