@@ -854,14 +854,23 @@ edges and `definition_version`. When something about the spec's meaning looks
 wrong, the fix is in astra-tools, not here.
 
 **A spec ASTRA rejects never reaches a recipe.** `build` runs
-`validate_analysis_schema`, `validate_analysis_file` and
-`validate_universe_file` before resolving anything, and refuses with
+`validate_analysis_schema`, `validate_analysis_file`,
+`validate_universe_schema` and `validate_universe_file` — what
+`astra validate` runs — before resolving anything, and refuses with
 ASTRA's own errors. This is a contract requirement, not a courtesy:
 resolution answers what a *valid* spec means and does not re-check that
 it is one, so without the gate an invalid spec surfaces later as a
 missing decision or an unresolvable input — blaming the run for a fault
 in the file, far from the line at fault. It caught three of lc's own
 test fixtures the first time it ran.
+
+The gate runs in **two stages, in `astra validate`'s order**: the schema
+for the analysis and every universe first, and the semantic checks only
+once that passes. The order is load-bearing, not cosmetic — the semantic
+checks assume the structure holds, and `outputs: 5` or `decisions: [a]`
+crashed them out of `lc status` as a raw `TypeError` while both ran
+unconditionally. The price is that a spec with both kinds of fault is
+fixed in two passes rather than one.
 
 **One output is one file, and the spec names it.** An output is
 `results/<universe>/<output_id>.<format>` — never a directory a recipe
@@ -1092,18 +1101,17 @@ raised anywhere inside astra's validation or resolution was reported as a
 bad target — a rerun misdiagnosing itself, at the one place nobody is
 watching.
 
-**Known violation, unfixed: a malformed `astra.yaml` tracebacks out of
-`lc status` and `lc materialize --check`** as a raw
-`yaml.scanner.ScannerError`. `plan._validate` is the gate that turns a
-bad spec into ASTRA's own errors, but it only catches what *validation*
-reports — a spec that does not parse raises inside
-`validate_analysis_schema` → `astra.helpers.load_yaml` before there is
-anything to validate. (`lc materialize` usually masks it by refusing a
-dirty tree first, which is not a fix.) The shape of the fix is a
-`yaml.YAMLError` catch in `_validate` naming the file and the line, the
-same way the validator's own errors are rendered. Pre-existing and
-independent of the one-output-one-file change; written down here because
-it contradicts the invariant directly above it.
+**A file that is not a spec is a refusal, not a traceback.** Whatever
+can be wrong *in* a spec or universe file before there is anything to
+validate — bad YAML, not UTF-8, empty, a top-level list — reaches lc as
+one exception, astra's `SpecLoadError`, raised by the loader every
+validator goes through and naming the file (and the line and column for
+YAML). `_validate` catches exactly that and refuses with it; `lc run`'s
+`read_spec` refuses with it too, since the probe's readable inputs come
+from the file. Nothing broader is caught: an exception from inside astra
+on a file that *does* load is a bug in astra, and reporting it as "your
+spec does not validate" would be the misattribution `worker.main` was
+fixed for.
 
 **`git_sha` in a manifest is the commit the run *started* at**, not the
 commit the run went on to create. It is the code that produced the output.

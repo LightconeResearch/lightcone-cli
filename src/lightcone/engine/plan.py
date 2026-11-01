@@ -244,20 +244,36 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
 
     Raises:
         ProjectError: Listing every structural and semantic error found,
-            in ASTRA's own words.
+            in ASTRA's own words — or naming the one file that is not a
+            spec at all, which leaves nothing to validate.
     """
+    from astra.helpers import SpecLoadError
     from astra.validation import (
         validate_analysis_file,
         validate_analysis_schema,
         validate_universe_file,
+        validate_universe_schema,
     )
 
-    problems = [
-        *validate_analysis_schema(spec_path),
-        *(str(e) for e in validate_analysis_file(spec_path)),
-    ]
-    for path in universes:
-        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    try:
+        problems = [
+            *validate_analysis_schema(spec_path),
+            *(f"{path.name}: {e}" for path in universes for e in validate_universe_schema(path)),
+        ]
+        # The semantic checks assume the structure holds — a list where a
+        # mapping belongs is a crash in them, not a finding — so, as in
+        # `astra validate`, they run only once it does.
+        if not problems:
+            problems = [
+                *(str(e) for e in validate_analysis_file(spec_path)),
+                *(
+                    f"{path.name}: {e}"
+                    for path in universes
+                    for e in validate_universe_file(path, spec_path)
+                ),
+            ]
+    except SpecLoadError as exc:
+        problems = [str(exc)]
     if problems:
         listed = "\n".join(f"  {problem}" for problem in problems)
         raise ProjectError(

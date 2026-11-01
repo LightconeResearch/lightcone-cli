@@ -203,6 +203,48 @@ def test_a_spec_astra_rejects_never_reaches_a_recipe(tmp_path: Path) -> None:
         _build(_project(tmp_path, spec))
 
 
+@pytest.mark.parametrize(
+    ("broken", "content", "fault"),
+    [
+        ("astra.yaml", b"name: a: b\n", "line 1, column 8"),
+        ("astra.yaml", b"", "found nothing"),
+        ("astra.yaml", "name: caf\u00e9\n".encode("latin-1"), "not UTF-8"),
+        ("universes/baseline.yaml", b"- baseline\n", "found a list"),
+    ],
+)
+def test_a_file_that_is_not_a_spec_is_refused_by_name(
+    tmp_path: Path, broken: str, content: bytes, fault: str
+) -> None:
+    """Nothing to validate, so ASTRA's loader names the file and the fault —
+    and the refusal is the gate's, not a parser traceback."""
+    root = _project(tmp_path)
+    (root / broken).write_bytes(content)
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(root)
+    assert str(root / broken) in str(raised.value)
+    assert fault in str(raised.value)
+
+
+_EMPTY = 'version: "0.1"\nname: demo\ninputs: []\noutputs: []\ndecisions: {}\n'
+
+
+@pytest.mark.parametrize(
+    ("spec", "baseline", "fault"),
+    [
+        (_EMPTY.replace("outputs: []", "outputs: 5"), "id: baseline\ndecisions: {}\n", "outputs"),
+        (_EMPTY, "id: baseline\ndecisions: [mcmc]\n", "baseline.yaml: decisions"),
+    ],
+)
+def test_a_structural_error_is_refused_before_the_semantic_checks_run(
+    tmp_path: Path, spec: str, baseline: str, fault: str
+) -> None:
+    """The semantic checks assume the structure holds and crash on a list
+    where a mapping belongs, so they wait for the schema to pass — the
+    order `astra validate` runs them in, universe schema included."""
+    with pytest.raises(ProjectError, match=fault):
+        _build(_project(tmp_path, spec, baseline=baseline))
+
+
 # ---- ordering, closure, targets --------------------------------------------
 
 

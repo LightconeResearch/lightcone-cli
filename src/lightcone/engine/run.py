@@ -111,13 +111,21 @@ def read_spec(project: Path) -> dict[str, Any]:
     Returns:
         The spec with sub-analyses merged in; the top-level document alone
         if the tree will not resolve; an empty spec if there is none.
+
+    Raises:
+        ProjectError: If the spec exists but is not a spec at all — not
+            YAML, not UTF-8, or not a mapping — since nothing it declares
+            can be read.
     """
-    from astra.helpers import load_yaml, resolve_analysis_tree
+    from astra.helpers import SpecLoadError, load_yaml, resolve_analysis_tree
 
     spec_path = project / SPEC_FILENAME
     if not spec_path.exists():
         return {}
-    data: dict[str, Any] = load_yaml(spec_path)
+    try:
+        data = load_yaml(spec_path)
+    except SpecLoadError as exc:
+        raise ProjectError(f"{exc}\nThe probe reads the inputs this file declares.") from None
     try:
         return dict(resolve_analysis_tree(data, project))
     except Exception:

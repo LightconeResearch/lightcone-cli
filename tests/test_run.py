@@ -137,6 +137,14 @@ def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:
 # ---- declared inputs ------------------------------------------------------
 
 
+def test_a_spec_that_is_not_a_spec_is_refused_by_name(project: Path) -> None:
+    """The probe's readable inputs are what the spec declares, so a file
+    that does not load is a refusal naming it, not a parser traceback."""
+    (project / "astra.yaml").write_text("name: a: b\n")
+    with pytest.raises(ProjectError, match="line 1, column 8"):
+        engine_run.read_spec(project)
+
+
 def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     spec = engine_run.read_spec(project)
     assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
