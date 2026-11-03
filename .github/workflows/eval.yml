@@ -1,21 +1,18 @@
 name: Eval
 
-# Minimal agentic eval: scaffold a project from the eval seed on the
-# runner, let Claude Code (with the astra plugin) build it using the
-# branch's lc/astra, then check the results with astra validate and
-# lc materialize --check.
+# The agentic eval, hosted in LightconeResearch/lightcone-evals beside the
+# task it runs; see that workflow's header and README. This repository is
+# the side under test: its commit pins the task image and its secrets run
+# the legs.
 
 on:
-  workflow_dispatch:
   pull_request:
-    # `ready_for_review` beside the defaults, so flipping a draft to
-    # ready triggers the run the draft guard below skips.
+    # `ready_for_review` beside the defaults, so flipping a draft to ready
+    # triggers the run the draft guard skips
     types: [opened, synchronize, reopened, ready_for_review]
-
-# Only one eval per PR at a time — cancel in-progress runs
-concurrency:
-  group: eval-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,215 +20,7 @@ permissions:
 
 jobs:
   eval:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    # Step-level timeout on the agent step (below) is what actually
-    # bounds the run: a job-level timeout would cancel the always()
-    # report/comment/artifact steps along with it.
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Full history so hatch-vcs sees the tags and stamps a truthful
-          # dev version into the installed engine (and every manifest's
-          # lc_version) instead of a 0.1.dev fallback
-          fetch-depth: 0
-
-      - name: Set up uv
-        # No python-version input: it would export an ambient UV_PYTHON,
-        # which lc's install-settings scrub then rightly warns about on
-        # every single invocation the agent makes. The interpreter is
-        # pinned per tool install below instead.
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
-      - name: Install lightcone-cli + astra (uv tools)
-        # The engine is the host's uv tool — install the branch under
-        # test the way a user installs a release: `uv tool install`,
-        # which links `lc` and (via the mirrored entry points) the
-        # git-annex executables into ~/.local/bin. The commit under test
-        # is the checkout itself, stamped into the version by hatch-vcs.
-        # astra's executable belongs to astra-tools, so it is its own
-        # tool install, pinned to the version the branch depends on. No
-        # venv is activated: the agent's shell sees the tools exactly as
-        # an end user's would.
-        run: |
-          uv tool install --python 3.12 "$GITHUB_WORKSPACE"
-          uv tool install --python 3.12 "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install Claude Code + astra plugin
-        run: |
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-          # Skip first-run onboarding in headless mode
-          echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
-          claude plugin marketplace add LightconeResearch/agent-skills
-          claude plugin install astra@lightcone-research
-
-      - name: Set up eval project
-        run: |
-          # Global git identity so any repo the agent commits in works
-          # (ephemeral runner — nothing to pollute)
-          git config --global user.name Eval
-          git config --global user.email eval@lightcone
-          project="$RUNNER_TEMP/eval-project"
-          echo "PROJECT=$project" >> "$GITHUB_ENV"
-          lc init "$project"
-          # Overlay the task seed (astra.yaml, data/) on the scaffold
-          cp -r evals/tasks/snae/. "$project"/
-          cd "$project"
-          # Regenerate baseline.yaml from the task astra.yaml's defaults —
-          # the scaffolded one matches the boilerplate spec, not the task's
-          rm -f universes/baseline.yaml
-          astra universe generate -n baseline \
-            -d 'Default configuration using standard practices'
-          # No scientific deps are pre-seeded — declaring what the
-          # recipes import (`uv add`) is part of what the eval measures
-          # lc materialize refuses a dirty tree — commit the seed so the
-          # agent starts from a clean one
-          git add -A
-          git commit -q -m 'Seed the eval task'
-
-      - name: Run Claude Code
-        id: agent
-        timeout-minutes: 15
-        working-directory: ${{ env.PROJECT }}
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          set -o pipefail
-          # Transcript goes outside the project so the agent's git
-          # status stays clean; uploaded via the agent-trace artifact
-          claude -p "$(cat "$GITHUB_WORKSPACE/evals/prompt.md")" \
-            --output-format stream-json --verbose \
-            --dangerously-skip-permissions \
-            --max-turns 200 \
-            | tee "$RUNNER_TEMP/claude-transcript.jsonl"
-
-      - name: Check results
-        id: check
-        working-directory: ${{ env.PROJECT }}
-        run: |
-          astra validate astra.yaml
-          lc status
-          # The gate: nothing failed, nothing left to make — and at least
-          # one output actually got materialized
-          lc materialize --check --json | jq -e \
-            '.up_to_date and ((.current | length) > 0)'
-          # The publication view: declaring a license and materializing
-          # once more is part of the task
-          test -f ro-crate-metadata.json
-
-      - name: Build report
-        if: always()
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          transcript="$RUNNER_TEMP/claude-transcript.jsonl"
-          if [ -s "$transcript" ]; then
-            python3 .github/scripts/trace_digest.py \
-              "$transcript" "$RUNNER_TEMP/agent-trace.md" > "$RUNNER_TEMP/metrics.env"
-            source "$RUNNER_TEMP/metrics.env"
-            # Claude's read of where the agent struggled — best-effort,
-            # the report still posts if this fails or times out
-            timeout 180 claude -p "$(cat evals/trace-analysis-prompt.md)" \
-              < "$RUNNER_TEMP/agent-trace.md" \
-              > "$RUNNER_TEMP/pain-points.md" \
-              || echo "_Trace analysis unavailable._" > "$RUNNER_TEMP/pain-points.md"
-          fi
-
-          icon="✅"
-          [ "${{ steps.check.outcome }}" = "success" ] || icon="❌"
-          {
-            echo "## $icon Eval"
-            echo ""
-            echo "<!-- lightcone-eval-report -->"
-            echo ""
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Outputs check | ${{ steps.check.outcome }} |"
-            echo "| Agent run | ${{ steps.agent.outcome }} |"
-            echo "| Turns | ${turns:-?} |"
-            echo "| Tool calls | ${tool_calls:-?} |"
-            echo "| Cost | \$${cost:-?} |"
-            echo "| Agent wall time | ${duration:-?} |"
-            echo "| Model | ${model:-?} |"
-            echo ""
-            echo '<details><summary>lc status</summary>'
-            echo ""
-            echo '```'
-            (cd "$PROJECT" && lc status) || echo "unavailable"
-            echo '```'
-            echo ""
-            echo '</details>'
-            echo ""
-            if [ -s "$RUNNER_TEMP/pain-points.md" ]; then
-              echo '<details><summary>Confusion &amp; pain points (Claude analysis)</summary>'
-              echo ""
-              cat "$RUNNER_TEMP/pain-points.md"
-              echo ""
-              echo '</details>'
-              echo ""
-            fi
-            echo "Full trace: \`agent-trace\` artifact on [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
-          } > "$RUNNER_TEMP/comment.md"
-          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Comment on PR
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/comment.md`, 'utf8');
-            const marker = '<!-- lightcone-eval-report -->';
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
-
-      - name: Upload agent trace
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-trace
-          path: |
-            ${{ runner.temp }}/claude-transcript.jsonl
-            ${{ runner.temp }}/agent-trace.md
-            ${{ runner.temp }}/pain-points.md
-          if-no-files-found: warn
-
-      - name: Upload eval project
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-project
-          # include-hidden-files keeps the manifests, the run records in
-          # .git, and the annexed results; the venv and lc's per-run
-          # machine state are excluded
-          path: |
-            ${{ env.PROJECT }}
-            !${{ env.PROJECT }}/.venv/**
-            !${{ env.PROJECT }}/.lightcone/**
-          include-hidden-files: true
-          if-no-files-found: warn
+    uses: LightconeResearch/lightcone-evals/.github/workflows/eval.yml@main
+    secrets: inherit
+    with:
+      stack_ref: ${{ github.event.pull_request.head.sha || github.sha }}
