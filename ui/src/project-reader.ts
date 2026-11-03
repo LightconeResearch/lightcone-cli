@@ -1,0 +1,75 @@
+import { projectDirname, type ProjectReader } from '@astra-spec/sdk';
+import type { Contents } from '@jupyterlab/services';
+
+type Listing = ReadonlyMap<string, Contents.IModel> | undefined;
+
+const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/**
+ * The project, read through Jupyter's Contents API. The server's root is the
+ * project root, so the SDK's project-relative paths are contents paths as is.
+ *
+ * Paths are stat'ed from their parent's listing, and a directory is listed
+ * only once its own parent has shown it exists: resolution asks about many
+ * outputs that were never materialized, and this answers "absent" without
+ * a failing request for each. Make one reader per resolution, so the next
+ * one sees what changed.
+ *
+ * Every path the resolution asks about lands in `touched`, present or not:
+ * those are the paths whose change on disk changes what it resolves to.
+ */
+export function projectReader(contents: Contents.IManager, touched: Set<string>): ProjectReader {
+  const listings = new Map<string, Promise<Listing>>();
+  const follow = (model: Contents.IModel) => {
+    // lc supplies the resolved file and sidecar paths. A symlink target or
+    // a late run record can change without changing the requested path.
+    const watchPaths = (model as Contents.IModel & { watchPaths?: string[] }).watchPaths;
+    for (const watched of watchPaths ?? []) touched.add(watched);
+  };
+  const list = (dir: string): Promise<Listing> => {
+    let listing = listings.get(dir);
+    if (!listing) {
+      listing = (async () => {
+        if (dir) {
+          const parent = await list(projectDirname(dir));
+          if (parent?.get(basename(dir))?.type !== 'directory') return undefined;
+        }
+        const model = await contents.get(dir, { type: 'directory', content: true });
+        return new Map((model.content as Contents.IModel[]).map(entry => [entry.name, entry]));
+      })();
+      listings.set(dir, listing);
+    }
+    return listing;
+  };
+
+  return {
+    async readText(path) {
+      touched.add(path);
+      const model = await contents.get(path, { type: 'file', format: 'text', content: true });
+      follow(model);
+      if (typeof model.content !== 'string') {
+        throw new Error(`${path} is not a text file.`);
+      }
+      return model.content;
+    },
+    async stat(path) {
+      touched.add(path);
+      if (!path) return { type: 'directory' };
+      const entry = (await list(projectDirname(path)))?.get(basename(path));
+      if (!entry) return undefined;
+      follow(entry);
+      return entry.type === 'directory'
+        ? { type: 'directory' }
+        : { type: 'file', size: entry.size ?? 0, modifiedAtMs: Date.parse(entry.last_modified) };
+    },
+    async readDirectory(path) {
+      touched.add(path);
+      const listing = await list(path);
+      if (!listing) throw new Error(`No directory at ${path}.`);
+      return [...listing.values()].map(({ name, type }) => ({
+        name,
+        type: type === 'directory' ? 'directory' : 'file'
+      }));
+    }
+  };
+}

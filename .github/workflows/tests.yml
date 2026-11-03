@@ -40,6 +40,8 @@ jobs:
       # And for the crate validation: rocrate-validator is in the dev
       # group, so every runner has it and none may skip.
       LC_CRATE_TESTS_REQUIRED: "1"
+      # And for `lc view`'s front end, which the step below builds.
+      LC_UI_TESTS_REQUIRED: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +53,23 @@ jobs:
           enable-cache: true
           activate-environment: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Editable Python installs leave frontend building explicit.
+      - name: Build the app's front end
+        working-directory: ui
+        run: npm ci && npm run build
+
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Install Chromium for the viewer regressions
+        run: python -m playwright install --with-deps chromium
 
       - name: Report the sandbox this runner can build
         # Printed before the suite so a failure downstream can be read
@@ -84,3 +101,36 @@ jobs:
 
       - name: Run tests
         run: pytest
+
+  # The scaffold's `required-version` floor is a claim about which uv has
+  # every flag lc runs. This job keeps it a tested one: the suites that
+  # drive real uv run with exactly that version first on PATH, so a flag
+  # the floor lacks fails here instead of reading, on a user's host, as a
+  # project that never converges. Keep the version equal to the floor in
+  # `pyproject.toml.tmpl`.
+  uv-floor:
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Put the floor uv first on PATH
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.0"
+
+      - name: Run the uv-touching suites
+        run: |
+          uv --version | grep -qx 'uv 0.7.0.*'
+          pytest tests/test_project.py tests/test_worker.py tests/test_materialize.py \
+            tests/test_run.py tests/test_dataset.py tests/test_identity.py

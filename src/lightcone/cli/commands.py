@@ -468,6 +468,43 @@ def status(as_json: bool) -> None:
 
 
 # =============================================================================
+# lc view
+# =============================================================================
+
+
+@main.command()
+@click.argument("record", required=False)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the server's url, host, pid and whether this call started it as JSON.",
+)
+def view(record: str | None, as_json: bool) -> None:
+    """Show this project's analysis to the user, and print the page's URL.
+
+    The page is served from this host. Returns at once: the server runs
+    detached, and a second call reuses it rather than starting another. The
+    page follows its files as they change on disk, and the server stops
+    itself 30 minutes after the page last read from it. RECORD is a
+    canonical record path (e.g. `decisions.binning`) whose details the page
+    opens with.
+
+    The URL is on `localhost` of the host named on stderr; from another
+    machine, reach it through `ssh -L <port>:localhost:<port> <host>`.
+    """
+    from lightcone.engine.serve import serve as engine_serve
+
+    served = engine_serve(Path.cwd(), record)
+    if as_json:
+        click.echo(json.dumps(served.as_dict(), indent=2))
+        return
+    state = "started" if served.started else "already running"
+    click.echo(f"{state} on {served.host} (pid {served.pid})", err=True)
+    click.echo(served.url)
+
+
+# =============================================================================
 # Rendering
 # =============================================================================
 
