@@ -82,7 +82,6 @@ _FIRST = "results/baseline/first.txt"
 _SECOND = "results/baseline/second.txt"
 _FIRST_RECORD = ".astra/records/baseline/first.json"
 _SECOND_RECORD = ".astra/records/baseline/second.json"
-_FIRST_MANIFEST = "results/baseline/.first.manifest.json"
 
 
 @pytest.fixture
@@ -94,10 +93,6 @@ def _task(root: Path, key: str) -> plan.Task:
     return plan.build(root).tasks[key]
 
 
-#: The `origin` a driver would have read; the fixture's repository has none.
-_REMOTE = "https://example/analysis.git"
-
-
 def _context(root: Path, environment: str | None = None) -> worker.RunContext:
     """The driver-resolved facts a real run would hand down.
 
@@ -107,9 +102,8 @@ def _context(root: Path, environment: str | None = None) -> worker.RunContext:
     """
     return worker.RunContext(
         environment=environment if environment is not None else identity.environment(root),
-        head=(dataset.head(root)[0], _REMOTE),
+        commit=dataset.head(root)[0],
         runtime=container.runtime_for_run(root, build=False),
-        uv_version="0.0.0-test",
     )
 
 
@@ -172,37 +166,6 @@ def test_the_record_says_what_the_run_was(root: Path) -> None:
     assert assets.check(root)[_FIRST_RECORD][0].record_status == "unchanged"
 
 
-def test_the_manifest_holds_what_the_record_cannot(root: Path) -> None:
-    """Written before anything is saved: the driver commits the bytes, the
-    record and the manifest as one commit."""
-    _make(root, "first#baseline")
-
-    manifest = assets.read(root / _FIRST_MANIFEST)
-    assert manifest is not None
-    assert manifest.recipe == _task(root, "first#baseline").command
-    assert manifest.decisions == {"word": "one"}
-    assert manifest.git_remote == _REMOTE
-    # The uv that converged the environment: probed once by the driver,
-    # handed down, never a rebuild signal.
-    assert manifest.uv_version == "0.0.0-test"
-    assert manifest.image is None
-    # And nothing the record already holds.
-    assert set(_record(root, _FIRST_MANIFEST)) == {
-        "schema_version", "recipe", "decisions", "git_remote", "uv_version", "hermeticity",
-        "image",
-    }
-
-
-def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
-    """Whatever the host can enforce, the manifest records what it was —
-    never what the mechanism matrix says it should have been."""
-    _make(root, "first#baseline")
-
-    manifest = assets.read(root / _FIRST_MANIFEST)
-    assert manifest is not None
-    assert manifest.hermeticity["mechanism"] == sandbox.detect().capability.kind
-
-
 def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., Path]) -> None:
     """And it reads a declared input, which lives in the annex. With
     `filter=annex` the working tree holds the real bytes, so the project
@@ -214,7 +177,6 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
 
     assert result.status == "ok", result.reason
     assert (root / "results/fit.txt").read_text() == "measured\n"
-    assert (root / "results/.fit.manifest.json").is_file()
     record = _record(root, ".astra/records/fit.json")
     assert record["address"] == "fit"
     read = digest_bytes(b"measured\n")
@@ -226,8 +188,8 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
 def test_a_driven_analysis_is_built_in_its_own_folder_for_the_project(
     analysis: Callable[..., Path],
 ) -> None:
-    """The result belongs to the project — its bytes, record and manifest
-    land under the project's own `results/` and `.astra/` — while the
+    """The result belongs to the project — its bytes and record land
+    under the project's own `results/` and `.astra/` — while the
     recipe runs where its analysis's relative paths mean something."""
     spec = """
     spec_version: "0.1.0"
@@ -274,7 +236,6 @@ def test_a_driven_analysis_is_built_in_its_own_folder_for_the_project(
     assert made.status == "ok", made.reason
     assert _task(root, "stage.out#u1").workdir == "stage"
     assert (root / "results/u1/stage.out.txt").read_text() == "a in stage\n"
-    assert (root / "results/u1/.stage.out.manifest.json").is_file()
     assert _record(root, ".astra/records/u1/stage.out.json")["address"] == "stage.out#u1"
     assert not (root / "stage/results").exists()
     assert report.status == "ok", report.reason
@@ -458,7 +419,7 @@ def test_a_sibling_output_is_left_alone_by_the_reset(root: Path) -> None:
 
 def _recorded(root: Path) -> bool:
     """Whether anything says `first` was made."""
-    return (root / _FIRST_RECORD).exists() or (root / _FIRST_MANIFEST).exists()
+    return (root / _FIRST_RECORD).exists()
 
 
 def test_a_failing_recipe_records_nothing(root: Path) -> None:
@@ -507,7 +468,7 @@ def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
     def refuse(*args: object, **kwargs: object) -> None:
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(assets, "write", refuse)
+    monkeypatch.setattr("astra.records.write_record", refuse)
 
     result = _make(root, "first#baseline")
 

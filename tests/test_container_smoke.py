@@ -214,7 +214,7 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path, cluster_id: st
 def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, cluster_id: str) -> None:
     """The whole layer at once: the driver builds and commits the image,
     converges the in-image environment, runs the recipe behind the mount
-    table, records the runtime facts, and leaves the tree clean — through
+    table, and leaves the tree clean — through
     the real Dask cluster, not a stub."""
     report = engine.materialize(cproject, [], cluster_id=cluster_id)
 
@@ -223,21 +223,15 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     assert (cproject / "results/sums.txt").read_text() == "4\n"
     assert not dataset.status(cproject)
 
-    manifest = assets.read(cproject / "results/.sums.manifest.json")
-    assert manifest is not None
-    assert manifest.hermeticity["mechanism"] == runtime
-    assert manifest.hermeticity["network"] == "allowed"
-    assert manifest.hermeticity["fs"] == "declared"
-    assert manifest.image is not None
-    assert manifest.image["id"] == _inspect_id(runtime, manifest.image["id"])
-    assert manifest.image["archive"] == f".datalad/environments/{manifest.image['tag']}/image"
+    archive = image.archive_path(cproject, image.tag(cproject))
+    assert archive.is_file()
 
     # The record lists the archive, so a rerun's `datalad get` fetches
     # the exact bytes before the worker runs. Parsed rather than matched
     # as text, because the record is datalad's format, not ours.
     record = dataset._git(["log", "-1", "--format=%B"], cwd=cproject)
     body = record.partition("=== Do not change lines below ===")[2].partition("^^^")[0]
-    assert json.loads(body)["extra_inputs"] == [manifest.image["archive"]]
+    assert json.loads(body)["extra_inputs"] == [archive.relative_to(cproject).as_posix()]
 
 
 def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
@@ -262,8 +256,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     report = engine.materialize(cproject, [], cluster_id=cluster_id)
     assert report.ok, report.warnings
-    original = assets.read(cproject / "results/.sums.manifest.json")
-    assert original is not None
+    archive = image.archive_path(cproject, image.tag(cproject)).relative_to(cproject)
     made = json.loads((cproject / ".astra/records/sums.json").read_text())
 
     clone = tmp_path / "clone"
@@ -273,7 +266,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
     # No annex content: the archive here is a pointer until rerun gets it.
     with pytest.raises(assets.ContentNotFetchedError):
-        assets.require_fetched(clone / str(original.image["archive"]))  # type: ignore[index]
+        assets.require_fetched(clone / archive)
 
     proc = subprocess.run(
         [sys.executable, "-c", "from datalad.api import rerun; rerun('HEAD')"],

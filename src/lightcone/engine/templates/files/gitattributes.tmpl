@@ -5,14 +5,11 @@
 # decides what counts as content: the default is nothing, and only outputs
 # and declared inputs opt out. Last matching line wins.
 #
-# Manifests are exempted back out because they must be readable on a clone
-# that has fetched no annex content. The `**/` lines say the same for the
-# results of an analysis in a folder below this one.
+# The `**/` line says the same for the results of an analysis in a folder
+# below this one.
 * annex.largefiles=nothing
 * filter=annex
 results/** annex.largefiles=anything
 data/** annex.largefiles=anything
 .datalad/environments/*/image annex.largefiles=anything
-results/**/.*.manifest.json annex.largefiles=nothing
 **/results/** annex.largefiles=anything
-**/results/**/.*.manifest.json annex.largefiles=nothing

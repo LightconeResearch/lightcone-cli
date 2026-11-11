@@ -332,8 +332,8 @@ def sync(directory: Path) -> list[str]:
 
     Both entry points that execute recipes converge before they start,
     rather than checking and refusing: workers pass ``--no-sync``, so
-    nothing else would notice a lock edited without a sync, and a manifest
-    recording an environment the recipe did not run under is the identity
+    nothing else would notice a lock edited without a sync, and a record
+    naming an environment the recipe did not run under is the identity
     model saying something untrue. The containerized twin is
     ``container.sync``, which runs the same uv command inside the image —
     callers pick by :func:`mode`, because only they know whether an image
@@ -392,7 +392,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     itself, so an enclosing repository that already has one is adopted.
 
     Then the two files that make the storage policy: ``.gitattributes``
-    routes results and inputs into the annex and keeps manifests in git,
+    routes results and inputs into the annex and keeps the rest in git,
     and ``.datalad/config`` carries a dataset id — the one thing a git +
     git-annex repository lacks to *be* a DataLad dataset, so a project is
     one from birth rather than by later adoption. The id is generated
@@ -787,29 +787,6 @@ def uv_scrub_warning() -> str:
             "would steer uv without moving env_version"
         )
     return ""
-
-
-def uv_version(directory: Path) -> str:
-    """Ask uv its version, for the manifest's attestation.
-
-    Read once per run by whoever owns the run — the driver, or the rerun
-    entry point — and handed down, the HEAD discipline. Empty on any
-    failure: attestation must never fail a run.
-
-    Args:
-        directory: Where to run the probe.
-
-    Returns:
-        The version token (``0.12.5``), or ``""``.
-    """
-    try:
-        proc = _run(["uv", "--version"], cwd=directory)
-    except OSError:
-        return ""
-    words = str(proc.stdout or "").split()
-    if proc.returncode != 0 or len(words) < 2 or words[0] != "uv":
-        return ""
-    return words[1]
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

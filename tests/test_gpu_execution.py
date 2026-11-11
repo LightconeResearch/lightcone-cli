@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from lightcone.engine import assets, container, dataset, identity, plan, worker
+from lightcone.engine import container, dataset, identity, plan, worker
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
@@ -34,9 +34,8 @@ def project(analysis: Callable[..., Path]) -> tuple[Path, plan.Task, worker.RunC
     task = plan.build(root).tasks["visibility"]
     context = worker.RunContext(
         environment=identity.environment(root),
-        head=dataset.head(root),
+        commit=dataset.head(root)[0],
         runtime=container.runtime_for_run(root, build=False),
-        uv_version="0.0.0-test",
     )
     return root, task, context
 
@@ -56,32 +55,34 @@ def test_recipe_inherits_the_whole_mask_without_changing_the_worker_environment(
 
 
 @pytest.mark.parametrize("mask", [None, ""])
-def test_missing_worker_gpu_mask_preserves_existing_output_and_manifest(
+def test_missing_worker_gpu_mask_preserves_existing_output_and_record(
     project: tuple[Path, plan.Task, worker.RunContext], monkeypatch: pytest.MonkeyPatch,
     mask: str | None,
 ) -> None:
     root, task, context = project
-    made, manifest = root / task.places[0].bytes, assets.manifest_path(root, task.places[0])
+    made, record = root / task.places[0].bytes, root / task.places[0].record
     made.write_text("previous output")
-    manifest.write_text("previous manifest")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("previous record")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     if mask is not None:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     with pytest.raises(ProjectError, match="nonempty CUDA_VISIBLE_DEVICES"):
         worker.execute(root, replace(task, resources={"gpus": 1}), {}, context)
     assert made.read_text() == "previous output"
-    assert manifest.read_text() == "previous manifest"
+    assert record.read_text() == "previous record"
 
 
 @pytest.mark.parametrize("runtime", ["docker", "podman"])
-def test_unsupported_gpu_container_preserves_existing_output_and_manifest(
+def test_unsupported_gpu_container_preserves_existing_output_and_record(
     project: tuple[Path, plan.Task, worker.RunContext], monkeypatch: pytest.MonkeyPatch,
     runtime: str,
 ) -> None:
     root, task, context = project
-    made, manifest = root / task.places[0].bytes, assets.manifest_path(root, task.places[0])
+    made, record = root / task.places[0].bytes, root / task.places[0].record
     made.write_text("previous output")
-    manifest.write_text("previous manifest")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("previous record")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
     context = replace(context, runtime=replace(
         context.runtime, mode="containerized", runtime=runtime,
@@ -89,7 +90,7 @@ def test_unsupported_gpu_container_preserves_existing_output_and_manifest(
     with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
         worker.execute(root, replace(task, resources={"gpus": 1}), {}, context)
     assert made.read_text() == "previous output"
-    assert manifest.read_text() == "previous manifest"
+    assert record.read_text() == "previous record"
 
 
 @pytest.mark.parametrize("use_gpus", [False, True])

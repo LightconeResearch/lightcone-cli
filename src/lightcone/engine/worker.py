@@ -31,12 +31,12 @@ import functools
 import shutil
 import sys
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
+from lightcone.engine import assets, container, dataset, identity, plan, sandbox
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
@@ -48,11 +48,6 @@ from lightcone.engine.project import (
 
 if TYPE_CHECKING:
     from astra.check import Status
-
-#: The commit a run is identified against: ``(sha, origin URL)``. Read once
-#: by the driver and handed to every task, because the driver commits as
-#: outputs land and HEAD therefore moves under the run.
-Head = tuple[str, str]
 
 #: The shell a recipe's command is handed to. A recipe is a command line,
 #: not an argv — redirects and pipes are part of what people write — and
@@ -97,21 +92,16 @@ class RunContext:
     Each field is read or resolved exactly once, by whoever owns the run
     — the driver, or the rerun entry point — because a per-task read
     could answer differently mid-run: HEAD moves as the driver commits,
-    a runtime resolved twice could disagree, and a provenance field that
-    depends on task timing is worse than either answer. Frozen and
-    picklable, so it crosses to workers by value; one object, so the
-    next attestation field is one line here rather than an edit to five
-    signatures.
+    and a runtime resolved twice could disagree. Frozen and picklable, so
+    it crosses to workers by value.
     """
 
     #: The IRI of the run's environment, checked either side of each recipe.
     environment: str
-    #: The run's ``(commit sha, origin URL)``.
-    head: Head
+    #: The commit the run started from, which every record it writes names.
+    commit: str
     #: The execution world — the host mechanism, or the project image.
     runtime: container.Runtime
-    #: The uv that converges environments this run. Attestation only.
-    uv_version: str
 
 
 # =============================================================================
@@ -297,7 +287,7 @@ def execute(
     made = root / task.places[0].bytes
     # Never the parent directory: siblings share it, and under Dask they
     # are being written concurrently. What this result owns, at each of
-    # its places, is its record, its manifest and any file named after it
+    # its places, is its record and any file named after it
     # — the glob rather than the one declared path, so a spec that
     # re-declares the output in another format leaves no stale payload
     # behind. `<name>.` cannot reach a sibling: ASTRA refuses an output
@@ -315,7 +305,6 @@ def execute(
         # Validate device visibility and container support before removing outputs.
         for place in task.places:
             (root / place.record).unlink(missing_ok=True)
-            assets.manifest_path(root, place).unlink(missing_ok=True)
             for stale in (root / place.bytes).parent.glob(f"{place.name}.*"):
                 if stale.is_file() or stale.is_symlink():
                     stale.unlink()
@@ -354,27 +343,17 @@ def execute(
         )
 
     try:
-        sha, remote = context.head
         digest = digest_file(made)
-        manifest = assets.Manifest(
-            recipe=task.command,
-            decisions=dict(task.decisions),
-            git_remote=remote,
-            uv_version=context.uv_version,
-            hermeticity=asdict(outcome.attestation),
-            image=context.runtime.manifest_image(),
-        )
         for place in task.places:
             if place is not task.places[0]:
                 shutil.copyfile(made, root / place.bytes)
-            assets.write(assets.manifest_path(root, place), manifest)
             records.write_record(
                 root / place.record,
                 records.Record(
                     address=place.address,
                     content_hash=digest.content_hash,
                     size=digest.size,
-                    commit=sha,
+                    commit=context.commit,
                     environment=context.environment,
                     runner=records.Runner("lightcone-cli", lc_version()),
                     inputs=tuple(read),
@@ -410,7 +389,7 @@ def lc_version() -> str:
     """Report the running engine's version, empty for a bare source tree.
 
     The one lookup behind both places the engine attests itself: the
-    manifest's ``lc_version`` and the run record's version pin. One
+    record's ``runner`` and the run record's version pin. One
     function, so the two cannot disagree about which engine ran.
 
     Cached: the metadata scan walks ``sys.path``, both callers are once
@@ -483,9 +462,8 @@ def main(argv: list[str]) -> int:
             _from_disk(root, graph, task),
             RunContext(
                 environment=identity.environment(root),
-                head=dataset.head(root),
+                commit=dataset.head(root)[0],
                 runtime=runtime,
-                uv_version=project.uv_version(root),
             ),
         )
     except ProjectError as e:

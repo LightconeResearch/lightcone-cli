@@ -37,16 +37,6 @@ _BUNDLE = engine.BUNDLE
 
 SPEC = 'spec_version: "0.1.0"\nlabel: demo\n'
 
-MANIFEST = assets.Manifest(
-    recipe="python fit.py",
-    decisions={},
-    git_remote="",
-    uv_version="0.7.0",
-    hermeticity={},
-    image=None,
-)
-
-
 def _record(address: str) -> Record:
     return Record(
         address=address,
@@ -64,7 +54,6 @@ def _record(address: str) -> Record:
 RUN = {
     "finishedAt": "2026-10-31T09:00:00Z",
     "gitRevision": "abc123",
-    "recipe": "python fit.py",
     "environment": "urn:lightcone:env:sha256:e",
     "cliVersion": "0.5.0",
     "inputVersions": {"catalog": "sha256:c"},
@@ -96,15 +85,16 @@ def project(tmp_path: Path) -> Path:
 
 
 def _recorded(project: Path, path: str, address: str) -> None:
-    """Write the record and the manifest a run of lc leaves for the result at *path*."""
+    """Write the record a run of lc leaves for the result at *path*."""
     (project / path).parent.mkdir(parents=True, exist_ok=True)
     (project / path).write_text("{}")
-    ((record, manifest),) = (
-        pair for pair in assets.sidecars(path) if pair[0].endswith(f"/{address.split('#')[0]}.json")
+    (record,) = (
+        place
+        for place in assets.record_places(path)
+        if place.endswith(f"/{address.split('#')[0]}.json")
     )
     (project / record).parent.mkdir(parents=True, exist_ok=True)
     (project / record).write_text(json.dumps(_record(address).to_json()))
-    assets.write(project / manifest, MANIFEST)
 
 
 def _request(
@@ -222,10 +212,8 @@ def served(state: Path, project: Path, home: None) -> tuple[str, str]:
     return f"{url.scheme}://{url.netloc}", token
 
 
-def test_a_results_run_comes_from_its_record_and_manifest(
-    served: tuple[str, str], project: Path
-) -> None:
-    """Read by the server, so the page parses neither format and the
+def test_a_results_run_comes_from_its_record(served: tuple[str, str], project: Path) -> None:
+    """Read by the server, so the page never parses the format and the
     Contents API never has to serve a dotfile."""
     base, token = served
     _recorded(project, "results/baseline/best_fit.json", "best_fit#baseline")
@@ -238,11 +226,9 @@ def test_a_results_run_comes_from_its_record_and_manifest(
     # Not a file in the project: what the Contents API would refuse is refused.
     for path in ("results/baseline/absent.json", "../outside.json", "", "results/baseline"):
         assert _request(f"{api}{path}")[0] in (400, 404), path
-    # The record and the manifest stay dotfiles to everything else.
-    for hidden in (
-        ".astra/records/baseline/best_fit.json", "results/baseline/.best_fit.manifest.json",
-    ):
-        assert _request(f"{base}/api/contents/{hidden}?token={token}")[0] == 404, hidden
+    # The record stays a dotfile to everything else.
+    hidden = ".astra/records/baseline/best_fit.json"
+    assert _request(f"{base}/api/contents/{hidden}?token={token}")[0] == 404
 
 
 @pytest.mark.parametrize(
@@ -264,15 +250,9 @@ def test_a_run_is_found_wherever_astra_places_the_result(
     assert json.loads(body)["run"] == RUN
 
 
-def test_a_record_without_a_manifest_is_still_a_run(
-    served: tuple[str, str], project: Path
-) -> None:
-    """The record is what says a run happened; the manifest only adds to it."""
+def test_a_record_that_does_not_parse_is_no_run(served: tuple[str, str], project: Path) -> None:
     base, token = served
     _recorded(project, "results/best_fit.json", "best_fit")
-    (project / "results" / ".best_fit.manifest.json").unlink()
-    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
-    assert json.loads(body)["run"] == {**RUN, "recipe": ""}
     (project / ".astra" / "records" / "best_fit.json").write_text("{}")
     _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
     assert json.loads(body) == {"run": None}
@@ -313,18 +293,14 @@ def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) 
 def test_a_run_record_beyond_a_symlink_is_not_read(
     served: tuple[str, str], project: Path, tmp_path: Path
 ) -> None:
-    """The contents manager follows symlinks, so the sidecars the route
-    would read are checked where they really are."""
+    """The contents manager follows symlinks, so the record the route
+    would read is checked where it really is."""
     base, token = served
     api = f"{base}/lightcone/api/run?token={token}&path=results/fit.json"
     _recorded(project, "results/fit.json", "fit")
     assert json.loads(_request(api)[1])["run"] == RUN
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    manifest = project / "results" / ".fit.manifest.json"
-    manifest.rename(elsewhere / manifest.name)
-    manifest.symlink_to(elsewhere / manifest.name)
-    assert json.loads(_request(api)[1])["run"] == {**RUN, "recipe": ""}
     (project / ".astra").rename(elsewhere / ".astra")
     (project / ".astra").symlink_to(elsewhere / ".astra")
     assert json.loads(_request(api)[1]) == {"run": None}
@@ -641,9 +617,7 @@ def test_metadata_hash_requests_never_read_artifact_bytes(project: Path) -> None
         model = asyncio.run(manager.get("results/large.json", content=False, require_hash=True))
     assert model["size"] == 3 * 1024**3
     assert model["hash"] is None
-    assert model["watchPaths"] == [
-        "results/large.json", ".astra/records/large.json", "results/.large.manifest.json",
-    ]
+    assert model["watchPaths"] == ["results/large.json", ".astra/records/large.json"]
     # A file at no result's place has no run to watch for.
     (project / "notes.json").write_text("{}")
     assert asyncio.run(manager.get("notes.json", content=False))["watchPaths"] == ["notes.json"]
@@ -703,7 +677,7 @@ def test_late_run_record_is_announced_without_changing_the_artifact(
     base = f"{url.scheme}://{url.netloc}"
     _, body = _request(f"{base}/api/contents/results/metric.json?{url.query}")
     watch_paths = json.loads(body)["watchPaths"][1:]
-    assert watch_paths == [".astra/records/metric.json", "results/.metric.manifest.json"]
+    assert watch_paths == [".astra/records/metric.json"]
 
     async def write_run(watch_path: str) -> dict[str, object]:
         socket = await websocket_connect(f"ws://{url.netloc}/api/live-content/ws?{url.query}")
@@ -735,9 +709,7 @@ def test_symlink_metadata_describes_the_target(project: Path) -> None:
     before = asyncio.run(manager.get("results/alias.json", content=False))
     assert before["path"] == "results/alias.json"
     assert before["size"] == 2_500_000
-    assert before["watchPaths"] == [
-        "results/target.json", ".astra/records/alias.json", "results/.alias.manifest.json",
-    ]
+    assert before["watchPaths"] == ["results/target.json", ".astra/records/alias.json"]
     os.utime(target, (1_700_000_000, 1_700_000_000))
     after = asyncio.run(manager.get("results/alias.json", content=False))
     assert after["last_modified"] != before["last_modified"]

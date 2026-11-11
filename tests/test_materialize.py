@@ -105,11 +105,9 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     assert not dataset.status(root)
 
 
-def test_an_output_its_record_and_its_manifest_land_in_one_commit(
-    root: Path, inline: None
-) -> None:
+def test_an_output_and_its_record_land_in_one_commit(root: Path, inline: None) -> None:
     """One commit is one complete, self-describing materialization — the
-    record and the manifest can never come to describe different bytes."""
+    record can never come to describe different bytes."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     committed = dataset._git(
@@ -117,7 +115,6 @@ def test_an_output_its_record_and_its_manifest_land_in_one_commit(
     ).split()
     assert sorted(committed) == [
         ".astra/records/baseline/first.json",
-        "results/baseline/.first.manifest.json",
         "results/baseline/first.txt",
     ]
 
@@ -126,14 +123,13 @@ def test_the_bytes_go_to_the_annex_and_what_describes_them_to_git(
     root: Path, inline: None
 ) -> None:
     """What git records is the test: a pointer for content, the real thing
-    for a record and a manifest. The working tree looks the same either way."""
+    for a record. The working tree looks the same either way."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     def blob(rel: str) -> str:
         return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
 
     assert blob("results/baseline/first.txt").startswith("/annex/objects/")
-    assert blob("results/baseline/.first.manifest.json").startswith("{")
     assert blob(".astra/records/baseline/first.json").startswith("{")
 
 
@@ -162,7 +158,6 @@ def test_an_output_built_once_has_no_universe_directory(
     committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=root).split()
     assert sorted(committed) == [
         ".astra/records/copy.json",
-        "results/.copy.manifest.json",
         "results/copy.txt",
     ]
     assert [o.output for o in engine.status(root).outputs] == ["copy"]
@@ -265,21 +260,6 @@ def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None)
     assert _commits(root) == before + 2
     made_under = _record(root, "first")["generated_by"]["environment"]["iri"]
     assert made_under == identity.environment(root)
-
-
-def test_the_manifest_records_the_uv_that_converged_the_environment(
-    root: Path, inline: None
-) -> None:
-    """Probed once by the driver and handed to every task — attestation,
-    never a rebuild signal."""
-    from lightcone.engine import project
-
-    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-
-    manifest = assets.read(root / "results/baseline/.first.manifest.json")
-    assert manifest is not None
-    assert manifest.uv_version == project.uv_version(root)
-    assert manifest.uv_version.count(".") >= 1, "a real version token, not prose"
 
 
 def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> None:
@@ -798,7 +778,6 @@ def test_the_run_record_is_what_datalad_reads(
     assert info["outputs"] == [
         "results/baseline/second.txt",
         ".astra/records/baseline/second.json",
-        "results/baseline/.second.manifest.json",
     ]
     assert info["dsid"] == "4b7b5c1e-0000-4000-8000-000000000000"
     assert info["chain"] == [] and info["pwd"] == "."
@@ -870,18 +849,6 @@ def test_a_record_says_what_was_made_from_what_and_by_whom(root: Path, inline: N
     ]
     assert second["generated_by"]["environment"] == {"iri": identity.environment(root)}
     assert second["generated_by"]["runner"]["id"] == "lightcone-cli"
-
-
-def test_the_manifest_holds_only_what_the_record_cannot(root: Path, inline: None) -> None:
-    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-
-    manifest = assets.read(root / "results/baseline/.first.manifest.json")
-
-    assert manifest is not None
-    assert manifest.recipe == "echo alpha > results/baseline/first.txt"
-    assert manifest.decisions == {"method": "alpha"}
-    assert manifest.hermeticity["network"] == "allowed"
-    assert manifest.image is None
 
 
 def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
@@ -1041,7 +1008,6 @@ def test_the_recorded_command_reproduces_the_output(
     assert proc.returncode == 0, proc.stderr
     assert _record(root, "first")["content_hash"] == original["content_hash"]
     assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
-    assert assets.read(root / "results/baseline/.first.manifest.json") is not None
     assert not dataset.status(root)
 
 
@@ -1248,14 +1214,14 @@ def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     _resource_cluster(monkeypatch, gpus=1)
     assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).made == ["first#baseline"]
-    original = (root / "results/baseline/.first.manifest.json").read_bytes()
+    original = (root / ".astra/records/baseline/first.json").read_bytes()
 
     _resource_cluster(monkeypatch)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert report.ok
     assert report.current == ["first#baseline"]
     assert report.made == ["second#baseline"]
-    assert (root / "results/baseline/.first.manifest.json").read_bytes() == original
+    assert (root / ".astra/records/baseline/first.json").read_bytes() == original
     assert not dataset.status(root)
 
 
@@ -1533,6 +1499,6 @@ def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: No
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()
     assert "results/baseline/second.txt" not in document
+    assert any(".astra/records/baseline/second.json" in w for w in report.warnings)

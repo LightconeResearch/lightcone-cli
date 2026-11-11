@@ -395,29 +395,20 @@ def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
     result's own run — then ``None``, the clean answer. The fact only:
     the verdict's prose is `classify`'s, like every other why.
 
-    Every file at every place: a forged *result* is the case the check
-    exists for, and a doctored *record* or manifest is the other half —
-    while the record is also what carries the history across a
-    re-declared format, where the payload's own path is new and would
-    read as clean.
+    Both files at every place: a forged *result* is the case the check
+    exists for, and a doctored *record* is the other half — while the
+    record is also what carries the history across a re-declared format,
+    where the payload's own path is new and would read as clean.
     """
-    write = dataset.last_writer(root, *_files(root, task))
+    write = dataset.last_writer(root, *_files(task))
     if not write or write.subject == datalad_run_subject(task.key):
         return None
     return write
 
 
-def _files(root: Path, task: Task) -> list[str]:
-    """The three files of each of *task*'s places, from the project root."""
-    return [
-        path
-        for place in task.places
-        for path in (
-            place.bytes,
-            place.record,
-            assets.manifest_path(root, place).relative_to(root).as_posix(),
-        )
-    ]
+def _files(task: Task) -> list[str]:
+    """The bytes and the record at each of *task*'s places."""
+    return [path for place in task.places for path in (place.bytes, place.record)]
 
 
 def _sandbox_line(mode: str) -> str:
@@ -425,8 +416,7 @@ def _sandbox_line(mode: str) -> str:
 
     The prose restates each backend's constant attestation, because
     `Backend.attest` needs a built policy and a status header must not
-    build one. Keep it in step with the `attest` implementations — the
-    manifests, which record the real thing, are always authoritative.
+    build one. Keep it in step with the `attest` implementations.
     """
     if mode == "containerized":
         if runtime := container.runtime_hint():
@@ -506,15 +496,9 @@ def materialize(
         report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
         # The run's driver-resolved facts, each read once: HEAD because the
         # driver commits as outputs land and a per-task read would stamp
-        # later records with a commit this run created; the uv probe
-        # because attestation is a fact about the run (and empty is an
-        # answer, not a failure).
-        context = worker.RunContext(
-            environment=environment,
-            head=dataset.head(root),
-            runtime=runtime,
-            uv_version=project.uv_version(root),
-        )
+        # later records with a commit this run created.
+        commit, _ = dataset.head(root)
+        context = worker.RunContext(environment=environment, commit=commit, runtime=runtime)
         pending: dict[Key, Any] = {}
         handles = []
         # Results left alone are values, not Dask tasks: they need no allocation
@@ -594,7 +578,7 @@ def _consume(
         report.notes.extend([f"{name}:", *result.notes])
 
     if result.status == "ok":
-        dataset.save(root, _owned(root, task), run_record(root, task, dsid, runtime))
+        dataset.save(root, _owned(task), run_record(root, task, dsid, runtime))
         report.made.append(name)
         return
 
@@ -606,7 +590,7 @@ def _consume(
         report.behind[name] = result.reason
         return
 
-    dataset.restore(root, _owned(root, task))
+    dataset.restore(root, _owned(task))
     getattr(report, result.status).append(name)
     report.warnings.append(f"{name}: {result.reason}")
 
@@ -800,26 +784,22 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
         )
         return
     # A set difference rather than a walk driven by the spec: what is on
-    # disk is exactly what the *previous* spec declared, so the edit that
-    # orphans a manifest is the same edit that drops it from the graph.
+    # disk is exactly what the *previous* spec planned, so the edit that
+    # orphans a record is the same edit that drops it from the graph.
     # Enumerated from git, which answers for the tree as committed.
-    expected = {
-        assets.manifest_path(root, place)
-        for task in full.tasks.values()
-        for place in task.places
-    }
-    for manifest in sorted(dataset.tracked_manifests(root)):
-        if manifest not in expected and assets.read(manifest) is not None:
-            report.warnings.append(
-                f"{manifest.relative_to(root).as_posix()} is a manifest the spec no "
-                "longer declares, so its output is not in the publication view"
-            )
+    expected = {place.record for task in full.tasks.values() for place in task.places}
+    for record in sorted(set(dataset.tracked_records(root)) - expected):
+        report.warnings.append(
+            f"{record} is the record of a result the analysis no longer plans, "
+            "so that result is not in the publication view"
+        )
     try:
         document = crate.render(
             root,
             full,
             license=spdx,
             dsid=dsid,
+            remote=dataset.head(root)[1],
             writer=functools.partial(dataset.last_writer, root),
             keys=dataset.annex_keys(root),
         )
@@ -884,7 +864,7 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(set(task.inputs.values())),
-        "outputs": _files(root, task),
+        "outputs": _files(task),
         "pwd": ".",
     }
     if runtime.mode == "containerized":
@@ -999,26 +979,20 @@ def _graph(
     return graph, environment, full
 
 
-def _owned(root: Path, task: Task) -> list[str]:
+def _owned(task: Task) -> list[str]:
     """Every path one result owns, as git pathspecs.
 
-    Globs rather than the literal paths, and each earns its magic. The
-    payload's covers whatever format the *previous* run wrote, so a
-    re-declared serialization stages the old file's deletion instead of
-    leaving it behind untracked. The manifest's trailing ``*`` covers the
-    ``.tmp`` a failed write leaves, which nothing else would sweep.
+    A glob for the payload rather than its literal path: it covers
+    whatever format the *previous* run wrote, so a re-declared
+    serialization stages the old file's deletion instead of leaving it
+    behind untracked.
 
     Never the parent directory: siblings share it, and under Dask they are
     in flight — ``git clean`` on it would delete a running task's bytes.
     """
     owned = []
     for place in task.places:
-        parent = posixpath.dirname(place.bytes)
-        owned += [
-            f":(glob){parent}/{place.name}.*",
-            f":(glob){parent}/.{place.name}{assets.MANIFEST_SUFFIX}*",
-            place.record,
-        ]
+        owned += [f":(glob){posixpath.dirname(place.bytes)}/{place.name}.*", place.record]
     return owned
 
 

@@ -130,10 +130,10 @@ containerized; `[project].license` turns on RO-Crate maintenance.
 
 ### Storage (`engine/dataset.py`)
 
-Git carries pointers, manifests and history; git-annex carries bytes, via
+Git carries pointers, records and history; git-annex carries bytes, via
 `* filter=annex` so the user's plain `git add` does the right thing.
-ASTRA's records (`.astra/records/`) and lc's manifests stay in git so a
-bytes-free clone can still classify everything. Unfetched content
+ASTRA's records (`.astra/records/`) stay in git so a bytes-free clone can
+still classify everything. Unfetched content
 *exists* as a pointer file or dangling symlink — hashing must refuse both
 (`ContentNotFetchedError`). Only the driver writes to git; a worker reads
 it only through ASTRA's checker.
@@ -150,9 +150,9 @@ it only through ASTRA's checker.
   records it and never compares it. `identity.SCHEME` is the
   `astra.environments` entry point that tells `astra check` about it.
 - A result's record holds the commit, input hashes, environment and
-  runner; its schema is closed. What only lc can attest (the rendered
-  recipe, decisions, uv version, `hermeticity`, image) goes in the
-  manifest sidecar `.<name>.manifest.json` beside the bytes.
+  runner; its schema is closed, and it is the only file lc writes beside
+  a result. Nothing the record cannot hold is kept — by decision; don't
+  add a sidecar.
 
 `assets.classify` is the single rule, with three states: `stale` (ASTRA
 finds the record missing or stale, or the files were last committed by
@@ -193,8 +193,7 @@ Read-only verbs must never traceback, fetch, or need a cluster.
 Every mechanism is a pure `Backend.wrap(policy, argv) -> argv`, so all
 backends are testable on any host. `detect()` holds the only platform
 branch. `Policy` (what to enforce), `Capability` (what the host can do)
-and `Attestation` (what was actually enforced, recorded in the manifest
-as `hermeticity`) stay distinct types. The project tree is read-only; a
+and `Attestation` (what was actually enforced) stay distinct types. The project tree is read-only; a
 recipe may write only its output's directory, a probe (`lc run`) only
 `results/`. Execute rights are per-file — never grant EXECUTE on a
 directory that could be a system prefix. Landlock unions rights while
@@ -224,7 +223,7 @@ authenticated, file reads confined to their root (`app/files.py`). The
 page is `@astra-spec/ui` over the Contents API; the spec is resolved **in
 the browser** by `@astra-spec/sdk` — Python never parses the spec for the
 app. Server routes (`app/routes.py`) answer only what the Contents API
-cannot (manifests, engine status, the paper cache). Server state lives in
+cannot (records, engine status, the paper cache). Server state lives in
 `~/.lightcone/serve/<host>/`, never in the project.
 
 ## Where to change things

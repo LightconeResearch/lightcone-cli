@@ -1,5 +1,4 @@
-"""Tests for `lightcone.engine.assets` — what lc records beside a result,
-and whether the result is still current.
+"""Tests for `lightcone.engine.assets` — whether a result is still current.
 
 The classification table is the important part of this file. Whether a
 record still describes the analysis is ASTRA's checker's to say, so the
@@ -17,7 +16,6 @@ environment that no longer exists.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,7 +27,7 @@ from astra.universes import Place
 from conftest import CLUSTER_ID
 
 from lightcone.engine import assets, dataset, identity, materialize
-from lightcone.engine.assets import Manifest, classify
+from lightcone.engine.assets import classify
 from lightcone.engine.project import ProjectError
 
 _PLACE = Place(
@@ -40,64 +38,29 @@ _PLACE = Place(
 )
 
 
-def _manifest(**overrides: object) -> Manifest:
-    base: dict[str, object] = {
-        "recipe": "python src/fit.py results/baseline/best_fit.csv",
-        "decisions": {"method": "mcmc"},
-        "git_remote": "https://example/demo.git",
-        "uv_version": "0.12.5",
-        "hermeticity": {"mechanism": "landlock", "fs": "declared", "network": "allowed"},
-        "image": None,
-    }
-    return Manifest(**{**base, **overrides})  # type: ignore[arg-type]
+# ---- where the record lives ------------------------------------------------
 
 
-# ---- where the sidecars live -----------------------------------------------
-
-
-def test_the_manifest_sits_beside_the_bytes(tmp_path: Path) -> None:
-    assert assets.manifest_path(tmp_path, _PLACE) == (
-        tmp_path / "results/baseline/.best_fit.manifest.json"
-    )
-
-
-def test_a_result_built_once_keeps_its_manifest_at_the_top_of_results(tmp_path: Path) -> None:
-    place = Place("summary", "summary", ".astra/records/summary.json", "results/summary.csv")
-    assert assets.manifest_path(tmp_path, place) == tmp_path / "results/.summary.manifest.json"
-
-
-def test_the_manifest_is_named_from_the_name_never_the_format(tmp_path: Path) -> None:
-    """A format may contain dots, and `Path.stem` would answer `x.tar` for
-    `x.tar.gz`. Naming the sidecar from the name alone also keeps its path —
-    and so its history — across a re-declared serialization."""
-    packed = Place("chain", "chain#u", ".astra/records/u/chain.json", "results/u/chain.tar.gz")
-    plain = Place("chain", "chain#u", ".astra/records/u/chain.json", "results/u/chain.npz")
-    assert assets.manifest_path(tmp_path, packed).name == ".chain.manifest.json"
-    assert assets.manifest_path(tmp_path, packed) == assets.manifest_path(tmp_path, plain)
-
-
-def test_a_result_file_names_its_record_and_manifest() -> None:
-    assert assets.sidecars("results/baseline/fit.json") == [
-        (".astra/records/baseline/fit.json", "results/baseline/.fit.manifest.json")
+def test_a_result_file_names_its_record() -> None:
+    assert assets.record_places("results/baseline/fit.json") == [
+        ".astra/records/baseline/fit.json"
     ]
-    assert assets.sidecars("results/summary.csv") == [
-        (".astra/records/summary.json", "results/.summary.manifest.json")
-    ]
+    assert assets.record_places("results/summary.csv") == [".astra/records/summary.json"]
 
 
-def test_a_result_of_an_analysis_in_a_folder_keeps_its_sidecars_there() -> None:
-    assert assets.sidecars("stage/results/v/mask.txt") == [
-        ("stage/.astra/records/v/mask.json", "stage/results/v/.mask.manifest.json")
+def test_a_result_of_an_analysis_in_a_folder_keeps_its_record_there() -> None:
+    assert assets.record_places("stage/results/v/mask.txt") == [
+        "stage/.astra/records/v/mask.json"
     ]
 
 
 def test_a_dotted_file_name_offers_every_split() -> None:
     """A name is ids joined by dots and a format may hold dots too, so the
     file's name alone cannot say where one ends."""
-    assert assets.sidecars("results/u/stage.chain.tar.gz") == [
-        (".astra/records/u/stage.json", "results/u/.stage.manifest.json"),
-        (".astra/records/u/stage.chain.json", "results/u/.stage.chain.manifest.json"),
-        (".astra/records/u/stage.chain.tar.json", "results/u/.stage.chain.tar.manifest.json"),
+    assert assets.record_places("results/u/stage.chain.tar.gz") == [
+        ".astra/records/u/stage.json",
+        ".astra/records/u/stage.chain.json",
+        ".astra/records/u/stage.chain.tar.json",
     ]
 
 
@@ -110,10 +73,10 @@ def test_a_dotted_file_name_offers_every_split() -> None:
         "results/baseline/README",
     ],
 )
-def test_a_file_at_no_results_place_has_no_sidecars(path: str) -> None:
+def test_a_file_at_no_results_place_has_no_record(path: str) -> None:
     """Two levels under `results/` is no place ASTRA gives, and a name
     with no format is nobody's bytes."""
-    assert assets.sidecars(path) == []
+    assert assets.record_places(path) == []
 
 
 # ---- content that is not there ---------------------------------------------
@@ -179,74 +142,6 @@ def test_a_large_file_is_never_a_pointer(tmp_path: Path) -> None:
     big.write_bytes(b"/annex/objects/" + b"0" * (32 * 1024))
 
     assert not assets.is_pointer(big)
-
-
-# ---- the manifest ----------------------------------------------------------
-
-
-def test_a_manifest_round_trips(tmp_path: Path) -> None:
-    written = _manifest(image={"tag": "demo:1", "id": "sha256:abc", "archive": "a", "arch": "x"})
-    sidecar = tmp_path / ".best_fit.manifest.json"
-    assert assets.write(sidecar, written) == sidecar
-    assert assets.read(sidecar) == written
-    assert assets.loads(sidecar.read_text()) == written
-
-
-def test_the_manifest_is_readable_json_with_the_schema_first(tmp_path: Path) -> None:
-    """It stays out of the annex precisely so a clone with no content
-    fetched can read it — including with a plain `grep`."""
-    sidecar = tmp_path / ".best_fit.manifest.json"
-    assets.write(sidecar, _manifest())
-    data = json.loads(sidecar.read_text())
-    assert next(iter(data)) == "schema_version"
-    assert data["schema_version"] == assets.SCHEMA_VERSION
-    assert "landlock" in sidecar.read_text()
-
-
-def test_the_manifest_holds_only_what_the_record_cannot(tmp_path: Path) -> None:
-    """The commit, the hashes, the environment and the runner are the
-    record's; saying them twice is two things to keep in agreement."""
-    assert set(_manifest().as_dict()) == {
-        "schema_version",
-        "recipe",
-        "decisions",
-        "git_remote",
-        "uv_version",
-        "hermeticity",
-        "image",
-    }
-
-
-def test_no_manifest_reads_as_none(tmp_path: Path) -> None:
-    assert assets.read(tmp_path / ".best_fit.manifest.json") is None
-
-
-@pytest.mark.parametrize(
-    "text", ["{not json", "[]", '"a string"', '{"recipe": "x"}', '{"no_such_field": 1}']
-)
-def test_what_is_not_a_manifest_reads_as_none(tmp_path: Path, text: str) -> None:
-    """Unparseable, not an object, or an object whose fields do not fit:
-    all read as a run that attested nothing, never as a traceback."""
-    sidecar = tmp_path / ".best_fit.manifest.json"
-    sidecar.write_text(text)
-    assert assets.read(sidecar) is None
-    assert assets.loads(text) is None
-
-
-def test_a_manifest_that_is_not_text_reads_as_none(tmp_path: Path) -> None:
-    sidecar = tmp_path / ".best_fit.manifest.json"
-    sidecar.write_bytes(b"\xff\xfe\x00")
-    assert assets.read(sidecar) is None
-
-
-def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> None:
-    sidecar = tmp_path / ".best_fit.manifest.json"
-    assets.write(sidecar, _manifest())
-    assets.write(sidecar, _manifest(uv_version="0.13.0"))
-
-    manifest = assets.read(sidecar)
-    assert manifest is not None and manifest.uv_version == "0.13.0"
-    assert not list(tmp_path.glob("*.tmp"))
 
 
 # ---- classification --------------------------------------------------------

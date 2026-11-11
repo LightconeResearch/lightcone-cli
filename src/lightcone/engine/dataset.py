@@ -4,7 +4,7 @@ Storage follows the DataLad model — git carries the pointers and the
 history, git-annex carries the bytes — reached through ordinary ``git``
 and ``git annex`` commands. ``.gitattributes`` routes content: the default
 is ``annex.largefiles=nothing``, and outputs and declared inputs opt out
-of it, so manifests and analysis code stay in git while results and data
+of it, so records and analysis code stay in git while results and data
 go to the annex.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
@@ -230,8 +230,7 @@ def head(directory: Path) -> tuple[str, str]:
 
     Returns:
         ``(commit sha, origin URL)``. The URL is empty rather than absent
-        when the repository has no remote — a manifest field that is
-        sometimes missing reads worse than one that is sometimes blank.
+        when the repository has no remote.
     """
     remote = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
     return (
@@ -273,10 +272,10 @@ def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
     ``.git``, or a host without git — states such projects are actually
     in.
 
-    Several paths, because an output is a file *and* a manifest and a
-    hand edit to either contradicts the record: the payload alone would
-    miss a doctored manifest, and the manifest alone would miss the forged
-    result that is the whole reason to ask. The manifest also carries the
+    Several paths, because a result is a file *and* its record and a
+    hand edit to either contradicts the other: the payload alone would
+    miss a doctored record, and the record alone would miss the forged
+    result that is the whole reason to ask. The record also carries the
     history across a re-declared format, where the payload's path is new.
 
     Args:
@@ -331,29 +330,21 @@ def annex_keys(directory: Path) -> dict[str, str]:
     return keys
 
 
-def tracked_manifests(directory: Path) -> list[Path]:
-    """Every manifest sidecar git is tracking, anywhere in the tree.
+def tracked_records(directory: Path) -> list[str]:
+    """Every record git is tracking under the project's own ``.astra/``.
 
-    From the index rather than a directory walk: it is exact, it costs one
-    process, and it never descends into ``.git`` or ``.venv``. Scoped to
-    ``results/``, which is the only place lc writes one — elsewhere the
-    name is the user's to use. Untracked strays are the dirty check's
-    business, not this one's.
+    From the index rather than a directory walk: it is exact and it costs
+    one process. Untracked strays are the dirty check's business, not
+    this one's.
 
     Args:
-        directory: The repository root.
+        directory: The project root.
 
     Returns:
-        Absolute paths, unordered.
+        Paths from the project root, unordered.
     """
-    # Imported here, not at module scope: `assets` reaches this module
-    # through `project`, so the name has to be fetched after both exist.
-    from lightcone.engine.assets import MANIFEST_SUFFIX
-
-    listed = _git(
-        ["ls-files", "-z", "--", f":(glob)results/**/*{MANIFEST_SUFFIX}"], cwd=directory
-    )
-    return [directory / name for name in listed.split("\0") if name]
+    listed = _git(["ls-files", "-z", "--", ":(glob).astra/records/**/*.json"], cwd=directory)
+    return [name for name in listed.split("\0") if name]
 
 
 def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
@@ -380,8 +371,7 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     into its output directory, would land as a full blob in git,
     silently, with every test green, and every clone would carry the
     bytes forever. With it, ``annex.largefiles`` alone decides — which is
-    the storage policy the ``.gitattributes`` template already states,
-    dot-named manifests staying in git through their own exemption.
+    the storage policy the ``.gitattributes`` template already states.
     Per-add and never written to the repository's config, so a user's
     own ``git add`` keeps git-annex's stock behavior.
 

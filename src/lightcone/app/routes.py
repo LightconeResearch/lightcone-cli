@@ -1,9 +1,9 @@
 """The app's own routes: what the page needs and the Contents API cannot give.
 
-A result's recorded run, read from ASTRA's record and lc's manifest, so
-the page never parses either format and the server never has to open
-dotfiles to it; every result's state, classified by the engine exactly as
-``lc status`` does, so the page holds no copy of that rule; and the cited
+A result's recorded run, read from its ASTRA record, so the page never
+parses that format and the server never has to open dotfiles to it;
+every result's state, classified by the engine exactly as ``lc status``
+does, so the page holds no copy of that rule; and the cited
 papers in astra's cache, which lies outside the project (``astra paper
 add`` fills it, and quotes are verified against it). Nothing here writes
 the cache. Every route needs the token, like the rest of the server.
@@ -63,7 +63,7 @@ class RunHandler(APIHandler):
 
     @web.authenticated
     async def get(self) -> None:
-        """Read the record and manifest of the result the ``path`` argument names."""
+        """Read the record of the result the ``path`` argument names."""
         # Whether the path is a file in the project is the contents manager's
         # to say, as it does for /files/: outside the root, hidden, absent or
         # a directory is refused before anything is read.
@@ -75,7 +75,7 @@ class RunHandler(APIHandler):
         root = Path(cm.root_dir).resolve()
 
         def read(name: str) -> str | None:
-            # Both are hidden, but use the same confined opener as artifacts.
+            # The record is hidden, but uses the same confined opener as artifacts.
             try:
                 with open_fd(root, root / name, hidden=True) as fd:
                     with os.fdopen(fd, "r", closefd=False) as file:
@@ -84,18 +84,16 @@ class RunHandler(APIHandler):
                 return None
 
         run: dict[str, Any] | None = None
-        for record_path, manifest_path in assets.sidecars(model["path"]):
+        for record_path in assets.record_places(model["path"]):
             if (text := read(record_path)) is None:
                 continue
             try:
                 record = Record.from_json(json.loads(text))
             except (ValueError, KeyError, TypeError):
                 continue
-            manifest = assets.loads(read(manifest_path) or "")
             run = {
                 "finishedAt": record.finished or "",
                 "gitRevision": record.commit,
-                "recipe": manifest.recipe if manifest else "",
                 "environment": record.environment,
                 "cliVersion": record.runner.version,
                 "inputVersions": {item.entry: item.content_hash for item in record.inputs},

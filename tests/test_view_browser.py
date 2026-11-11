@@ -14,11 +14,10 @@ from pathlib import Path
 import pytest
 from astra.universes import Place
 from playwright.sync_api import Browser, Error, expect, sync_playwright
-from test_serve import MANIFEST, _gate, _record
+from test_serve import _gate, _record
 from test_serve import project as project
 from test_serve import state as state
 
-from lightcone.engine import assets
 from lightcone.engine import serve as engine
 
 
@@ -104,7 +103,6 @@ outputs:
     expect(provenance).to_contain_text("No recorded run yet.")
     before = artifact.stat().st_mtime_ns
     place = Place("metric", "metric#baseline", ".astra/records/baseline/metric.json", wanted)
-    assets.write(assets.manifest_path(project, place), MANIFEST)
     (project / place.record).parent.mkdir(parents=True)
     (project / place.record).write_text(json.dumps(_record(place.address).to_json()))
     expect(provenance).to_contain_text("abc123")

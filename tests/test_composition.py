@@ -177,7 +177,6 @@ def test_every_result_is_recorded_committed_and_current(built: Path) -> None:
     ]
     owned = json.loads((built / "stage/.astra/records/v1/cleaned.json").read_text())
     assert owned["address"] == "cleaned#v1"
-    assert (built / "stage/results/v1/.cleaned.manifest.json").is_file()
 
     status = materialize.status(built)
     assert {o.output: o.status for o in status.outputs} == dict.fromkeys(PLACES, "current")

@@ -253,7 +253,6 @@ def test_a_present_archive_is_loaded_once_and_reused(
     second = container.runtime_for_run(root, build=False)
 
     assert first.image_id == expected and second.image_id == expected
-    assert first.arch == "amd64"
     assert first.archive == f".datalad/environments/{image.tag(root)}/image"
     assert len(_argvs(fake, "podman", "load")) == 1  # the second run hit the store
 
@@ -622,7 +621,8 @@ def test_a_foreign_arch_archive_refuses_before_loading(
 def test_the_matching_arch_loads(root: Path, fake: list[list[str]]) -> None:
     _write_archive(image.archive_path(root, image.tag(root)))
 
-    assert container.runtime_for_run(root, build=False).arch == "amd64"
+    container.runtime_for_run(root, build=False)
+
     assert len(_argvs(fake, "podman", "load")) == 1
 
 

@@ -1,18 +1,13 @@
-"""What a materialized result *is*: what lc records beside it, and whether
-it is still current.
+"""Whether a materialized result is still current.
 
 A result is a single file at the place ASTRA gives it —
 ``results/<universe>/<name>.<format>`` — and its **record**, ASTRA's own
 account of how it was made, is at ``.astra/records/<universe>/<name>.json``.
-The record is closed: it holds the commit, the inputs' hashes, the
-environment and the runner, and nothing else. What lc alone can say about
-a run — what the sandbox actually enforced, the image, the uv that built
-the environment — goes in a manifest sidecar beside the bytes,
-``.<name>.manifest.json``. Both stay out of the annex, so they are
-readable on a clone that has fetched no content at all.
+The record is all lc writes beside a result, and it stays out of the
+annex, so it is readable on a clone that has fetched no content at all.
 
 The rule that classifies a result — ``current``, ``behind`` or ``stale`` —
-lives here too. Whether a record still describes the analysis is ASTRA's
+lives here. Whether a record still describes the analysis is ASTRA's
 checker's to say, and it is asked rather than re-derived; lc adds the two
 things only an executor knows: the environment a result ran under, and
 whether its files were last written by its own run.
@@ -20,24 +15,19 @@ whether its files were last written by its own run.
 
 from __future__ import annotations
 
-import json
 import posixpath
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
     from astra.check import Status as Checked
-    from astra.universes import Place
 
     # A type only: history is git's, and this module runs no git.
     from lightcone.engine.dataset import LastWrite
-
-MANIFEST_SUFFIX = ".manifest.json"
-SCHEMA_VERSION = 2
 
 #: The marker every annexed path carries, in both of the shapes an annexed
 #: file takes on disk — the pointer file's first bytes, and the locked
@@ -53,25 +43,8 @@ class ContentNotFetchedError(ProjectError):
     """An annexed file whose content is not in this clone."""
 
 
-def manifest_path(root: Path, place: Place) -> Path:
-    """The manifest sidecar beside the bytes at *place*.
-
-    ``.<name>.manifest.json``, named from the result's name alone and
-    never its format — so the manifest keeps its path, and therefore its
-    history, when a spec re-declares the output in another serialization.
-
-    Args:
-        root: The project root.
-        place: One of a result's places.
-
-    Returns:
-        The sidecar's path.
-    """
-    return (root / place.bytes).parent / f".{place.name}{MANIFEST_SUFFIX}"
-
-
-def sidecars(path: str) -> list[tuple[str, str]]:
-    """Where the record and manifest of a result file at *path* would be.
+def record_places(path: str) -> list[str]:
+    """Where the record of a result file at *path* would be.
 
     For a caller holding only a file's path: a result's name is ids
     joined by dots and a format may hold dots too, so the file's name
@@ -82,8 +55,8 @@ def sidecars(path: str) -> list[tuple[str, str]]:
         path: A file's POSIX path from the project root.
 
     Returns:
-        ``(record, manifest)`` paths, one per split; none for a file that
-        is at no result's place.
+        One record path per split; none for a file that is at no
+        result's place.
     """
     *folder, file = path.split("/")
     universe = folder[-1:] if folder[-2:-1] == ["results"] else []
@@ -91,10 +64,7 @@ def sidecars(path: str) -> list[tuple[str, str]]:
     if folder[len(top) : len(top) + 1] != ["results"]:
         return []
     return [
-        (
-            "/".join([*top, ".astra", "records", *universe, f"{file[:dot]}.json"]),
-            "/".join([*folder, f".{file[:dot]}{MANIFEST_SUFFIX}"]),
-        )
+        "/".join([*top, ".astra", "records", *universe, f"{file[:dot]}.json"])
         for dot, char in enumerate(file)
         if char == "." and dot
     ]
@@ -158,99 +128,6 @@ def is_pointer(path: Path) -> bool:
         return False
     with path.open("rb") as f:
         return f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX
-
-
-# =============================================================================
-# The manifest
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class Manifest:
-    """What lc attests about one run, beyond what its record holds.
-
-    Every field is filled by the run that wrote it. None of it is compared
-    by anything: the record is what a result is checked against, and this
-    is what makes the run that produced it legible afterwards.
-    """
-
-    #: The command as it ran, placeholders filled. The record names the
-    #: commit that holds the template; this is what the shell was handed.
-    recipe: str
-    #: Each of the output's decisions and the option it ran under.
-    decisions: dict[str, str]
-    #: The `origin` URL, or empty when the repository has no remote.
-    git_remote: str
-    #: The uv that resolved and installed the environment the recipe ran
-    #: in — the one tool between the lock and the installed artifacts.
-    uv_version: str
-    #: What the sandbox actually enforced, as the boundary attested it.
-    hermeticity: dict[str, Any]
-    #: The image the recipe ran in — ``{tag, id, archive, arch}`` — or
-    #: ``None`` on the host.
-    image: dict[str, Any] | None
-    schema_version: int = field(default=SCHEMA_VERSION)
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the manifest as JSON-ready data, ``schema_version`` first.
-
-        Returns:
-            Every field, in declaration order.
-        """
-        data = asdict(self)
-        return {"schema_version": data.pop("schema_version"), **data}
-
-
-def read(manifest: Path) -> Manifest | None:
-    """Read the manifest at *manifest*.
-
-    Args:
-        manifest: The sidecar's path.
-
-    Returns:
-        The manifest, or ``None`` when it is absent or unparseable.
-
-    Raises:
-        OSError: Deliberately not caught. A permission problem is a real
-            fault and must not look like a run that attested nothing.
-    """
-    if not manifest.is_file():
-        return None
-    try:
-        return loads(manifest.read_text())
-    except UnicodeDecodeError:
-        return None
-
-
-def loads(text: str) -> Manifest | None:
-    """Parse a manifest already read by a caller, or return None if invalid."""
-    try:
-        return Manifest(**json.loads(text))
-    except (json.JSONDecodeError, TypeError, ValueError):
-        # Anything that is not a manifest object reads as "no manifest":
-        # a top-level array, a mapping whose fields do not fit.
-        return None
-
-
-def write(path: Path, manifest: Manifest) -> Path:
-    """Write *manifest* to *path*, atomically.
-
-    The rename is the commit point: a reader sees the previous manifest or
-    this one, never half of either. The temporary lands beside real outputs,
-    so it is named off the sidecar — unique per output, and swept by the
-    same pathspec.
-
-    Args:
-        path: The sidecar's path.
-        manifest: The attestation to write.
-
-    Returns:
-        The path written.
-    """
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(manifest.as_dict(), indent=2, sort_keys=False) + "\n")
-    temporary.replace(path)
-    return path
 
 
 # =============================================================================
