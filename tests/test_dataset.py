@@ -83,6 +83,26 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
     assert not dataset.status(repo)
 
 
+def test_records_stay_in_git_and_a_nested_analysis_has_the_same_policy(repo: Path) -> None:
+    """ASTRA's record has to be a plain git blob for the same reason the
+    manifest does — the checker reads it on a clone with no content — and
+    an analysis in a folder below the project owns a `results/` of its
+    own, whose bytes must not land in git for being one level down."""
+    record = repo / ".astra" / "records" / "baseline" / "best_fit.json"
+    nested = repo / "stage" / "results" / "v1"
+    for folder in (record.parent, nested):
+        folder.mkdir(parents=True)
+    record.write_text('{"address": "best_fit#baseline"}\n')
+    (nested / "fit.csv").write_text("a,b\n1,2\n")
+    (nested / ".fit.manifest.json").write_text('{"recipe": "true"}\n')
+
+    assert dataset.save(repo, [repo / ".astra", repo / "stage"], "records and a nested result")
+
+    assert not _annexed(repo, record)
+    assert _annexed(repo, nested / "fit.csv")
+    assert not _annexed(repo, nested / ".fit.manifest.json")
+
+
 def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     """`filter=annex` is what makes git's own add route content, which is
     what lets lc — and everyone else — never run a git-annex command."""
@@ -207,10 +227,7 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
         with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-            assets.data_version(output / name)
-
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.data_version(output)
+            assets.require_fetched(output / name)
 
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
@@ -227,7 +244,7 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        assets.data_version(output)
+        assets.require_fetched(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------
@@ -534,12 +551,14 @@ def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
     commits nothing, and leaves the tree dirty by design; the shim is the
     sandbox's own plumbing. A `[project.scripts]` entry would put either
     on `$PATH` through `uv tool install` — a footgun `lc --help` already
-    refuses to advertise. Every entry point is either the CLI or a
+    refuses to advertise. Every console script is either the CLI or a
     mirrored git-annex executable, and nothing else."""
     from importlib.metadata import distribution
 
     theirs = {e.value for e in distribution("git-annex").entry_points}
-    for entry in distribution("lightcone-cli").entry_points:
+    scripts = distribution("lightcone-cli").entry_points.select(group="console_scripts")
+    assert scripts
+    for entry in scripts:
         assert "lightcone.engine" not in entry.value
         assert "_sandbox_exec" not in entry.value
         assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry

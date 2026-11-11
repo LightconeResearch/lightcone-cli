@@ -31,16 +31,14 @@ from lightcone.engine.project import ProjectError, child_env
 REQUIRED_ENV = "LC_CONTAINER_TESTS_REQUIRED"
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
+spec_version: "0.1.0"
 
 inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
+  catalog:
+    path: data/catalog.fits
 
 outputs:
-  - id: sums
+  sums:
     type: metric
     format: txt
     recipe:
@@ -221,11 +219,11 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     report = engine.materialize(cproject, [], cluster_id=cluster_id)
 
     assert report.ok, report.warnings
-    assert report.made == ["baseline/sums"]
-    assert (cproject / "results/baseline/sums.txt").read_text() == "4\n"
+    assert report.made == ["sums"]
+    assert (cproject / "results/sums.txt").read_text() == "4\n"
     assert not dataset.status(cproject)
 
-    manifest = assets.read(cproject / "results/baseline/.sums.manifest.json")
+    manifest = assets.read(cproject / "results/.sums.manifest.json")
     assert manifest is not None
     assert manifest.hermeticity["mechanism"] == runtime
     assert manifest.hermeticity["network"] == "allowed"
@@ -264,8 +262,9 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     report = engine.materialize(cproject, [], cluster_id=cluster_id)
     assert report.ok, report.warnings
-    original = assets.read(cproject / "results/baseline/.sums.manifest.json")
+    original = assets.read(cproject / "results/.sums.manifest.json")
     assert original is not None
+    made = json.loads((cproject / ".astra/records/sums.json").read_text())
 
     clone = tmp_path / "clone"
     dataset._git(["clone", "-q", str(cproject), str(clone)], cwd=tmp_path)
@@ -285,9 +284,8 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     )
 
     assert proc.returncode == 0, proc.stderr
-    rerun = assets.read(clone / "results/baseline/.sums.manifest.json")
-    assert rerun is not None
-    assert rerun.data_version == original.data_version
+    rerun = json.loads((clone / ".astra/records/sums.json").read_text())
+    assert rerun["content_hash"] == made["content_hash"]
     assert not dataset.status(clone)
 
 

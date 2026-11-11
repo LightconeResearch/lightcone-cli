@@ -5,12 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 **lightcone-cli** ships `lc`, the execution layer for ASTRA (`astra.yaml`
-analysis specs). The split with `astra-tools` is enforced in code: what a
-spec *means* (scoping, `from:`, `when:`, universes, the recipe placeholder
-grammar) is answered by `astra.resolve` / `astra.validation`; lc only adds
-execution — scaffolding, environment identity, sandboxing, storage,
-provenance. If a spec's meaning looks wrong, the fix belongs in
-astra-tools, not here.
+analysis specs, spec 0.1). The split with `astra-tools` is enforced in
+code: what a spec *means* (validity, universes, declared analyses, pins,
+`when:`, the recipe placeholder grammar, where a result and its record
+go, and whether a record still describes the analysis) is answered by
+`astra.api` — `plan` and `check`; lc is the *runner*: it only adds
+execution — scaffolding, environment identity, sandboxing, storage, and
+writing each result's record. If a spec's meaning looks wrong, the fix
+belongs in astra-tools, not here.
+
+ASTRA 0.1 is not on PyPI yet: `pyproject.toml` pins astra-tools and
+astra-spec to git commits (`[tool.uv.sources]`, `override-dependencies`).
+Move both together.
 
 The CLI is agent-agnostic: it bundles no skills, hooks or plugins, and a
 verb is run by an agent more often than a person — so no interactive
@@ -126,36 +132,53 @@ containerized; `[project].license` turns on RO-Crate maintenance.
 
 Git carries pointers, manifests and history; git-annex carries bytes, via
 `* filter=annex` so the user's plain `git add` does the right thing.
-Manifests stay in git so a bytes-free clone can still classify
-everything. Unfetched content *exists* as a pointer file or dangling
-symlink — hashing must refuse both (`ContentNotFetchedError`). Only the
-driver touches git; workers never do.
+ASTRA's records (`.astra/records/`) and lc's manifests stay in git so a
+bytes-free clone can still classify everything. Unfetched content
+*exists* as a pointer file or dangling symlink — hashing must refuse both
+(`ContentNotFetchedError`). Only the driver writes to git; a worker reads
+it only through ASTRA's checker.
 
 ### Identity and invalidation (`identity.py`, `assets.py`)
 
-- `definition_version` = recipe ‖ decisions ‖ format — what an output *is*.
+- Whether a result is still what the analysis asks for is ASTRA's
+  checker's answer (`assets.check` → `astra.api.check`: `missing`,
+  `stale`, `unchanged`), never re-derived here. It compares the analysis
+  now with the analysis at the commit the record names.
 - `env_version` = lock ‖ `.python-version` ‖ install settings ‖ image
-  document — what it ran under. Deliberately **not** part of
-  `definition_version`.
-- `data_version` = the output file's sha256, computed in the worker.
+  document — what a result ran under. A record names it as the IRI
+  `urn:lightcone:env:<env_version>` (`identity.environment`); ASTRA
+  records it and never compares it. `identity.SCHEME` is the
+  `astra.environments` entry point that tells `astra check` about it.
+- A result's record holds the commit, input hashes, environment and
+  runner; its schema is closed. What only lc can attest (the rendered
+  recipe, decisions, uv version, `hermeticity`, image) goes in the
+  manifest sidecar `.<name>.manifest.json` beside the bytes.
 
-`assets.classify` is the single rule, with three states: `stale` (the
-artifact contradicts the project → remade), `behind` (only the
+`assets.classify` is the single rule, with three states: `stale` (ASTRA
+finds the record missing or stale, or the files were last committed by
+something other than the result's own run → remade), `behind` (only the
 environment moved → reported, left alone unless `--refresh`), `current`.
 `Verdict.calls_for_a_remake` is the only place a state becomes an action.
-Check mode and the real run differ by one input value, never by logic.
-A committed hand edit of a result is detected by git history
-(`dataset.last_writer` vs. `materialize.datalad_run_subject`), not
-rehashing, and classifies `stale`. Editing source code does not
-invalidate outputs unless the file is a declared ASTRA input — by
-decision; don't add heuristics.
+The driver asks once before a run; a task downstream of one that may be
+remade asks again in the worker once its upstreams have landed, which is
+how a byte-identical rebuild stops the cascade. A committed hand edit of
+a result is detected by git history (`dataset.last_writer` vs.
+`materialize.datalad_run_subject`) and classifies `stale`. Editing source
+code does not invalidate outputs unless the file is a declared ASTRA
+input — by decision; don't add heuristics.
 
 ### Execution (`plan.py` → `materialize.py` → `worker.py`)
 
-`plan.build` validates with ASTRA, then maps resolved outputs onto a task
-graph. One output is exactly one file,
-`results/<universe>/<output_id>.<format>`, with a sidecar manifest
-`.<output_id>.manifest.json`; ids carry no dots. `materialize` is the
+`plan.build` asks `astra.api.plan` and carries each planned result across
+as a picklable `Task`, keyed by its address (`fit#baseline`, `fit` for an
+output built once, `stage.fit#u1` for a driven declared analysis,
+`stage/fit#v1` for a result that belongs to one). Paths are measured from
+the project root, which may sit below the repository's top. A result is
+exactly one file at the place ASTRA gives it
+(`results/<universe>/<name>.<format>`), its record at
+`.astra/records/<universe>/<name>.json`; the recipe runs in its own
+analysis's folder. Results of an analysis declared with a `commit` are
+refused, not built. `materialize` is the
 driver: refuses a dirty tree, converges the environment, submits tasks to
 a **borrowed** Dask cluster (dependency order comes from futures as
 arguments), and commits each result serially with a datalad-compatible
@@ -211,8 +234,8 @@ cannot (manifests, engine status, the paper cache). Server state lives in
 | A scaffolded file's content | `engine/templates/files/*.tmpl` | `test_templates.py` |
 | What gets converged | `engine/project.py` | `test_project.py` |
 | How bytes are stored | `engine/dataset.py`, `gitattributes.tmpl` | `test_dataset.py` (real annex) |
-| When an output is remade | `engine/assets.py` | `test_assets.py` |
-| How the spec becomes a graph | `engine/plan.py` (ask `astra.resolve`) | `test_plan.py` — lc's additions only, not spec semantics |
+| When an output is remade | `engine/assets.py` (ask `astra.api.check`) | `test_assets.py` |
+| How the spec becomes a graph | `engine/plan.py` (ask `astra.api.plan`) | `test_plan.py` — lc's additions only, not spec semantics; `test_composition.py` runs 0.1's shapes end to end |
 | How a recipe runs / what a run commits | `engine/worker.py` / `engine/materialize.py` | `test_worker.py`, `test_materialize.py` |
 | What a sandboxed command may touch | `sandbox/policy.py` | `test_sandbox_policy.py`, `test_sandbox_enforcement.py` |
 | A denial message | `sandbox/denial.py` — remedies must work today | `test_sandbox_denial.py` |

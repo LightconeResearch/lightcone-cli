@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import http.cookiejar
+import io
 import json
 import os
 import signal
@@ -24,7 +25,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
 import pytest
-from astra.papers.cache import PaperCache
+from astra.evidence import papers
+from astra.records import Record, RecordedInput, Runner
 
 from lightcone.engine import assets
 from lightcone.engine import serve as engine
@@ -32,6 +34,41 @@ from lightcone.engine.project import ProjectError
 
 REQUIRED_ENV = "LC_UI_TESTS_REQUIRED"
 _BUNDLE = engine.BUNDLE
+
+SPEC = 'spec_version: "0.1.0"\nlabel: demo\n'
+
+MANIFEST = assets.Manifest(
+    recipe="python fit.py",
+    decisions={},
+    git_remote="",
+    uv_version="0.7.0",
+    hermeticity={},
+    image=None,
+)
+
+
+def _record(address: str) -> Record:
+    return Record(
+        address=address,
+        content_hash="sha256:x",
+        size=2,
+        commit="abc123",
+        environment="urn:lightcone:env:sha256:e",
+        runner=Runner("lightcone-cli", "0.5.0"),
+        inputs=(RecordedInput("catalog", "sha256:c", 4),),
+        started="2026-10-31T08:59:00Z",
+        finished="2026-10-31T09:00:00Z",
+    )
+
+
+RUN = {
+    "finishedAt": "2026-10-31T09:00:00Z",
+    "gitRevision": "abc123",
+    "recipe": "python fit.py",
+    "environment": "urn:lightcone:env:sha256:e",
+    "cliVersion": "0.5.0",
+    "inputVersions": {"catalog": "sha256:c"},
+}
 
 
 @pytest.fixture
@@ -54,8 +91,20 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
-    (root / "astra.yaml").write_text("name: demo\n")
+    (root / "astra.yaml").write_text(SPEC)
     return root
+
+
+def _recorded(project: Path, path: str, address: str) -> None:
+    """Write the record and the manifest a run of lc leaves for the result at *path*."""
+    (project / path).parent.mkdir(parents=True, exist_ok=True)
+    (project / path).write_text("{}")
+    ((record, manifest),) = (
+        pair for pair in assets.sidecars(path) if pair[0].endswith(f"/{address.split('#')[0]}.json")
+    )
+    (project / record).parent.mkdir(parents=True, exist_ok=True)
+    (project / record).write_text(json.dumps(_record(address).to_json()))
+    assets.write(project / manifest, MANIFEST)
 
 
 def _request(
@@ -134,7 +183,7 @@ def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
     Each request names the first server's host, as the open page's would."""
     other = tmp_path / "other"
     other.mkdir()
-    (other / "astra.yaml").write_text("name: other\n")
+    (other / "astra.yaml").write_text(SPEC)
     first = engine.serve(project)
     with urllib.request.urlopen(first.url) as page:  # the token logs the page in
         cookie = next(
@@ -159,78 +208,92 @@ def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
 
 
 @pytest.fixture
-def papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PaperCache:
-    """astra's paper cache, where the server's $HOME puts it. The project is
-    under that $HOME too, as a project usually is — which is where jupyter
-    starts abbreviating paths to `~`."""
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The project is under the server's $HOME, as a project usually is —
+    which is where jupyter starts abbreviating paths to `~`."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    return PaperCache(tmp_path / ".cache" / "astra" / "papers")
 
 
 @pytest.fixture
-def served(state: Path, project: Path, papers: PaperCache) -> tuple[str, str]:
+def served(state: Path, project: Path, home: None) -> tuple[str, str]:
     """The server's root URL and its token."""
     url = urlsplit(engine.serve(project).url)
     (token,) = parse_qs(url.query)["token"]
     return f"{url.scheme}://{url.netloc}", token
 
 
-def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project: Path) -> None:
-    """Read by lc's own manifest reader, so the page parses no lc format and
-    the Contents API never has to serve a dotfile."""
+def test_a_results_run_comes_from_its_record_and_manifest(
+    served: tuple[str, str], project: Path
+) -> None:
+    """Read by the server, so the page parses neither format and the
+    Contents API never has to serve a dotfile."""
     base, token = served
-    output = project / "results" / "baseline" / "best_fit.json"
-    output.parent.mkdir(parents=True)
-    output.write_text("{}")
-    manifest = assets.Manifest(
-        output_id="best_fit",
-        universe_id="baseline",
-        recipe="python fit.py",
-        definition_version="sha256:d",
-        env_version="sha256:e",
-        data_version="sha256:x",
-        decisions={},
-        input_versions={"catalog": "sha256:c"},
-        git_sha="abc123",
-        git_remote="",
-        lc_version="0.5.0",
-        hermeticity={},
-        finished_at="2026-10-31T09:00:00.000Z",
-    )
-    assets.write(assets.manifest_path(output), manifest)
+    _recorded(project, "results/baseline/best_fit.json", "best_fit#baseline")
     api = f"{base}/lightcone/api/run?token={token}&path="
     status, body = _request(f"{api}results/baseline/best_fit.json")
     assert status == 200
-    assert json.loads(body)["run"] == {
-        "finishedAt": "2026-10-31T09:00:00.000Z",
-        "gitRevision": "abc123",
-        "recipe": "python fit.py",
-        "environment": "sha256:e",
-        "cliVersion": "0.5.0",
-        "inputVersions": {"catalog": "sha256:c"},
-    }
-    (output.parent / "unrecorded.json").write_text("{}")
+    assert json.loads(body)["run"] == RUN
+    (project / "results" / "baseline" / "unrecorded.json").write_text("{}")
     assert json.loads(_request(f"{api}results/baseline/unrecorded.json")[1]) == {"run": None}
     # Not a file in the project: what the Contents API would refuse is refused.
     for path in ("results/baseline/absent.json", "../outside.json", "", "results/baseline"):
         assert _request(f"{api}{path}")[0] in (400, 404), path
-    # The manifest stays a dotfile to everything else.
-    hidden = f"{base}/api/contents/results/baseline/.best_fit.manifest.json?token={token}"
-    assert _request(hidden)[0] == 404
+    # The record and the manifest stay dotfiles to everything else.
+    for hidden in (
+        ".astra/records/baseline/best_fit.json", "results/baseline/.best_fit.manifest.json",
+    ):
+        assert _request(f"{base}/api/contents/{hidden}?token={token}")[0] == 404, hidden
+
+
+@pytest.mark.parametrize(
+    ("path", "address"),
+    [
+        ("results/best_fit.json", "best_fit"),
+        ("results/baseline/stage.fit.tar.gz", "stage.fit#baseline"),
+        ("stage/results/v/fit.json", "fit#v"),
+    ],
+)
+def test_a_run_is_found_wherever_astra_places_the_result(
+    served: tuple[str, str], project: Path, path: str, address: str
+) -> None:
+    """Built once, named through a declared analysis with a dotted format,
+    or belonging to a declared analysis: the file's path alone finds it."""
+    base, token = served
+    _recorded(project, path, address)
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path={path}")
+    assert json.loads(body)["run"] == RUN
+
+
+def test_a_record_without_a_manifest_is_still_a_run(
+    served: tuple[str, str], project: Path
+) -> None:
+    """The record is what says a run happened; the manifest only adds to it."""
+    base, token = served
+    _recorded(project, "results/best_fit.json", "best_fit")
+    (project / "results" / ".best_fit.manifest.json").unlink()
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
+    assert json.loads(body)["run"] == {**RUN, "recipe": ""}
+    (project / ".astra" / "records" / "best_fit.json").write_text("{}")
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
+    assert json.loads(body) == {"run": None}
 
 
 def test_an_outputs_state_is_the_engines(
-    state: Path, papers: PaperCache, analysis: Callable[..., Path]
+    state: Path, home: None, analysis: Callable[..., Path]
 ) -> None:
     """The page shows what `lc status` would print, from the same call —
     it holds no classification of its own."""
     from lightcone.engine import materialize
 
-    root = analysis(
-        'version: "0.0.13"\nname: analysis\ninputs: []\ndecisions: {}\n'
-        "outputs:\n  - id: fit\n    type: metric\n    format: json\n"
-        "    recipe:\n      command: 'echo 1 > {output}'\n"
-    )
+    root = analysis("""\
+        spec_version: "0.1.0"
+        outputs:
+          fit:
+            type: metric
+            format: json
+            recipe:
+              command: echo 1 > '{output}'
+        """)
     url = urlsplit(engine.serve(root).url)
     status, body = _request(f"{url.scheme}://{url.netloc}/lightcone/api/status?{url.query}")
     assert status == 200
@@ -239,7 +302,7 @@ def test_an_outputs_state_is_the_engines(
         "outputs": {o.output: {"state": o.status, "detail": o.why} for o in report.outputs},
         "warnings": report.warnings,
     }
-    assert json.loads(body)["outputs"]["baseline/fit"]["state"] == "stale"
+    assert json.loads(body)["outputs"]["fit"]["state"] == "stale"
 
 
 def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) -> None:
@@ -250,16 +313,25 @@ def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) 
 def test_a_run_record_beyond_a_symlink_is_not_read(
     served: tuple[str, str], project: Path, tmp_path: Path
 ) -> None:
-    """The contents manager follows symlinks, so the sidecar the route would
-    read is checked where it really is."""
+    """The contents manager follows symlinks, so the sidecars the route
+    would read are checked where they really are."""
     base, token = served
+    api = f"{base}/lightcone/api/run?token={token}&path=results/fit.json"
+    _recorded(project, "results/fit.json", "fit")
+    assert json.loads(_request(api)[1])["run"] == RUN
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (elsewhere / "fit.json").write_text("{}")
-    (elsewhere / ".fit.manifest.json").write_text("{}")
-    (project / "results").symlink_to(elsewhere)
-    status, _ = _request(f"{base}/lightcone/api/run?token={token}&path=results/fit.json")
-    assert status == 404
+    manifest = project / "results" / ".fit.manifest.json"
+    manifest.rename(elsewhere / manifest.name)
+    manifest.symlink_to(elsewhere / manifest.name)
+    assert json.loads(_request(api)[1])["run"] == {**RUN, "recipe": ""}
+    (project / ".astra").rename(elsewhere / ".astra")
+    (project / ".astra").symlink_to(elsewhere / ".astra")
+    assert json.loads(_request(api)[1]) == {"run": None}
+    # And the result itself, as for every file the server sends.
+    (project / "results").rename(elsewhere / "results")
+    (project / "results").symlink_to(elsewhere / "results")
+    assert _request(api)[0] == 404
 
 
 def test_the_token_reads_and_runs_nothing(served: tuple[str, str], project: Path) -> None:
@@ -275,7 +347,7 @@ def test_the_token_reads_and_runs_nothing(served: tuple[str, str], project: Path
         ("PUT", "/api/config/notebook"),
     ):
         assert _request(f"{base}{route}", method, token)[0] == 404, route
-    overwrite = {"type": "file", "format": "text", "content": "name: overwritten\n"}
+    overwrite = {"type": "file", "format": "text", "content": "label: overwritten\n"}
     for method, route, body in (
         ("PUT", "/api/contents/astra.yaml", overwrite),
         ("PUT", "/api/contents/new.yaml", overwrite),
@@ -330,26 +402,26 @@ def test_reading_a_notebook_leaves_jupyters_data_directory_alone(
     assert not list(data.glob("*"))
 
 
-def test_a_cited_paper_comes_from_astras_cache(
-    served: tuple[str, str], papers: PaperCache
-) -> None:
+def test_a_cited_paper_comes_from_astras_cache(served: tuple[str, str]) -> None:
+    from pypdf import PdfWriter
+
     base, token = served
-    papers.add("10.1093/MNRAS/stv1198", b"%PDF-1.4 gd1", title="Gaia", authors=["A. B.", "C. D."])
-    # The page sends DOIs as the SDK normalizes them; astra stored this one as written.
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(pdf := io.BytesIO())
+    papers.add("10.1093/MNRAS/stv1198", None, data=pdf.getvalue())
+    # The page sends DOIs as the SDK normalizes them; this one was added as written.
     query = f"doi=10.1093/mnras/stv1198&doi=10.1/absent&token={token}"
     status, body = _request(f"{base}/lightcone/api/papers?{query}")
     assert status == 200
     found = json.loads(body)["papers"]
     assert found.keys() == {"10.1093/mnras/stv1198"}
-    paper = found["10.1093/mnras/stv1198"]
-    assert (paper["title"], paper["authors"]) == ("Gaia", "A. B., C. D.")
-    # Served by Jupyter's own file handler: ranges for pdf.js.
-    request = urllib.request.Request(
-        f"{base}{paper['pdfUrl']}?token={token}", headers={"Range": "bytes=0-3"}
-    )
-    with urllib.request.urlopen(request) as pdf:
-        assert (pdf.status, pdf.headers["Content-Type"]) == (206, "application/pdf")
-        assert pdf.read() == b"%PDF"
+    with urllib.request.urlopen(
+        f"{base}{found['10.1093/mnras/stv1198']['pdfUrl']}&token={token}"
+    ) as response:
+        assert (response.status, response.headers["Content-Type"]) == (200, "application/pdf")
+        assert response.read() == pdf.getvalue()
+    assert _request(f"{base}/lightcone/api/paper?doi=10.1/absent&token={token}")[0] == 404
 
 
 def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
@@ -359,9 +431,9 @@ def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
     routes = (
         "/lightcone",
         "/lightcone/api/papers?doi=10.1/x",
+        "/lightcone/api/paper?doi=10.1/x",
         "/lightcone/api/run?path=x",
         "/lightcone/api/status",
-        "/lightcone/papers/x/paper.pdf",
     )
     for route in routes:
         assert _request(f"{base}{route}")[0] in (302, 403), route
@@ -392,7 +464,7 @@ def test_a_change_on_disk_is_pushed_to_the_page(state: Path, project: Path) -> N
         )
         await socket.write_message(json.dumps({"type": "client_opened", "path": "astra.yaml"}))
         await asyncio.sleep(0.5)  # the watcher starts on subscription
-        (project / "astra.yaml").write_text("name: edited\n")
+        (project / "astra.yaml").write_text(SPEC.replace("demo", "edited"))
         message = await asyncio.wait_for(socket.read_message(), timeout=10)
         socket.close()
         assert isinstance(message, str)
@@ -560,15 +632,21 @@ def test_metadata_hash_requests_never_read_artifact_bytes(project: Path) -> None
 
     from lightcone.app.files import ProjectContents
 
-    artifact = project / "large.json"
+    artifact = project / "results" / "large.json"
+    artifact.parent.mkdir()
     with artifact.open("wb") as file:
         file.truncate(3 * 1024**3)
     manager = ProjectContents(root_dir=str(project))
     with patch.object(manager, "open", side_effect=AssertionError("artifact was read")):
-        model = asyncio.run(manager.get("large.json", content=False, require_hash=True))
+        model = asyncio.run(manager.get("results/large.json", content=False, require_hash=True))
     assert model["size"] == 3 * 1024**3
     assert model["hash"] is None
-    assert model["watchPaths"] == ["large.json", ".large.manifest.json"]
+    assert model["watchPaths"] == [
+        "results/large.json", ".astra/records/large.json", "results/.large.manifest.json",
+    ]
+    # A file at no result's place has no run to watch for.
+    (project / "notes.json").write_text("{}")
+    assert asyncio.run(manager.get("notes.json", content=False))["watchPaths"] == ["notes.json"]
 
 
 def test_confined_open_refuses_a_directory_swap(project: Path, tmp_path: Path) -> None:
@@ -616,16 +694,18 @@ def test_late_run_record_is_announced_without_changing_the_artifact(
 ) -> None:
     from tornado.websocket import websocket_connect
 
-    artifact = project / "metric.json"
+    artifact = project / "results" / "metric.json"
+    artifact.parent.mkdir()
     artifact.write_text("{}")
+    (project / ".astra" / "records").mkdir(parents=True)
     before = artifact.stat()
     url = urlsplit(engine.serve(project).url)
     base = f"{url.scheme}://{url.netloc}"
-    _, body = _request(f"{base}/api/contents/metric.json?{url.query}")
-    watch_path = json.loads(body)["watchPaths"][1]
-    assert watch_path == assets.manifest_path(artifact).relative_to(project).as_posix()
+    _, body = _request(f"{base}/api/contents/results/metric.json?{url.query}")
+    watch_paths = json.loads(body)["watchPaths"][1:]
+    assert watch_paths == [".astra/records/metric.json", "results/.metric.manifest.json"]
 
-    async def write_run() -> dict[str, object]:
+    async def write_run(watch_path: str) -> dict[str, object]:
         socket = await websocket_connect(f"ws://{url.netloc}/api/live-content/ws?{url.query}")
         try:
             await socket.write_message(json.dumps({"type": "client_opened", "path": watch_path}))
@@ -636,26 +716,30 @@ def test_late_run_record_is_announced_without_changing_the_artifact(
         finally:
             socket.close()
 
-    update = asyncio.run(write_run())
-    assert update == {"type": "server_update", "path": watch_path, "hash": None}
+    for watch_path in watch_paths:
+        update = asyncio.run(write_run(watch_path))
+        assert update == {"type": "server_update", "path": watch_path, "hash": None}
+        assert _request(f"{base}/api/contents/{watch_path}?{url.query}")[0] == 404
     assert artifact.stat().st_mtime_ns == before.st_mtime_ns
-    assert _request(f"{base}/api/contents/{watch_path}?{url.query}")[0] == 404
 
 
 def test_symlink_metadata_describes_the_target(project: Path) -> None:
     from lightcone.app.files import ProjectContents
 
-    target = project / "target.json"
+    target = project / "results" / "target.json"
+    target.parent.mkdir()
     with target.open("wb") as file:
         file.truncate(2_500_000)
-    (project / "alias.json").symlink_to(target)
+    (project / "results" / "alias.json").symlink_to(target)
     manager = ProjectContents(root_dir=str(project))
-    before = asyncio.run(manager.get("alias.json", content=False))
-    assert before["path"] == "alias.json"
+    before = asyncio.run(manager.get("results/alias.json", content=False))
+    assert before["path"] == "results/alias.json"
     assert before["size"] == 2_500_000
-    assert before["watchPaths"] == ["target.json", ".alias.manifest.json"]
+    assert before["watchPaths"] == [
+        "results/target.json", ".astra/records/alias.json", "results/.alias.manifest.json",
+    ]
     os.utime(target, (1_700_000_000, 1_700_000_000))
-    after = asyncio.run(manager.get("alias.json", content=False))
+    after = asyncio.run(manager.get("results/alias.json", content=False))
     assert after["last_modified"] != before["last_modified"]
     assert after["last_modified"].timestamp() == 1_700_000_000
 

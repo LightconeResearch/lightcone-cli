@@ -47,37 +47,41 @@ _FLOOR = {
 }
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
+spec_version: "0.1.0"
+label: analysis
 description: A two-step analysis for the crate smoke test.
 
 inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
+  catalog:
+    path: data/catalog.fits
+
+decisions:
+  method:
+    label: Method
+    options:
+      alpha: {label: alpha}
+      beta: {label: beta}
 
 outputs:
-  - id: first
+  first:
     type: metric
     format: txt
+    inputs: [catalog]
     decisions: [method]
     recipe:
       command: echo {decisions.method} > {output}
 
-  - id: second
+  second:
     type: report
     format: txt
     inputs: [first]
     recipe:
       command: cat {inputs.first} > {output}
 
-decisions:
-  method:
-    label: Method
-    default: alpha
-    options:
-      alpha: {label: alpha}
-      beta: {label: beta}
+universes:
+  baseline:
+    decisions:
+      method: alpha
 """
 
 
@@ -117,7 +121,6 @@ def test_a_materialized_crate_validates_against_the_provenance_profile(
     root = analysis(
         _SPEC,
         files={"data/catalog.fits": "stars\n", "README.md": "# analysis\n\nA demo.\n"},
-        universes={"baseline": "id: baseline\ndecisions:\n  method: alpha\n"},
     )
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
