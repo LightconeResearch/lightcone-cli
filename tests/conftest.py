@@ -117,7 +117,7 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             artifact = "uv.lock" if argv[1] == "lock" else ".venv"
             return MagicMock(returncode=0 if (project / artifact).exists() else 1)
         if argv[:2] == ["uv", "lock"]:
-            # Only has to exist and be non-empty — layer 1 parses no lock.
+            # Only has to exist and be non-empty — convergence parses no lock.
             (project / "uv.lock").write_text("version = 1\n")
         elif argv[:2] == ["uv", "sync"]:
             (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
