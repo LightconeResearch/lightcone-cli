@@ -6,6 +6,7 @@ forwarding. Sandbox enforcement is tested in `test_sandbox_*`.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,17 +22,33 @@ from lightcone.engine.project import (
 )
 
 SPEC = """\
-title: Test
+spec_version: "0.1.0"
 inputs:
-  - id: local
-    type: data
-    source: data/local.csv
-  - id: remote
-    type: data
-    source: https://example.org/nope.csv
+  local:
+    path: data/local.csv
+  absent:
+    path: data/absent.csv
 outputs:
-  - id: best_fit
+  best_fit:
     type: metric
+    format: json
+    inputs: [local]
+    recipe:
+      command: python src/fit.py '{inputs.local}' '{output}'
+"""
+
+STAGE = """\
+spec_version: "0.1.0"
+inputs:
+  sub:
+    path: data/stage.csv
+outputs:
+  cleaned:
+    type: data
+    format: csv
+    inputs: [sub]
+    recipe:
+      command: cp '{inputs.sub}' '{output}'
 """
 
 
@@ -44,6 +61,8 @@ def project(tmp_path: Path) -> Path:
     (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
     (root / "uv.lock").write_text("version = 1\n")
     (root / ".venv").mkdir()
+    # ASTRA reads an analysis in its repository; nothing has to be committed.
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
     return root
 
 
@@ -128,54 +147,59 @@ def test_a_declared_project_still_needs_the_lock(project: Path) -> None:
     assert "missing uv.lock" in str(raised.value)
 
 
-def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:
-    (project / "astra.yaml").unlink()
-    assert engine_run.read_spec(project) == {}
-    assert engine_run.input_paths(project, {}) == []
-
-
 # ---- declared inputs ------------------------------------------------------
 
 
 def test_declared_file_inputs_become_read_paths(project: Path) -> None:
-    spec = engine_run.read_spec(project)
-    assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
-def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
+def test_an_input_of_a_declared_analysis_is_a_read_path_too(project: Path) -> None:
     """A denial the researcher cannot act on is worse than the access it
     withheld: the file *is* declared, just not at the top of the tree."""
-    (project / "data" / "stage.csv").write_text("x\n")
-    spec = {
-        "inputs": [{"id": "local", "source": "data/local.csv"}],
-        "analyses": {"stage": {"inputs": [{"id": "sub", "source": "data/stage.csv"}]}},
-    }
-    assert engine_run.input_paths(project, spec) == [
+    (project / "stage" / "data").mkdir(parents=True)
+    (project / "stage" / "data" / "stage.csv").write_text("x\n")
+    (project / "stage" / "astra.yaml").write_text(STAGE)
+    (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage:\n    path: stage\n")
+    assert engine_run.input_paths(project) == [
         (project / "data" / "local.csv").resolve(),
-        (project / "data" / "stage.csv").resolve(),
+        (project / "stage" / "data" / "stage.csv").resolve(),
     ]
 
 
-def test_a_source_that_is_not_a_path_is_left_alone(project: Path) -> None:
-    """ASTRA's `source` is free-form — a URI, a dotted name, a path — so
-    "is this a path" is answered by whether it resolves to something that
-    exists, not by parsing."""
-    spec = engine_run.read_spec(project)
-    assert not any("example.org" in str(p) for p in engine_run.input_paths(project, spec))
+def test_a_declared_input_that_is_not_there_is_left_out(project: Path) -> None:
+    """The read set names files; a declaration whose file is absent has
+    nothing to grant."""
+    assert not any("absent" in str(p) for p in engine_run.input_paths(project))
 
 
-def test_a_spec_with_no_inputs_is_fine(tmp_path: Path) -> None:
+def test_a_missing_spec_declares_no_inputs(project: Path) -> None:
+    (project / "astra.yaml").unlink()
+    assert engine_run.input_paths(project) == []
+
+
+def test_a_project_outside_a_repository_declares_no_inputs(tmp_path: Path) -> None:
+    """Best-effort: where ASTRA cannot read the analysis, the probe still
+    runs, with nothing declared."""
     root = tmp_path / "bare"
-    root.mkdir()
-    (root / "astra.yaml").write_text("title: Bare\n")
-    assert engine_run.input_paths(root, engine_run.read_spec(root)) == []
+    (root / "data").mkdir(parents=True)
+    (root / "data" / "local.csv").write_text("a,b\n")
+    (root / "astra.yaml").write_text(SPEC)
+    assert engine_run.input_paths(root) == []
 
 
-def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) -> None:
-    """A probe exists to debug a project, and a spec whose sub-analysis
-    references are stale is exactly when someone reaches for one."""
-    (project / "astra.yaml").write_text(SPEC + "analyses:\n  - id: sub\n    path: ../gone\n")
-    assert engine_run.read_spec(project)["inputs"]
+def test_a_spec_with_no_inputs_is_fine(project: Path) -> None:
+    (project / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    assert engine_run.input_paths(project) == []
+
+
+def test_an_unreadable_declared_analysis_keeps_the_readable_inputs(project: Path) -> None:
+    """A probe exists to debug a project, and a spec whose declared
+    analysis is broken is exactly when someone reaches for one."""
+    (project / "stage").mkdir()
+    (project / "stage" / "astra.yaml").write_text("inputs: [\n")
+    (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage:\n    path: stage\n")
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
 # ---- the uv hop -----------------------------------------------------------

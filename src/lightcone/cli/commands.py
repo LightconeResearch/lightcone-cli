@@ -323,7 +323,7 @@ def materialize(
     Execution requires a cluster name or ID as its first positional argument.
     With --check, all positional arguments are targets and no cluster is used.
 
-    Each output is committed together with its manifest, in a commit that
+    Each output is committed together with its record, in a commit that
     records the command that produced it. The git tree needs to be clean
     before the run can start.
 
@@ -333,8 +333,8 @@ def materialize(
     comes out byte-identical stops there instead of cascading.
 
     An output made under an earlier environment is reported as behind and
-    left alone: it is still what the analysis asks for, and the manifest
-    records the environment and the commit that produced it. Pass
+    left alone: it is still what the analysis asks for, and its record
+    names the environment and the commit that produced it. Pass
     --refresh to remake those too.
     """
     from lightcone.engine import container as engine_container

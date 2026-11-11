@@ -220,7 +220,7 @@ def test_run_passes_the_command_through_untouched(
 
 
 @pytest.mark.parametrize("argv", [["run"], ["materialize"], ["run", "bad:name", "true"],
-                                 ["materialize", "baseline/first"]])
+                                 ["materialize", "first#baseline"]])
 def test_execution_requires_an_allocation_identity_before_project_discovery(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str],
 ) -> None:
@@ -370,11 +370,11 @@ def test_targets_reach_the_engine(
 ) -> None:
     seen = _stub(monkeypatch)
 
-    result = runner.invoke(main, ["materialize", cluster, "baseline/fit", "report"])
+    result = runner.invoke(main, ["materialize", cluster, "fit#baseline", "report"])
     assert result.exit_code == 0, result.output
 
     assert seen == [
-        ("materialize", (["baseline/fit", "report"], {"refresh": False, "cluster_id": cluster}))
+        ("materialize", (["fit#baseline", "report"], {"refresh": False, "cluster_id": cluster}))
     ]
 
 
@@ -427,12 +427,12 @@ def test_check_exits_nonzero_when_something_would_run(
     answer off the exit status."""
     from lightcone.engine.materialize import MaterializeReport
 
-    _stub(monkeypatch, check=MaterializeReport(planned={"baseline/fit": "no manifest"}))
+    _stub(monkeypatch, check=MaterializeReport(planned={"fit#baseline": "no record"}))
 
     result = runner.invoke(main, ["materialize", "--check"])
 
     assert result.exit_code == 1
-    assert "would run baseline/fit" in result.output
+    assert "would run fit#baseline" in result.output
 
 
 def test_check_treats_all_positionals_as_targets_without_querying_compute(
@@ -446,9 +446,9 @@ def test_check_treats_all_positionals_as_targets_without_querying_compute(
     monkeypatch.setattr(compute, "connect", unexpected)
     monkeypatch.setattr(compute, "validate_id", unexpected)
     seen = _stub(monkeypatch)
-    result = runner.invoke(main, ["materialize", "--check", "baseline/first"])
+    result = runner.invoke(main, ["materialize", "--check", "first#baseline"])
     assert result.exit_code == 0
-    assert seen == [("check", (["baseline/first"], {"refresh": False}))]
+    assert seen == [("check", (["first#baseline"], {"refresh": False}))]
 
 
 def test_check_explains_that_a_cluster_id_is_not_a_target(runner: CliRunner) -> None:
@@ -488,14 +488,14 @@ def test_a_failure_exits_nonzero(
 
     _stub(
         monkeypatch,
-        materialize=MaterializeReport(failed=["baseline/fit"], blocked=["baseline/report"]),
+        materialize=MaterializeReport(failed=["fit#baseline"], blocked=["report#baseline"]),
     )
 
     result = runner.invoke(main, ["materialize", CLUSTER_ID])
 
     assert result.exit_code == 1
-    assert "failed baseline/fit" in result.output
-    assert "blocked baseline/report" in result.output
+    assert "failed fit#baseline" in result.output
+    assert "blocked report#baseline" in result.output
 
 
 def test_engine_prose_is_rendered_as_written(
@@ -521,14 +521,14 @@ def test_the_json_report_is_machine_readable(
 ) -> None:
     from lightcone.engine.materialize import MaterializeReport
 
-    _stub(monkeypatch, materialize=MaterializeReport(made=["baseline/fit"]))
+    _stub(monkeypatch, materialize=MaterializeReport(made=["fit#baseline"]))
 
     result = runner.invoke(main, ["materialize", CLUSTER_ID, "--json"])
 
     assert json.loads(result.output) == {
         "ok": True,
         "up_to_date": False,
-        "made": ["baseline/fit"],
+        "made": ["fit#baseline"],
         "current": [],
         "behind": {},
         "failed": [],
@@ -575,15 +575,15 @@ def _report() -> object:
 
     return StatusReport(
         outputs=[
-            OutputStatus("baseline/first", "current", "", "3f2a1c8ffff", "sha256:one"),
+            OutputStatus("first#baseline", "current", "", "3f2a1c8ffff", "sha256:one"),
             OutputStatus(
-                "baseline/second",
+                "second#baseline",
                 "behind",
                 "made under an earlier environment",
                 "3f2a1c8ffff",
                 "sha256:two",
             ),
-            OutputStatus("baseline/third", "stale", "the input `first` changed", "", ""),
+            OutputStatus("third#baseline", "stale", "the input `first` changed", "", ""),
         ]
     )
 
@@ -596,7 +596,7 @@ def test_status_shows_each_output_its_state_and_its_commit(
     result = runner.invoke(main, ["status"])
 
     assert result.exit_code == 0
-    for fragment in ("baseline/first", "current", "behind", "stale", "3f2a1c8"):
+    for fragment in ("first#baseline", "current", "behind", "stale", "3f2a1c8"):
         assert fragment in result.output
 
 
@@ -667,13 +667,13 @@ def test_status_renders_a_foreign_write_as_a_stale_output(
 
     message = (
         'last changed by 8d31f00 ("tweak colors", Ada, 2026-08-19) rather '
-        "than its run record, so the manifest no longer describes these "
+        "than its own run, so the record no longer describes these "
         "bytes — the next run remakes it; inspect first with `git show 8d31f00`"
     )
     report = StatusReport(
         outputs=[
             OutputStatus(
-                "baseline/first",
+                "first#baseline",
                 "stale",
                 message,
                 "3f2a1c8ffff",
@@ -717,7 +717,7 @@ def test_status_json_is_machine_readable(
         "counts": {"current": 1, "behind": 1, "stale": 1},
         "outputs": [
             {
-                "output": "baseline/first",
+                "output": "first#baseline",
                 "status": "current",
                 "why": "",
                 "git_sha": "3f2a1c8ffff",
@@ -725,7 +725,7 @@ def test_status_json_is_machine_readable(
                 "foreign_write": "",
             },
             {
-                "output": "baseline/second",
+                "output": "second#baseline",
                 "status": "behind",
                 "why": "made under an earlier environment",
                 "git_sha": "3f2a1c8ffff",
@@ -733,7 +733,7 @@ def test_status_json_is_machine_readable(
                 "foreign_write": "",
             },
             {
-                "output": "baseline/third",
+                "output": "third#baseline",
                 "status": "stale",
                 "why": "the input `first` changed",
                 "git_sha": "",

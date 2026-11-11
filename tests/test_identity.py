@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine.identity import LockScan, definition_version, env_version, scan_lock
+from lightcone.engine.identity import LockScan, env_version, environment, scan_lock
 from lightcone.engine.project import ProjectError
 
 _LOCK = """version = 1
@@ -168,48 +168,41 @@ def test_fields_cannot_shift_into_one_another(root: Path) -> None:
     assert env_version(root) != shifted_left
 
 
-# ---- definition_version ----------------------------------------------------
+# ---- the environment a record names -----------------------------------------
 
 
-def test_definition_version_follows_all_three_terms() -> None:
-    recipe, decisions = "python fit.py {output}", {"method": "mcmc"}
-    original = definition_version(recipe=recipe, decisions=decisions, fmt="csv")
-
-    assert definition_version(recipe=recipe + " -v", decisions=decisions, fmt="csv") != original
-    assert (
-        definition_version(recipe=recipe, decisions={"method": "nested"}, fmt="csv") != original
-    )
-    assert definition_version(recipe=recipe, decisions=decisions, fmt="parquet") != original
-
-
-def test_the_format_moves_it_even_when_the_recipe_never_names_the_output() -> None:
-    """A recipe need not use `{output}` at all, so the format cannot be
-    left to arrive through the rendered path. One that did would keep its
-    digest across a re-declared serialization — and the sidecar, named from
-    the id alone, does not move either, so the manifest would go on
-    describing an output at a path that no longer exists."""
-    fixed = "python fit.py --out results/baseline/fit.csv"
-    assert definition_version(recipe=fixed, decisions={}, fmt="csv") != definition_version(
-        recipe=fixed, decisions={}, fmt="parquet"
-    )
-
-
-def test_decision_order_does_not_matter() -> None:
-    """Decisions are a mapping, not a sequence — two spellings of the same
-    choices define the same output."""
-    a = definition_version(recipe="r", decisions={"x": "1", "y": "2"}, fmt="csv")
-    b = definition_version(recipe="r", decisions={"y": "2", "x": "1"}, fmt="csv")
-    assert a == b
-
-
-def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
-    """The load-bearing separation. `env_version` is recorded beside an
-    output and compared to say it is *behind*; folding it in here would
-    make one added dependency remake a project's every result."""
-    before = definition_version(recipe="r", decisions={}, fmt="csv")
+def test_a_record_names_the_environment_by_its_hash(root: Path) -> None:
+    """The IRI is `env_version` under lc's own prefix, so it moves exactly
+    when the environment does — which is what makes a result *behind*."""
+    assert environment(root) == f"urn:lightcone:env:{env_version(root)}"
+    before = environment(root)
     (root / ".python-version").write_text("3.12.9\n")
-    assert env_version(root)  # the environment did move
-    assert definition_version(recipe="r", decisions={}, fmt="csv") == before
+    assert environment(root) != before
+
+
+def test_the_iri_is_one_a_record_may_hold(root: Path) -> None:
+    """ASTRA's record schema is closed and its `iri` has a pattern: an
+    environment it refuses would leave every result lc makes `missing`."""
+    import json
+    import re
+    from importlib.resources import files
+
+    schema = json.loads(
+        (files("astra.schema") / "generated" / "provenance.schema.json").read_text()
+    )
+    pattern = schema["$defs"]["Environment"]["properties"]["iri"]["pattern"]
+    assert re.fullmatch(pattern, environment(root))
+
+
+def test_astra_check_is_told_the_environment_can_be_recreated(root: Path) -> None:
+    """The scheme is found through the entry point, the way `astra check`
+    finds it, and answers only for IRIs lc records."""
+    from astra import environments
+
+    answers = environments.answers(environment(root), environments.registered())
+    assert [(answer.scheme, answer.recreatable) for answer in answers] == [("lightcone", True)]
+    assert "uv.lock" in answers[0].holds
+    assert environments.answers("urn:example:env:1", environments.registered()) == ()
 
 
 # ---- the lock scan ---------------------------------------------------------

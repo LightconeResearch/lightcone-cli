@@ -12,17 +12,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from lightcone.engine import assets, container, identity, plan, worker
+from lightcone.engine import container, dataset, identity, plan, worker
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
-inputs: []
+spec_version: "0.1.0"
 outputs:
-  - id: visibility
+  visibility:
     type: metric
     format: txt
     recipe:
@@ -33,13 +31,11 @@ outputs:
 @pytest.fixture
 def project(analysis: Callable[..., Path]) -> tuple[Path, plan.Task, worker.RunContext]:
     root = analysis(_SPEC)
-    task = plan.build(root).tasks[("baseline", "visibility")]
+    task = plan.build(root).tasks["visibility"]
     context = worker.RunContext(
-        env_version=identity.env_version(root),
-        head=("0123456789abcdef", "https://example/analysis.git"),
-        versions=assets.Versions(),
+        environment=identity.environment(root),
+        commit=dataset.head(root)[0],
         runtime=container.runtime_for_run(root, build=False),
-        uv_version="0.0.0-test",
     )
     return root, task, context
 
@@ -54,45 +50,47 @@ def test_recipe_inherits_the_whole_mask_without_changing_the_worker_environment(
     monkeypatch.setattr(policy_module, "_gpu_device_paths", lambda: ())
     result = worker.execute(root, replace(task, resources={"gpus": requested}), {}, context)
     assert result.status == "ok", result.reason
-    assert task.output_path.read_text() == ("2,0" if requested else "")
+    assert (root / task.places[0].bytes).read_text() == ("2,0" if requested else "")
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "2,0"
 
 
 @pytest.mark.parametrize("mask", [None, ""])
-def test_missing_worker_gpu_mask_preserves_existing_output_and_manifest(
+def test_missing_worker_gpu_mask_preserves_existing_output_and_record(
     project: tuple[Path, plan.Task, worker.RunContext], monkeypatch: pytest.MonkeyPatch,
     mask: str | None,
 ) -> None:
     root, task, context = project
-    task.output_path.parent.mkdir(parents=True, exist_ok=True)
-    task.output_path.write_text("previous output")
-    task.manifest_path.write_text("previous manifest")
+    made, record = root / task.places[0].bytes, root / task.places[0].record
+    made.write_text("previous output")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("previous record")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     if mask is not None:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     with pytest.raises(ProjectError, match="nonempty CUDA_VISIBLE_DEVICES"):
         worker.execute(root, replace(task, resources={"gpus": 1}), {}, context)
-    assert task.output_path.read_text() == "previous output"
-    assert task.manifest_path.read_text() == "previous manifest"
+    assert made.read_text() == "previous output"
+    assert record.read_text() == "previous record"
 
 
 @pytest.mark.parametrize("runtime", ["docker", "podman"])
-def test_unsupported_gpu_container_preserves_existing_output_and_manifest(
+def test_unsupported_gpu_container_preserves_existing_output_and_record(
     project: tuple[Path, plan.Task, worker.RunContext], monkeypatch: pytest.MonkeyPatch,
     runtime: str,
 ) -> None:
     root, task, context = project
-    task.output_path.parent.mkdir(parents=True, exist_ok=True)
-    task.output_path.write_text("previous output")
-    task.manifest_path.write_text("previous manifest")
+    made, record = root / task.places[0].bytes, root / task.places[0].record
+    made.write_text("previous output")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("previous record")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
     context = replace(context, runtime=replace(
         context.runtime, mode="containerized", runtime=runtime,
     ))
     with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
         worker.execute(root, replace(task, resources={"gpus": 1}), {}, context)
-    assert task.output_path.read_text() == "previous output"
-    assert task.manifest_path.read_text() == "previous manifest"
+    assert made.read_text() == "previous output"
+    assert record.read_text() == "previous record"
 
 
 @pytest.mark.parametrize("use_gpus", [False, True])
@@ -189,7 +187,7 @@ def test_gpu_rerun_missing_mask_explains_how_to_select_local_devices(
     ))
     monkeypatch.chdir(root)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    assert worker.main(["baseline/visibility"]) == 2
+    assert worker.main(["visibility"]) == 2
     error = capsys.readouterr().err
     assert "CUDA_VISIBLE_DEVICES=0 datalad rerun" in error
     assert "Slurm sets it" in error

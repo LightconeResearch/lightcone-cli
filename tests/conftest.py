@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
+import tomllib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -69,6 +70,13 @@ def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def astra_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ASTRA's cache — file hashes, fetched commits, papers — out of
+    the developer's own, so no test reads what another run left there."""
+    monkeypatch.setenv("ASTRA_CACHE_DIR", str(tmp_path_factory.mktemp("astra-cache")))
+
+
+@pytest.fixture(autouse=True)
 def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Blind the suite to the host's machine-level uv configuration.
 
@@ -117,7 +125,7 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             artifact = "uv.lock" if argv[1] == "lock" else ".venv"
             return MagicMock(returncode=0 if (project / artifact).exists() else 1)
         if argv[:2] == ["uv", "lock"]:
-            # Only has to exist and be non-empty — layer 1 parses no lock.
+            # Only has to exist and be non-empty — convergence parses no lock.
             (project / "uv.lock").write_text("version = 1\n")
         elif argv[:2] == ["uv", "sync"]:
             (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
@@ -248,13 +256,9 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     and `uv sync` together cost milliseconds.
     """
 
-    def build(
-        spec: str,
-        files: dict[str, str] | None = None,
-        universes: dict[str, str] | None = None,
-    ) -> Path:
+    def build(spec: str, files: dict[str, str] | None = None) -> Path:
         root = tmp_path / "analysis"
-        for name in ("universes", "results", "data"):
+        for name in ("results", "data"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
         (root / "pyproject.toml").write_text(
@@ -265,8 +269,6 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
         (root / ".gitattributes").write_text(templates.read("gitattributes.tmpl"))
         (root / ".gitignore").write_text(templates.read("gitignore.tmpl"))
         (root / "astra.yaml").write_text(textwrap.dedent(spec))
-        for name, text in (universes or {"baseline": "id: baseline\ndecisions: {}\n"}).items():
-            (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))
         for name, text in (files or {}).items():
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -347,12 +349,29 @@ def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
         The wheel's exact version, and the directory serving it.
     """
     dist = tmp_path_factory.mktemp("engine-dist")
+    repository = Path(__file__).parent.parent
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(dist)],
-        cwd=Path(__file__).parent.parent,
+        cwd=repository,
         check=True,
         capture_output=True,
         text=True,
     )
-    wheel = next(dist.glob("*.whl"))
+    wheel = next(dist.glob("lightcone_cli-*.whl"))
+    # The engine's ASTRA pins are git sources, which a wheel's metadata does
+    # not carry — so the rerun's resolver is served those two as wheels too,
+    # built from the very commits `pyproject.toml` pins.
+    uv = tomllib.loads((repository / "pyproject.toml").read_text())["tool"]["uv"]
+    tools = uv["sources"]["astra-tools"]
+    pins = [
+        f"astra-tools @ git+{tools['git']}@{tools['rev']}",
+        *uv["override-dependencies"],
+    ]
+    subprocess.run(
+        ["uv", "run", "--no-project", "--with", "pip", "--", "python", "-m", "pip", "wheel",
+         "--no-deps", "--wheel-dir", str(dist), *pins],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return wheel.name.split("-")[1], dist

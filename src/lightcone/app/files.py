@@ -161,7 +161,7 @@ class ProjectContents(AsyncLargeFileManager):
             target = resolved_path(root, root / model["path"])
             model["watchPaths"] = [
                 target.relative_to(root).as_posix(),
-                assets.manifest_path(Path(model["path"])).as_posix(),
+                *assets.record_places(model["path"]),
             ]
         return model
 

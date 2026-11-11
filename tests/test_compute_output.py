@@ -49,7 +49,7 @@ def detached_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 def test_detached_probe_preserves_redirected_stdout_bytes(
     analysis: Callable[..., Path], detached_cluster: str,
 ) -> None:
-    root = analysis("version: '0.0.13'\nname: analysis\ninputs: []\noutputs: []\n")
+    root = analysis("spec_version: '0.1.0'\n")
     result = subprocess.run(
         [
             sys.executable, "-c", "from lightcone.cli.commands import main; main()",
@@ -69,7 +69,7 @@ def test_detached_probe_preserves_redirected_stdout_bytes(
 def test_probe_uses_allocation_environment_and_accepts_explicit_command_variables(
     analysis: Callable[..., Path], detached_cluster: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root = analysis("version: '0.0.13'\nname: analysis\ninputs: []\noutputs: []\n")
+    root = analysis("spec_version: '0.1.0'\n")
     name = f"LC_TEST_AFTER_LAUNCH_{uuid4().hex}"
     monkeypatch.setenv(name, "driver-only")
     command = ["python", "-c", f"import os; print(os.environ.get({name!r}, 'not-forwarded'))"]
@@ -87,7 +87,7 @@ def test_probe_uses_allocation_environment_and_accepts_explicit_command_variable
 def test_interrupt_warns_that_the_remote_command_may_still_run(
     analysis: Callable[..., Path], detached_cluster: str,
 ) -> None:
-    root = analysis("version: '0.0.13'\nname: analysis\ninputs: []\noutputs: []\n")
+    root = analysis("spec_version: '0.1.0'\n")
     started = root / "results/started"
     process = subprocess.Popen(
         [
@@ -149,8 +149,8 @@ def test_failed_detached_recipe_forwards_diagnostics_without_corrupting_json(
 ) -> None:
     command = "printf 'recipe stdout\\r\\n'; printf 'recipe failure\\n' >&2; exit 19"
     root = analysis(
-        "version: '0.0.13'\nname: analysis\ninputs: []\noutputs:\n"
-        "  - id: broken\n    type: metric\n    format: txt\n"
+        "spec_version: '0.1.0'\noutputs:\n"
+        "  broken:\n    type: metric\n    format: txt\n"
         f"    recipe:\n      command: {json.dumps(command)}\n"
     )
     result = subprocess.run(
@@ -165,7 +165,7 @@ def test_failed_detached_recipe_forwards_diagnostics_without_corrupting_json(
     assert result.returncode == 1, result.stderr.decode(errors="replace")
     assert result.stdout, result.stderr.decode(errors="replace")
     report = json.loads(result.stdout)
-    assert report["failed"] == ["baseline/broken"]
+    assert report["failed"] == ["broken"]
     assert b"recipe stdout\r\n" in result.stderr
     assert b"recipe failure\n" in result.stderr
 
