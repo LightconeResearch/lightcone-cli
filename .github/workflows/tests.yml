@@ -21,7 +21,10 @@ jobs:
       # OS is exactly the information the other run is there to provide.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        # Pinned until #270: ubuntu-latest is now 26.04, whose Docker 29
+        # defaults to the containerd image store, where lc cannot find
+        # its images by config digest. Back to ubuntu-latest with the fix.
+        os: [ubuntu-24.04]
         python-version: ["3.11", "3.12", "3.13"]
         include:
           # macOS is where Seatbelt is the mechanism, and the only place
