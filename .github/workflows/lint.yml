@@ -49,6 +49,9 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pinned, and Dependabot cannot see it: bump it by hand from
+      # https://github.com/github/gh-actions-lock/releases, to a release
+      # at least seven days old, like every action.
       - run: gh extension install github/gh-actions-lock --pin v0.4.1
 
       - run: gh actions-lock --verify
