@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6.8.0
+        uses: astral-sh/setup-uv@v7.6.0
         with:
           python-version: "3.13"
           enable-cache: true
@@ -32,3 +32,23 @@ jobs:
 
       - name: Mypy
         run: mypy src/
+
+  lockfile:
+    # Fails when actions.lock is out of sync with the workflows, or a
+    # locked commit no longer verifies upstream. After any `uses:` edit,
+    # regenerate it with `gh actions-lock`.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          persist-credentials: false
+
+      - run: gh extension install github/gh-actions-lock --pin v0.4.1
+
+      - run: gh actions-lock --verify
