@@ -232,7 +232,9 @@ label) and `pypi-publish.yaml`.
 Actions are locked: `.github/workflows/actions.lock` records the commit
 each `uses:` resolves to, and `lint.yml`'s `lockfile` job fails when it
 is out of sync. After any `uses:` edit, run `gh actions-lock`. Bumps
-come from Dependabot, weekly, after a seven-day cooldown;
+come from Renovate (`.github/renovate.json5`), weekly, after a
+seven-day minimum release age; it regenerates the lock itself, and
+also bumps the gh-actions-lock extension `lint.yml` pins.
 `gh actions-lock` has no cooldown of its own and pins the newest
 matching release, so a hand-written `uses:` names an exact release at
 least seven days old rather than a major tag.
