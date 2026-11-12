@@ -9,6 +9,9 @@ on:
     # marked ready never runs at all until someone happens to push again.
     types: [opened, synchronize, reopened, ready_for_review]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -45,6 +48,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7.6.0
@@ -113,6 +118,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7.6.0

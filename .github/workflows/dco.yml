@@ -1,11 +1,11 @@
 name: DCO
 
 on:
-  pull_request_target:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] no checkout, no interpolation
     types: [opened, reopened, synchronize]
   pull_request_review:
     types: [submitted]
-  issue_comment:
+  issue_comment:  # zizmor: ignore[dangerous-triggers] same
     types: [created]
 
 permissions:

@@ -36,6 +36,7 @@ jobs:
           # dev version into the installed engine (and every manifest's
           # lc_version) instead of a 0.1.dev fallback
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up uv
         # No python-version input: it would export an ambient UV_PYTHON,
