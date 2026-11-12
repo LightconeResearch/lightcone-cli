@@ -35,7 +35,9 @@ jobs:
         uses: astral-sh/setup-uv@v8.0.0
         with:
           python-version: ${{ matrix.pyversion }}
-          enable-cache: true
+          # A release builds from nothing: a restored cache is whatever
+          # an earlier run on main left in it.
+          enable-cache: false
 
       # https://github.com/actions/setup-python
       - name: Set up Python
@@ -72,6 +74,6 @@ jobs:
 
       # https://github.com/pypa/gh-action-pypi-publish
       - name: Publish package to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@v1.14.3
         with:
           verbose: true

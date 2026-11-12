@@ -229,6 +229,16 @@ around them. The other workflows are `eval.yml` (the agentic eval,
 on dispatch or the `run-eval` PR label; re-trigger by re-adding the
 label) and `pypi-publish.yaml`.
 
+Actions are locked: `.github/workflows/actions.lock` records the commit
+each `uses:` resolves to, and `lint.yml`'s `lockfile` job fails when it
+is out of sync. After any `uses:` edit, run `gh actions-lock`. Bumps
+come from Renovate (`.github/renovate.json5`), weekly, after a
+seven-day minimum release age; it regenerates the lock itself, and
+also bumps the gh-actions-lock extension `lint.yml` pins.
+`gh actions-lock` has no cooldown of its own and pins the newest
+matching release, so a hand-written `uses:` names an exact release at
+least seven days old rather than a major tag.
+
 ## Key Invariants (layer 1)
 
 **The CLI/engine split.** `cli/commands.py` owns flags, console rendering,
