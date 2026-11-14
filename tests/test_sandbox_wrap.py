@@ -119,7 +119,7 @@ def test_the_write_tier_is_restated_after_the_read_only_guard() -> None:
     readable project tree works there for free. SBPL is last-match-wins,
     so reproducing that needs the write set to have the final word — or
     the guard's `(deny file-write* PROJECT)` revokes the output directory
-    layer 4's recipes write into, and macOS refuses what Linux allows."""
+    recipes write into, and macOS refuses what Linux allows."""
     project = Path("/tmp/proj")
     built = Policy(
         read=(project,),

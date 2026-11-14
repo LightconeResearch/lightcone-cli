@@ -172,7 +172,7 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
 
 
 def test_a_moved_environment_leaves_the_output_alone(root: Path) -> None:
-    """The change this layer exists for. The recipe and the decisions still
+    """The change the identity split exists for. The recipe and the decisions still
     define exactly this output, so it is reported and kept — remaking it
     would spend the compute that a rewritten `uv.lock` never justified."""
     made = _make(root, "first")
