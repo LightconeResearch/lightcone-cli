@@ -116,12 +116,11 @@ def input_paths(project: Path) -> list[Path]:
         ASTRA can read.
     """
     from astra import api
-    from astra.cache import CacheError
-    from astra.sources.git import GitError
 
     try:
-        stack = api.bind(project).stack
-    except (api.NoAnalysisError, GitError, CacheError, OSError):
+        # Offline: a probe reads the project, and never a remote for it.
+        stack = api.bind(project, offline=True).stack
+    except (api.NoAnalysisError, api.GitError, api.CacheError, OSError):
         return []
     if stack is None:
         return []

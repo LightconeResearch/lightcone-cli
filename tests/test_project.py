@@ -109,14 +109,17 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
-def test_a_fresh_spec_passes_the_gate(tmp_path: Path, real_tools: None) -> None:
-    """The scaffold is the minimal analysis `astra init` writes — one
-    ASTRA accepts and lc can plan, so every verb works on a project nobody
-    has edited yet. Real tools, because ASTRA validates against git."""
+def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path, real_tools: None) -> None:
+    """The scaffold is an empty analysis, not an example to delete — and
+    still one ASTRA accepts and lc can plan, so every verb works on a
+    project nobody has edited yet. Real tools, because ASTRA validates
+    against git."""
     project = tmp_path / "proj"
     converge(project)
 
-    assert list(plan.build(project).tasks) == ["result"]
+    graph = plan.build(project)
+    assert graph.tasks == {}
+    assert graph.label == "proj"
 
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:

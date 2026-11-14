@@ -3,8 +3,9 @@
 The classification table is the important part of this file. Whether a
 record still describes the analysis is ASTRA's checker's to say, so the
 rule is driven with the statuses that checker returns; what is pinned is
-what lc makes of them, and the two things it adds — the environment a
-result ran under, and whether its files were last written by its own run.
+what lc makes of them, and what it adds — the bytes the results it reads
+have now, the environment a result ran under, and whether its files were
+last written by its own run.
 
 The `stale` / `behind` split is the other half. `stale` means the artifact
 contradicts the project and must be remade; `behind` means it is still
@@ -20,15 +21,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from astra.check import Reason, Status
-from astra.diagnostics import Location
-from astra.records import Record, Runner
-from astra.universes import Place
+from astra.api import Digest, Location, Place, Reason, Record, RecordedInput, Runner, Status
 from conftest import CLUSTER_ID
 
-from lightcone.engine import assets, dataset, identity, materialize
+from lightcone.engine import assets, dataset, identity, materialize, plan
 from lightcone.engine.assets import classify
-from lightcone.engine.project import ProjectError
 
 _PLACE = Place(
     "best_fit",
@@ -157,29 +154,64 @@ _TWEAK = dataset.LastWrite(
 
 _AT = Location(_PLACE.record, "", None, None)
 
+#: What the record says the recipe read of the result it reads, and the
+#: same result made again with other bytes.
+_READ = Digest("sha256:summary", 9)
+_OTHER = Digest("sha256:other", 9)
+
 
 def _record(environment: str = _ENV) -> Record:
     return Record(
-        _PLACE.address, "sha256:data", 8, "c" * 40, environment, Runner("lightcone-cli", "1.0")
+        _PLACE.address,
+        "sha256:data",
+        8,
+        "c" * 40,
+        environment,
+        Runner("lightcone-cli", "1.0"),
+        (RecordedInput("summary", _READ.content_hash, _READ.size),),
     )
 
 
 def _unchanged(environment: str = _ENV, *, absent: bool = False) -> Status:
     reasons = (Reason("ABSENT_RESULT", "warning", "the bytes are not here", _AT),) if absent else ()
-    return Status(
-        _PLACE, "unchanged", "absent" if absent else "present", True, reasons,
-        _record(environment), (),
-    )
+    bytes_status = "absent" if absent else "present"
+    return Status(_PLACE, "unchanged", bytes_status, True, reasons, _record(environment))
 
 
 def _changed(*messages: str, environment: str = _ENV) -> Status:
-    reasons = tuple(Reason("STALE_RESULT", "error", message, _AT) for message in messages)
-    return Status(_PLACE, "stale", "present", True, reasons, _record(environment), ())
+    """Stale in itself: something of its own declaration moved."""
+    reasons = tuple(
+        Reason("STALE_RESULT", "error", message, _AT, change="declaration") for message in messages
+    )
+    return Status(_PLACE, "stale", "present", True, reasons, _record(environment))
 
+
+#: Stale only through what it reads: ASTRA found `summary` stale.
+_READS_STALE = Status(
+    _PLACE,
+    "stale",
+    "present",
+    True,
+    (
+        Reason(
+            "STALE_RESULT",
+            "error",
+            "`summary`, which it reads, is stale",
+            _AT,
+            change="result",
+            entry="summary",
+        ),
+    ),
+    _record(),
+)
 
 _MISSING = Status(
-    _PLACE, "missing", "absent", False,
-    (Reason("MISSING_RECORD", "error", "no record is at the place", _AT),), None, (),
+    _PLACE,
+    "missing",
+    "absent",
+    False,
+    (Reason("MISSING_RECORD", "error", "no record is at the place", _AT),),
+    None,
 )
 
 
@@ -224,6 +256,83 @@ def test_absent_bytes_alone_do_not_make_a_result_stale() -> None:
     """A clone that has fetched no annex content holds results that are
     perfectly up to date."""
     assert classify(found=[_unchanged(absent=True)], environment=_ENV).status == "current"
+
+
+# ---- the bytes of what it reads --------------------------------------------
+#
+# ASTRA's checker speaks before the run. Once a result's upstreams have
+# landed, the one question left is whether they gave the bytes its record
+# says it read — and that is what stops a byte-identical rebuild cascading.
+
+
+def test_in_itself_a_result_reading_a_stale_one_is_not_stale() -> None:
+    """While `summary` may still be remade nobody knows its bytes, so the
+    only thing to say of the result is what it is of its own."""
+    assert classify(found=[_READS_STALE], environment=_ENV, read=None).status == "current"
+
+
+def test_in_itself_a_result_still_answers_for_its_own_changes() -> None:
+    """Taking what it reads as recorded excuses nothing of its own."""
+    verdict = classify(found=[_changed("the command changed")], environment=_ENV, read=None)
+    assert verdict.status == "stale"
+    assert verdict.why == "the command changed"
+
+
+def test_a_rebuild_that_gives_the_recorded_bytes_leaves_the_result_standing() -> None:
+    """The cascade stops here: `summary` was stale, was remade, and came
+    out as the bytes this result's record says it read."""
+    verdict = classify(found=[_READS_STALE], environment=_ENV, read={"summary": _READ})
+    assert verdict.status == "current"
+    assert not verdict.calls_for_a_remake(refresh=True)
+
+
+def test_a_rebuild_that_gives_other_bytes_makes_the_result_stale() -> None:
+    """Worded from the bytes it has now — ASTRA's earlier finding that
+    `summary` was stale is no longer what is wrong."""
+    verdict = classify(found=[_READS_STALE], environment=_ENV, read={"summary": _OTHER})
+    assert verdict.status == "stale"
+    assert verdict.why == "`summary` was remade with other bytes than this result read"
+
+
+def test_an_unchanged_result_is_stale_once_what_it_reads_comes_out_differently() -> None:
+    """ASTRA found nothing wrong, and nothing was: `summary` was remade
+    for a reason of lc's own, and no longer gives what was read."""
+    verdict = classify(found=[_unchanged()], environment=_ENV, read={"summary": _OTHER})
+    assert verdict.status == "stale"
+    assert "remade with other bytes" in verdict.why
+    assert classify(found=[_unchanged()], environment=_ENV, read={"summary": _READ}).status == (
+        "current"
+    )
+
+
+def test_a_stale_read_nobody_answers_for_keeps_the_result_stale_in_astras_words() -> None:
+    """Nothing says `summary` was remade, so ASTRA's finding stands."""
+    verdict = classify(found=[_READS_STALE], environment=_ENV, read={})
+    assert verdict.status == "stale"
+    assert verdict.why == "`summary`, which it reads, is stale"
+
+
+@pytest.mark.parametrize("read", [None, {}, {"summary": _READ}])
+def test_no_record_is_stale_whatever_it_reads(read: dict[str, Digest] | None) -> None:
+    verdict = classify(found=[_MISSING], environment=_ENV, read=read)
+    assert verdict.status == "stale"
+    assert verdict.why == "no record is at the place"
+
+
+def test_its_own_change_is_kept_beside_what_it_reads() -> None:
+    """Both are said: one is fixed in the spec, the other by the run."""
+    both = Status(
+        _PLACE,
+        "stale",
+        "present",
+        True,
+        (*_changed("the command changed").reasons, *_READS_STALE.reasons),
+        _record(),
+    )
+    verdict = classify(found=[both], environment=_ENV, read={"summary": _OTHER})
+    assert verdict.why == (
+        "the command changed; `summary` was remade with other bytes than this result read"
+    )
 
 
 # ---- behind, which is the whole point of the split -------------------------
@@ -294,7 +403,7 @@ def test_a_foreign_write_wins_over_behind() -> None:
     assert "tweak colors" in verdict.why
 
 
-# ---- asking ASTRA's checker about a real project ---------------------------
+# ---- the rule over what ASTRA's checker finds in a real project ------------
 
 _SPEC = """
 spec_version: "0.1.0"
@@ -323,30 +432,19 @@ outputs:
       command: cp {inputs.summary} {output}
 """
 
-_SUMMARY = ".astra/records/summary.json"
-_FIT = ".astra/records/baseline/fit.json"
-
 
 def test_before_any_run_every_planned_result_is_missing_and_so_stale(
     analysis: Callable[..., Path],
 ) -> None:
-    """Keyed by where the record would be, from the project root — the
-    one name the driver, the worker and `lc view` all hold for a result."""
     root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
 
-    found = assets.check(root)
+    found = plan.build(root).found
 
-    assert list(found) == [_SUMMARY, _FIT]
+    assert list(found) == ["summary", "fit#baseline"]
     for statuses in found.values():
         assert [status.record_status for status in statuses] == ["missing"]
         verdict = classify(found=statuses, environment=identity.environment(root))
         assert verdict.status == "stale" and verdict.why
-
-
-def test_checking_writes_nothing(analysis: Callable[..., Path]) -> None:
-    root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
-    assets.check(root)
-    assert dataset.status(root) == []
 
 
 def test_a_materialized_result_is_current_until_something_it_is_made_from_moves(
@@ -354,12 +452,12 @@ def test_a_materialized_result_is_current_until_something_it_is_made_from_moves(
 ) -> None:
     """The rule over the real checker, end to end: current after its own
     run, behind against another environment, stale once its input changes
-    — and the result reading it stale with it."""
+    — and the result reading it stale only through it."""
     root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
     assert materialize.materialize(root, [], cluster_id=CLUSTER_ID).ok
     environment = identity.environment(root)
 
-    found = assets.check(root)
+    found = plan.build(root).found
     for statuses in found.values():
         assert [status.record_status for status in statuses] == ["unchanged"]
         assert statuses[0].record is not None
@@ -367,21 +465,19 @@ def test_a_materialized_result_is_current_until_something_it_is_made_from_moves(
         assert classify(found=statuses, environment=environment).status == "current"
         assert classify(found=statuses, environment=environment + "0").status == "behind"
 
+    # Unlinked first: the results are copies of the catalog, so all three
+    # share one annex object, and a write in place would change them too.
+    (root / "data" / "catalog.txt").unlink()
     (root / "data" / "catalog.txt").write_text("measured again\n")
     dataset.save(root, [root / "data"], "new catalog")
 
-    found = assets.check(root)
-    for record in (_SUMMARY, _FIT):
-        assert classify(found=found[record], environment=environment).status == "stale"
-    assert "catalog" in classify(found=found[_SUMMARY], environment=environment).why
-
-
-def test_a_spec_astra_rejects_is_a_clean_error(analysis: Callable[..., Path]) -> None:
-    root = analysis(_SPEC.replace("inputs: [catalog]", "inputs: [missing]"))
-    with pytest.raises(ProjectError, match="does not validate"):
-        assets.check(root)
-
-
-def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:
-    with pytest.raises(ProjectError, match="no astra.yaml"):
-        assets.check(tmp_path)
+    found = plan.build(root).found
+    summary = classify(found=found["summary"], environment=environment, read={})
+    assert summary.status == "stale" and "catalog" in summary.why
+    # `fit` moved only because `summary` did: in itself it stands, and it
+    # is stale exactly while nothing says what `summary` now gives.
+    assert [reason.change for reason in found["fit#baseline"][0].reasons] == ["result"]
+    assert classify(found=found["fit#baseline"], environment=environment).status == "current"
+    assert classify(found=found["fit#baseline"], environment=environment, read={}).status == (
+        "stale"
+    )

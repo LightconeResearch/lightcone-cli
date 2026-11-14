@@ -1,11 +1,11 @@
 """Tests for `lightcone.engine.crate` — the publication view, rendered pure.
 
-Everything here is disk-only: fixture records under ``tmp_path``, a
-hand-built graph, and a stub for "who last wrote this path" — no git, no
-subprocess. Structure and ordering are asserted, never
-byte goldens; the one byte-level claim is determinism, because
-convergence-by-materialize rests on rendering twice at the same state
-yielding identical text.
+Everything here is disk-only: fixture results under ``tmp_path``, a
+hand-built graph holding what ASTRA's checker would find of each, and a
+stub for "who last wrote this path" — no git, no subprocess. Structure
+and ordering are asserted, never byte goldens; the one byte-level claim
+is determinism, because convergence-by-materialize rests on rendering
+twice at the same state yielding identical text.
 """
 
 from __future__ import annotations
@@ -16,9 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from astra import records
-from astra.hashing import digest_file
-from astra.universes import Place
+from astra import api
+from astra.api import Place
 
 from lightcone.engine import crate
 from lightcone.engine.dataset import LastWrite
@@ -40,9 +39,7 @@ Writer = Callable[..., LastWrite]
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "demo"
     (root / "data").mkdir(parents=True)
-    (root / "astra.yaml").write_text(
-        'spec_version: "0.1.0"\nlabel: Demo analysis\ndescription: A demo analysis.\n'
-    )
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\n')
     (root / "pyproject.toml").write_text('[project]\nname = "demo"\nlicense = "MIT"\n')
     (root / "uv.lock").write_text("version = 1\n")
     (root / ".python-version").write_text("3.12.5\n")
@@ -81,36 +78,59 @@ def _task(
     )
 
 
+def _missing(task: Task) -> api.Status:
+    """What the checker finds of a result nobody made."""
+    place = task.places[0]
+    reason = api.Reason(
+        "MISSING_RECORD",
+        "error",
+        f"no record is at {place.record}",
+        api.Location(place.record, "", None, None),
+    )
+    return api.Status(place, "missing", "absent", False, (reason,), None)
+
+
 def _made(
     root: Path,
-    task: Task,
+    graph: Graph,
+    key: Key,
     *,
     commit: str = _RUN,
     finished: str = "2026-08-19T10:05:00.000Z",
 ) -> None:
-    """Leave what one run of *task* leaves: bytes and record."""
-    place = task.places[0]
+    """Leave what one run of a task leaves — bytes and record — and, in
+    the graph, what ASTRA's checker then finds of it."""
+    place = graph.tasks[key].places[0]
     output = root / place.bytes
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(f"{place.address}\n")
-    digest = digest_file(output)
-    records.write_record(
-        root / place.record,
-        records.Record(
-            address=place.address,
-            content_hash=digest.content_hash,
-            size=digest.size,
-            commit=commit,
-            environment=_ENVIRONMENT,
-            runner=records.Runner("lightcone-cli", "0.4.2"),
-            started="2026-08-19T10:00:00.000Z",
-            finished=finished,
-        ),
+    digest = api.digest_file(output)
+    record = api.Record(
+        address=place.address,
+        content_hash=digest.content_hash,
+        size=digest.size,
+        commit=commit,
+        environment=_ENVIRONMENT,
+        runner=api.Runner("lightcone-cli", "0.4.2"),
+        started="2026-08-19T10:00:00.000Z",
+        finished=finished,
+    )
+    api.write_record(root / place.record, record)
+    graph.found[key] = (api.Status(place, "unchanged", "present", True, (), record),)
+
+
+def _graph_of(*tasks: Task) -> Graph:
+    """A graph of *tasks*, none of them made, titled as the spec titles it."""
+    return Graph(
+        {task.key: task for task in tasks},
+        {task.key: (_missing(task),) for task in tasks},
+        label="Demo analysis",
+        description="A demo analysis.",
     )
 
 
 def _graph(universes: tuple[str, ...] = ("baseline",)) -> Graph:
-    tasks: dict[Key, Task] = {}
+    tasks: list[Task] = []
     for universe in universes:
         first = _task("first", universe, inputs={"catalog": "data/catalog.csv"})
         second = _task(
@@ -119,15 +139,15 @@ def _graph(universes: tuple[str, ...] = ("baseline",)) -> Graph:
             inputs={"first": first.places[0].bytes},
             produced_by={"first": first.key},
         )
-        tasks |= {first.key: first, second.key: second}
-    return Graph(tasks)
+        tasks += [first, second]
+    return _graph_of(*tasks)
 
 
 def _materialized(root: Path, *keys: Key, universes: tuple[str, ...] = ("baseline",)) -> Graph:
     """The two-step graph, with *keys* (every task when none) already made."""
     graph = _graph(universes)
     for key in keys or graph.tasks:
-        _made(root, graph.tasks[key])
+        _made(root, graph, key)
     return graph
 
 
@@ -188,7 +208,7 @@ def test_the_clock_never_enters_the_document(project: Path) -> None:
     """`datePublished` is the newest recorded instant — rocrate's own
     default stamps the current time, and this pins the override."""
     graph = _materialized(project, "first#baseline")
-    _made(project, graph.tasks["second#baseline"], finished="2026-08-20T09:00:00.000Z")
+    _made(project, graph, "second#baseline", finished="2026-08-20T09:00:00.000Z")
 
     root_entity = _entities(_render(project, graph))["./"]
 
@@ -259,7 +279,7 @@ def test_outputs_sharing_a_commit_are_one_run(project: Path) -> None:
     `commit` groups results into runs — the whole Provenance layer's
     identity."""
     graph = _materialized(project, "first#baseline")
-    _made(project, graph.tasks["second#baseline"], commit="b" * 40)
+    _made(project, graph, "second#baseline", commit="b" * 40)
     entities = _entities(_render(project, graph))
 
     organizers = {i: e for i, e in entities.items() if e["@type"] == "OrganizeAction"}
@@ -277,7 +297,7 @@ def test_a_run_is_timed_and_attributed_from_its_records(project: Path) -> None:
     the clock's or the installed engine's, or two collaborators would
     re-commit the crate at each other forever."""
     graph = _materialized(project, "first#baseline")
-    _made(project, graph.tasks["second#baseline"], finished="2026-08-20T09:00:00.000Z")
+    _made(project, graph, "second#baseline", finished="2026-08-20T09:00:00.000Z")
     entities = _entities(_render(project, graph))
 
     organizer = entities["#organize-aaaaaaa"]
@@ -303,7 +323,7 @@ def test_an_action_chains_its_inputs_and_its_environment(project: Path) -> None:
     assert "results/baseline/first.txt" in {ref["@id"] for ref in second["object"]}
     assert second["result"] == {"@id": "results/baseline/second.txt"}
     assert second["description"] == graph.tasks["second#baseline"].command
-    made = digest_file(project / "results/baseline/second.txt")
+    made = api.digest_file(project / "results/baseline/second.txt")
     assert entities["results/baseline/second.txt"]["version"] == made.content_hash
 
 
@@ -319,11 +339,13 @@ def test_the_record_is_in_the_crate_and_about_its_result(project: Path) -> None:
 
 
 def test_a_result_without_a_valid_record_is_not_described_as_made(project: Path) -> None:
-    """Bytes alone are not a run: the record is what says
-    which commit, when and under what, so without one that validates
-    there is no action to state."""
+    """Bytes alone are not a run: the record is what says which commit,
+    when and under what. Whether one is the result's own is ASTRA's to
+    say, so where its checker found none there is no action to state —
+    whatever file sits at the record's place."""
     graph = _materialized(project, "first#baseline")
     (project / ".astra/records/baseline/first.json").write_text('{"address": "first#baseline"}\n')
+    graph.found["first#baseline"] = (_missing(graph.tasks["first#baseline"]),)
     entities = _entities(_render(project, graph))
 
     assert "results/baseline/first.txt" not in entities
@@ -331,9 +353,9 @@ def test_a_result_without_a_valid_record_is_not_described_as_made(project: Path)
 
 
 def test_a_result_built_once_has_no_universe_in_its_ids(project: Path) -> None:
-    task = _task("summary", decisions={})
-    _made(project, task)
-    entities = _entities(_render(project, Graph({task.key: task})))
+    graph = _graph_of(_task("summary", decisions={}))
+    _made(project, graph, "summary")
+    entities = _entities(_render(project, graph))
 
     result = entities["results/summary.txt"]
     assert result["name"] == "summary"
@@ -349,9 +371,9 @@ def test_a_declared_analysis_that_runs_recipes_brings_its_spec(project: Path) ->
     what the deposit must carry."""
     (project / "stage").mkdir()
     (project / "stage" / "astra.yaml").write_text('spec_version: "0.1.0"\n')
-    task = _task("stage.out", "baseline", workdir="stage")
-    _made(project, task)
-    entities = _entities(_render(project, Graph({task.key: task})))
+    graph = _graph_of(_task("stage.out", "baseline", workdir="stage"))
+    _made(project, graph, "stage.out#baseline")
+    entities = _entities(_render(project, graph))
 
     assert entities["stage/astra.yaml"]["encodingFormat"] == "application/yaml"
     assert entities["results/baseline/stage.out.txt"]["name"] == "stage.out#baseline"
@@ -393,6 +415,17 @@ def test_a_never_materialized_project_still_describes_its_workflow(project: Path
     assert entities["astra.yaml"]["name"] == "Demo analysis"
     assert entities["./"]["name"] == "Demo analysis"
     assert entities["./"]["description"] == "A demo analysis."
+
+
+def test_an_analysis_that_gives_no_label_is_titled_by_its_folder(project: Path) -> None:
+    """Its words about itself come with the graph, as ASTRA read them; the
+    crate invents a title only where the file gave none."""
+    graph = Graph({}, {})
+    entities = _entities(_render(project, graph))
+
+    assert entities["./"]["name"] == "demo"
+    assert "demo" in entities["./"]["description"]
+    assert "description" not in entities["astra.yaml"]
 
 
 def test_the_license_is_a_local_entity_never_a_minted_url(project: Path) -> None:

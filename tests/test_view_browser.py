@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from astra.universes import Place
+from astra.api import Place
 from playwright.sync_api import Browser, Error, expect, sync_playwright
 from test_serve import _gate, _record
 from test_serve import project as project

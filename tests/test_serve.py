@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import http.cookiejar
-import io
 import json
 import os
 import signal
@@ -25,8 +24,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
 import pytest
-from astra.evidence import papers
-from astra.records import Record, RecordedInput, Runner
+from astra.api import Record, RecordedInput, Runner
+from astra.papers.cache import PaperCache
 
 from lightcone.engine import assets
 from lightcone.engine import serve as engine
@@ -198,14 +197,17 @@ def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
 
 
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The project is under the server's $HOME, as a project usually is —
-    which is where jupyter starts abbreviating paths to `~`."""
+def papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PaperCache:
+    """astra's paper cache, where the server finds it: in ASTRA's cache,
+    which the suite keeps apart from the developer's. The project is under
+    the server's $HOME, as a project usually is — which is where jupyter
+    starts abbreviating paths to `~`."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    return PaperCache()
 
 
 @pytest.fixture
-def served(state: Path, project: Path, home: None) -> tuple[str, str]:
+def served(state: Path, project: Path, papers: PaperCache) -> tuple[str, str]:
     """The server's root URL and its token."""
     url = urlsplit(engine.serve(project).url)
     (token,) = parse_qs(url.query)["token"]
@@ -259,7 +261,7 @@ def test_a_record_that_does_not_parse_is_no_run(served: tuple[str, str], project
 
 
 def test_an_outputs_state_is_the_engines(
-    state: Path, home: None, analysis: Callable[..., Path]
+    state: Path, papers: PaperCache, analysis: Callable[..., Path]
 ) -> None:
     """The page shows what `lc status` would print, from the same call —
     it holds no classification of its own."""
@@ -378,26 +380,26 @@ def test_reading_a_notebook_leaves_jupyters_data_directory_alone(
     assert not list(data.glob("*"))
 
 
-def test_a_cited_paper_comes_from_astras_cache(served: tuple[str, str]) -> None:
-    from pypdf import PdfWriter
-
+def test_a_cited_paper_comes_from_astras_cache(
+    served: tuple[str, str], papers: PaperCache
+) -> None:
     base, token = served
-    writer = PdfWriter()
-    writer.add_blank_page(width=72, height=72)
-    writer.write(pdf := io.BytesIO())
-    papers.add("10.1093/MNRAS/stv1198", None, data=pdf.getvalue())
-    # The page sends DOIs as the SDK normalizes them; this one was added as written.
+    papers.add("10.1093/MNRAS/stv1198", b"%PDF-1.4 gd1", title="Gaia", authors=["A. B.", "C. D."])
+    # The page sends DOIs as the SDK normalizes them; astra stored this one as written.
     query = f"doi=10.1093/mnras/stv1198&doi=10.1/absent&token={token}"
     status, body = _request(f"{base}/lightcone/api/papers?{query}")
     assert status == 200
     found = json.loads(body)["papers"]
     assert found.keys() == {"10.1093/mnras/stv1198"}
-    with urllib.request.urlopen(
-        f"{base}{found['10.1093/mnras/stv1198']['pdfUrl']}&token={token}"
-    ) as response:
-        assert (response.status, response.headers["Content-Type"]) == (200, "application/pdf")
-        assert response.read() == pdf.getvalue()
-    assert _request(f"{base}/lightcone/api/paper?doi=10.1/absent&token={token}")[0] == 404
+    paper = found["10.1093/mnras/stv1198"]
+    assert (paper["title"], paper["authors"]) == ("Gaia", "A. B., C. D.")
+    # Served by Jupyter's own file handler: ranges for pdf.js.
+    request = urllib.request.Request(
+        f"{base}{paper['pdfUrl']}?token={token}", headers={"Range": "bytes=0-3"}
+    )
+    with urllib.request.urlopen(request) as pdf:
+        assert (pdf.status, pdf.headers["Content-Type"]) == (206, "application/pdf")
+        assert pdf.read() == b"%PDF"
 
 
 def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
@@ -407,9 +409,9 @@ def test_every_route_needs_the_token(served: tuple[str, str]) -> None:
     routes = (
         "/lightcone",
         "/lightcone/api/papers?doi=10.1/x",
-        "/lightcone/api/paper?doi=10.1/x",
         "/lightcone/api/run?path=x",
         "/lightcone/api/status",
+        "/lightcone/papers/x/paper.pdf",
     )
     for route in routes:
         assert _request(f"{base}{route}")[0] in (302, 403), route

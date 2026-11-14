@@ -10,7 +10,9 @@ lock means.
 
 A record names the environment its recipe ran in by an IRI, and
 :func:`environment` is that IRI: ``env_version`` under lc's own ``urn:``
-prefix. ASTRA records the environment and never compares it, **and
+prefix. The name is lc's, so what it holds is lc's to say, and it is the
+files of the record's commit listed above — which is what makes it one lc
+can recreate. ASTRA records the environment and never compares it, **and
 neither does the rebuild rule** — that is the whole shape of the model.
 An environment moves for reasons that have nothing to do with a given
 output — one added dependency rewrites the lock for the whole project —
@@ -116,35 +118,6 @@ def environment(root: Path) -> str:
         ProjectError: If ``uv.lock`` or ``.python-version`` is missing.
     """
     return _IRI + env_version(root)
-
-
-class Scheme:
-    """What lc answers ASTRA's checker about an environment it recorded.
-
-    :data:`SCHEME` is registered in the ``astra.environments`` entry-point
-    group, which is how ``astra check`` learns that an IRI is one a runner
-    can recreate.
-    """
-
-    name = "lightcone"
-
-    def recognises(self, iri: str) -> bool:
-        """Whether *iri* is one lc records."""
-        return iri.startswith(_IRI)
-
-    def holds(self, iri: str) -> str:
-        """Say what an environment lc recorded is made of."""
-        return (
-            "the uv environment of the record's commit: uv.lock, .python-version, uv's "
-            "install settings and, in a containerized project, the image definition"
-        )
-
-    def recreatable(self, iri: str) -> bool:
-        """Every file the hash covers is in the record's commit."""
-        return True
-
-
-SCHEME = Scheme()
 
 
 def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:

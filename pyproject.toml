@@ -24,7 +24,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools[evidence]>=0.2.19.dev0",
+    "astra-tools>=0.3.0rc1",
+    "astra-spec>=0.1.0rc1,<0.2",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",
@@ -54,23 +55,15 @@ dev = [
 ]
 
 
-# ASTRA 0.1 is not on PyPI yet: both halves are pinned to the commits this
-# engine is tested against. astra-tools names astra-spec by a path beside its
-# own checkout, which a git source does not have, hence the override.
-[tool.uv]
-override-dependencies = [
-    "astra-spec @ git+https://github.com/LightconeResearch/astra-spec@7de4f21e57a7f23231821a5c3a4b6c560274f36b",
-]
-
+# astra-tools is pinned to the commit this engine is tested against until
+# the release that carries its `resolve` API. astra-spec is a direct
+# dependency only for its specifier: 0.1 is a release candidate, which a
+# resolver takes for a package it is asked for by such a version.
 [tool.uv.sources]
-astra-tools = { git = "https://github.com/LightconeResearch/astra-tools", rev = "ecbe9504a6ecb8ed303176b51e836d0e4ecc3d9f" }
+astra-tools = { git = "https://github.com/astra-project/astra-tools", rev = "213be84b6e4ca7d9e98ee448354a5751d76b12ab" }
 
 [project.urls]
 Repository = "https://github.com/LightconeResearch/lightcone-cli"
-
-# What `astra check` asks about an environment a record names.
-[project.entry-points."astra.environments"]
-lightcone = "lightcone.engine.identity:SCHEME"
 
 [project.scripts]
 lc = "lightcone.cli:main"

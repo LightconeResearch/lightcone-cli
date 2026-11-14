@@ -320,10 +320,24 @@ def test_status_names_the_commit_each_output_came_from(root: Path, inline: None)
     assert report.counts == {"current": 2, "behind": 0, "stale": 0}
 
 
+def test_status_names_the_environment_each_output_ran_in(root: Path, inline: None) -> None:
+    """lc minted the name a record gives its environment, so lc is where
+    it is read: each output's beside the project's own, which is the one
+    a run made now would record."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    report = engine.status(root)
+
+    assert report.environment == identity.environment(root)
+    assert [o.environment for o in report.outputs] == [report.environment] * 2
+    assert report.as_dict()["environment"] == report.environment
+    assert [o["environment"] for o in report.as_dict()["outputs"]] == [report.environment] * 2
+
+
 def test_status_reports_behind_after_the_environment_moves(
     root: Path, inline: None
 ) -> None:
-    made_at = dataset.head(root)[0]
+    made_at, made_in = dataset.head(root)[0], identity.environment(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
@@ -332,6 +346,10 @@ def test_status_reports_behind_after_the_environment_moves(
     assert report.counts == {"current": 0, "behind": 2, "stale": 0}
     assert all(o.git_sha == made_at for o in report.outputs), "the commit it was made at"
     assert "earlier environment" in report.outputs[0].why
+    # Behind is exactly this: the record names another environment than
+    # the project's own, and status shows both.
+    assert report.environment == identity.environment(root) != made_in
+    assert all(o.environment == made_in for o in report.outputs)
 
 
 def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) -> None:
@@ -341,6 +359,7 @@ def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) 
 
     assert report.counts == {"current": 0, "behind": 0, "stale": 2}
     assert all(o.git_sha == "" and o.data_version == "" for o in report.outputs)
+    assert all(o.environment == "" for o in report.outputs)
     assert "no record" in report.outputs[0].why
 
 
@@ -392,9 +411,9 @@ def test_a_changed_command_remakes_the_output_and_its_dependents(
 
 
 def test_a_byte_identical_rebuild_stops_the_cascade(root: Path, inline: None) -> None:
-    """What check mode cannot know, a run can: the dependent asks again
-    once its upstream has landed, and the bytes it recorded reading are
-    the bytes that are there."""
+    """What check mode cannot know, a run can: once its upstream has
+    landed, the dependent's task sees that the bytes it recorded reading
+    are the bytes that came out."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _edit_first_recipe(root, "echo  {decisions.method}")
     assert set(engine.check(root, []).planned) == {"first#baseline", "second#baseline"}
@@ -405,6 +424,32 @@ def test_a_byte_identical_rebuild_stops_the_cascade(root: Path, inline: None) ->
     assert report.made == ["first#baseline"]
     assert report.current == ["second#baseline"]
     assert _commits(root) == before + 1
+
+
+def test_a_run_asks_astra_once_however_far_a_remake_cascades(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver reads what ASTRA's checker finds before anything runs,
+    and each task settles its own result from that and its upstreams'
+    bytes. A check per task would need git wherever a task runs, and
+    would read a tree other tasks are still writing."""
+    from astra import api
+
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    _edit_first_recipe(root, "echo changed")
+    asked: list[Path] = []
+    check = api.check
+
+    def counted(path: Path) -> api.CheckReport:
+        asked.append(path)
+        return check(path)
+
+    monkeypatch.setattr(api, "check", counted)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["first#baseline", "second#baseline"]
+    assert asked == [root]
 
 
 def test_a_changed_input_remakes_what_reads_it(

@@ -564,6 +564,12 @@ def test_an_engine_refusal_is_a_clean_error(
 # =============================================================================
 
 
+#: The project's environment as a record made now would name it, and the
+#: one a behind output's record names.
+_NOW = "urn:lightcone:env:sha256:now"
+_EARLIER = "urn:lightcone:env:sha256:earlier"
+
+
 def _status_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> None:
     from lightcone.engine import materialize as engine
 
@@ -575,16 +581,18 @@ def _report() -> object:
 
     return StatusReport(
         outputs=[
-            OutputStatus("first#baseline", "current", "", "3f2a1c8ffff", "sha256:one"),
+            OutputStatus("first#baseline", "current", "", "3f2a1c8ffff", "sha256:one", _NOW),
             OutputStatus(
                 "second#baseline",
                 "behind",
                 "made under an earlier environment",
                 "3f2a1c8ffff",
                 "sha256:two",
+                _EARLIER,
             ),
-            OutputStatus("third#baseline", "stale", "the input `first` changed", "", ""),
-        ]
+            OutputStatus("third#baseline", "stale", "the input `first` changed", "", "", ""),
+        ],
+        environment=_NOW,
     )
 
 
@@ -678,6 +686,7 @@ def test_status_renders_a_foreign_write_as_a_stale_output(
                 message,
                 "3f2a1c8ffff",
                 "sha256:one",
+                _NOW,
                 foreign_write="8d31f00" + "0" * 33,
             ),
         ]
@@ -705,6 +714,9 @@ def test_status_exits_zero_even_with_stale_outputs(
 def test_status_json_is_machine_readable(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Each output carries the environment its record names, beside the
+    project's own: lc minted those names, so this is where they are read
+    — and an output is behind exactly where the two differ."""
     _status_stub(monkeypatch, _report())
 
     result = runner.invoke(main, ["status", "--json"])
@@ -713,6 +725,7 @@ def test_status_json_is_machine_readable(
         "mode": "direct",
         "image": None,
         "sandbox": "",
+        "environment": _NOW,
         "crate": "",
         "counts": {"current": 1, "behind": 1, "stale": 1},
         "outputs": [
@@ -722,6 +735,7 @@ def test_status_json_is_machine_readable(
                 "why": "",
                 "git_sha": "3f2a1c8ffff",
                 "data_version": "sha256:one",
+                "environment": _NOW,
                 "foreign_write": "",
             },
             {
@@ -730,6 +744,7 @@ def test_status_json_is_machine_readable(
                 "why": "made under an earlier environment",
                 "git_sha": "3f2a1c8ffff",
                 "data_version": "sha256:two",
+                "environment": _EARLIER,
                 "foreign_write": "",
             },
             {
@@ -738,6 +753,7 @@ def test_status_json_is_machine_readable(
                 "why": "the input `first` changed",
                 "git_sha": "",
                 "data_version": "",
+                "environment": "",
                 "foreign_write": "",
             },
         ],

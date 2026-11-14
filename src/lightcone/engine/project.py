@@ -14,6 +14,8 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
+from astra.scaffold import create_boilerplate
+
 from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
@@ -202,10 +204,15 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     if write:
         directory.mkdir(parents=True, exist_ok=True)
 
-    # The spec `astra init` writes, taken from astra rather than through
-    # its `init`: that one also makes the git repository, which here is
-    # the dataset item's to converge.
-    c.file("astra.yaml", directory / SPEC_FILENAME, _minimal_spec)
+    # `astra.scaffold` is astra's public scaffold API, the same one
+    # `astra init` delegates to: it writes the spec, an empty astra.yaml,
+    # and nothing else. It is stdlib-only and imports in milliseconds,
+    # which is why it sits at module scope where the rest of astra cannot.
+    c.item(
+        "astra.yaml",
+        (directory / SPEC_FILENAME).exists(),
+        lambda: create_boilerplate(directory),
+    )
     _converge_uv_project(c, directory)
     c.file(
         ".gitignore",
@@ -251,12 +258,6 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         )
 
     return c.report
-
-
-def _minimal_spec() -> str:
-    from astra.api import MINIMAL
-
-    return MINIMAL
 
 
 def require_uv() -> None:

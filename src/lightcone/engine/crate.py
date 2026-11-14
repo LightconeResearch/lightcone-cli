@@ -45,7 +45,7 @@ from lightcone.engine.plan import Graph, Key
 from lightcone.engine.project import SPEC_FILENAME
 
 if TYPE_CHECKING:
-    from astra.records import Record
+    from astra.api import Record
 
 #: The vocabulary the run-level facts come from. Without it in the
 #: ``@context``, terms like ``containerImage`` and ``sha256`` are
@@ -162,12 +162,6 @@ class _Builder:
         writer: Callable[..., LastWrite],
         keys: Mapping[str, str],
     ) -> None:
-        from astra.contract import Contract
-        from astra.diagnostics import Catalogue
-        from astra.load import ParseError, load_yaml
-        from astra.records import Record, read_record
-        from astra.sources.reader import WorktreeReader
-
         self.root = root
         self.graph = graph
         self.license = license
@@ -177,12 +171,13 @@ class _Builder:
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted, with its record at the first
         #: of its places — the one its recipe wrote; the others hold copies.
-        reader, contract = WorktreeReader(root, None), Contract.load(Catalogue.load())
-        self.made: list[tuple[Key, Record]] = []
-        for key in sorted(graph.tasks):
-            record = read_record(reader, graph.tasks[key].places[0].record, contract)
-            if isinstance(record, Record):
-                self.made.append((key, record))
+        #: As ASTRA's checker read it, so a record that is not the
+        #: result's own publishes nothing.
+        self.made: list[tuple[Key, Record]] = [
+            (key, record)
+            for key in sorted(graph.tasks)
+            if (record := graph.found[key][0].record) is not None
+        ]
         self.made_keys = {key for key, _ in self.made}
         self.persons: dict[str, str] = {}  # email/name → @id
         self.agents: dict[Key, str] = {}  # each action's Person @id, or ""
@@ -193,11 +188,7 @@ class _Builder:
         #: decisions it declares.
         self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
         self.remote = remote
-        try:
-            self.spec: dict[str, Any] = load_yaml((root / SPEC_FILENAME).read_bytes()).value
-        except ParseError:
-            self.spec = {}
-        self.title = str(self.spec.get("label") or root.name)
+        self.title = graph.label or root.name
         self.spec_write = writer(root / SPEC_FILENAME)
         self.parameters = {d for t in graph.tasks.values() for d in t.decisions}
 
@@ -253,8 +244,8 @@ class _Builder:
                 "encodingFormat": "application/yaml",
             },
         )
-        if description := self.spec.get("description"):
-            workflow["description"] = str(description)
+        if self.graph.description:
+            workflow["description"] = self.graph.description
         workflow["conformsTo"] = {
             "@id": "https://bioschemas.org/profiles/ComputationalWorkflow/1.0-RELEASE"
         }
@@ -582,8 +573,8 @@ class _Builder:
     def _root(self) -> None:
         root = self.crate.root_dataset
         root["name"] = self.title
-        root["description"] = str(
-            self.spec.get("description")
+        root["description"] = (
+            self.graph.description
             or f"ASTRA analysis `{self.title}`, materialized by lightcone-cli."
         )
         root["license"] = self._license_ref()

@@ -3,9 +3,10 @@
 One project modelled on the specification's worked example: an analysis
 that declares another, drives its decision, pins results across
 universes, imports one of the declared analysis's own universes, derives
-a universe from another and switches an output on with `when`. What the
-spec *means* is ASTRA's to test; these check that lc builds, places,
-records and re-checks each kind of result it plans.
+a universe from another and reads through a switch that has a case in
+only one of them. What the spec *means* is ASTRA's to test; these check
+that lc builds, places, records and re-checks each kind of result it
+plans.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ ROOT = """
       method:
         options: {a: {}, b: {}}
       extra:
-        when: [method.b]
         options: {on: {}, off: {}}
     outputs:
       fit:
@@ -41,14 +41,16 @@ ROOT = """
           command: >-
             cat {inputs} > {output} &&
             echo {decisions.method} {decisions.stage.cut} >> {output}
+      fit_of_b:
+        switch: method
+        cases: {b: fit}
       diagnostic:
         type: metric
         format: txt
-        when: [method.b]
-        inputs: [fit]
+        inputs: [fit_of_b]
         decisions: [extra]
         recipe:
-          command: "cp {inputs.fit} {output} && echo {decisions.extra} >> {output}"
+          command: "cp {inputs.fit_of_b} {output} && echo {decisions.extra} >> {output}"
       comparison:
         type: table
         format: txt
@@ -116,8 +118,9 @@ def built(project: Path, inline: None) -> Path:
 
 def test_each_planned_result_is_one_task_at_the_place_astra_gives_it(project: Path) -> None:
     """Per universe, built once, driven, and belonging to the declared
-    analysis: four kinds of result, one naming rule. `diagnostic` is
-    planned only where its `when` holds, so `u2` has none."""
+    analysis: four kinds of result, one naming rule. `diagnostic` reads a
+    switch with a case for `method: b` alone, so `u2` has none — and the
+    switch, which has no result of its own, is no task."""
     graph = plan.build(project)
 
     assert {key: task.places[0].bytes for key, task in graph.tasks.items()} == PLACES
@@ -142,13 +145,25 @@ def test_a_pin_and_an_import_are_dependencies_like_any_other(project: Path) -> N
 
 
 def test_a_derived_universe_runs_under_its_effective_selection(project: Path) -> None:
-    """`u2` sets only `method`; `stage.cut` is inherited, and `extra`,
-    whose `when` no longer holds, is dropped with the output that needs it."""
+    """`u2` sets only `method`; `stage.cut` is inherited, and the output
+    reading a switch that takes no case there is not built in it."""
     tasks = plan.build(project).tasks
 
     assert tasks["fit#u2"].decisions == {"method": "a", "stage.cut": "tight"}
     assert tasks["diagnostic#u1"].decisions == {"extra": "on"}
     assert "diagnostic#u2" not in tasks
+
+
+def test_reading_through_a_switch_reads_the_case_it_takes(project: Path) -> None:
+    """The entry stays as written — it is what the recipe's placeholder
+    and the record name — and the file is the taken case's result."""
+    task = plan.build(project).tasks["diagnostic#u1"]
+
+    assert task.inputs == {"fit_of_b": "results/u1/fit.txt"}
+    assert task.produced_by == {"fit_of_b": "fit#u1"}
+    assert task.command == "cp results/u1/fit.txt results/u1/diagnostic.txt && echo on >> " + (
+        "results/u1/diagnostic.txt"
+    )
 
 
 def test_a_declared_analysis_s_recipe_runs_in_its_own_folder(built: Path) -> None:

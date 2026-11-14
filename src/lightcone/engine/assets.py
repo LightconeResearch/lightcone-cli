@@ -8,15 +8,14 @@ annex, so it is readable on a clone that has fetched no content at all.
 
 The rule that classifies a result — ``current``, ``behind`` or ``stale`` —
 lives here. Whether a record still describes the analysis is ASTRA's
-checker's to say, and it is asked rather than re-derived; lc adds the two
-things only an executor knows: the environment a result ran under, and
+checker's to say, and its findings are taken as they are; lc adds the two
+things only a runner knows: the environment a result ran under, and
 whether its files were last written by its own run.
 """
 
 from __future__ import annotations
 
-import posixpath
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -24,7 +23,8 @@ from typing import TYPE_CHECKING, Literal
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
-    from astra.check import Status as Checked
+    from astra.api import Digest
+    from astra.api import Status as Checked
 
     # A type only: history is git's, and this module runs no git.
     from lightcone.engine.dataset import LastWrite
@@ -179,40 +179,12 @@ class Verdict:
         return self.status == "stale" or (refresh and self.status == "behind")
 
 
-def check(root: Path) -> dict[str, tuple[Checked, ...]]:
-    """Ask ASTRA's checker what every planned result's record says of it.
-
-    Reads records, hashes inputs and reads git; runs nothing and writes
-    nothing in the project.
-
-    Args:
-        root: The project root.
-
-    Returns:
-        Each planned result's statuses, one per place, keyed by the path
-        of its first place's record from the project root.
-
-    Raises:
-        ProjectError: If the analysis is missing or breaks one of ASTRA's
-            rules, or git cannot be read.
-    """
-    from astra import api
-
-    from lightcone.engine import plan
-
-    with plan.asking_astra(root):
-        report = api.check(root)
-    if report.errors:
-        raise ProjectError(plan.invalid(root, report.errors))
-    above = posixpath.dirname(report.root)
-    return {
-        plan.relative(found.result.places[0].record, above): found.statuses
-        for found in report.results
-    }
-
-
 def classify(
-    *, found: Sequence[Checked], environment: str, foreign: LastWrite | None = None
+    *,
+    found: Sequence[Checked],
+    environment: str,
+    read: Mapping[str, Digest] | None = None,
+    foreign: LastWrite | None = None,
 ) -> Verdict:
     """Decide what a result is, relative to the project as it now stands.
 
@@ -221,11 +193,21 @@ def classify(
     diverge in anything else — history included: whether the result's
     files were last written by its own run is git's to answer, so it
     arrives here as a value computed by whoever has git (the driver), and
-    the rule stays pure.
+    the rule stays pure. So does ASTRA's part: what its checker found
+    travels with the task, and the one question left once upstream tasks
+    have landed — does this result still read the bytes its record gives
+    — is ASTRA's own rule over those findings, asked without git.
 
     Args:
-        found: What ASTRA's checker says at each of the result's places.
+        found: What ASTRA's checker found at each of the result's places,
+            before the run.
         environment: The IRI of the project's environment as it now is.
+        read: The bytes of each result this one reads, by entry of its
+            output's ``inputs``, as they now stand: a task's answer once
+            its upstreams have landed, and what makes a byte-identical
+            rebuild stop a cascade. ``None`` asks what the result is in
+            itself, taking each result it reads to come out as recorded —
+            the question while one of them may still be remade.
         foreign: The commit that last wrote the result's files, when it
             was not the result's own run; ``None`` when clean. A hit is a
             contradiction — the record no longer describes the bytes — so
@@ -236,13 +218,28 @@ def classify(
         ``stale``, ``behind`` or ``current``, with the reason for the
         first two.
     """
-    if why := [
-        reason.message
-        for status in found
-        if status.record_status != "unchanged"
-        for reason in status.reasons
-        if reason.code != "ABSENT_RESULT"
-    ]:
+    why: list[str] = []
+    for status in found:
+        recorded = (
+            {item.entry: item.digest for item in status.record.inputs} if status.record else {}
+        )
+        given = recorded if read is None else read
+        if status.unchanged_given(given):
+            continue
+        # A finding about a result this one reads is settled by the bytes
+        # that result has now, so it is worded from them, not from before.
+        why += [
+            reason.message
+            for reason in status.reasons
+            if reason.code != "ABSENT_RESULT"
+            and not (reason.change == "result" and reason.entry in given)
+        ]
+        why += [
+            f"`{entry}` was remade with other bytes than this result read"
+            for entry, digest in given.items()
+            if status.record is not None and recorded.get(entry) != digest
+        ]
+    if why:
         return Verdict("stale", "; ".join(dict.fromkeys(why)))
     if foreign is not None:
         return Verdict(

@@ -47,7 +47,7 @@ from lightcone.engine.project import (
 )
 
 if TYPE_CHECKING:
-    from astra.check import Status
+    from astra.api import Status
 
 #: The shell a recipe's command is handed to. A recipe is a command line,
 #: not an argv — redirects and pipes are part of what people write — and
@@ -112,9 +112,9 @@ class RunContext:
 def materialize(
     root: Path,
     task: Task,
+    found: tuple[Status, ...],
     context: RunContext,
     refresh: bool,
-    decided: Decided | None,
     foreign: dataset.LastWrite | None,
     *upstream: TaskResult,
     output: Callable[[str, bytes], None] | None = None,
@@ -129,11 +129,11 @@ def materialize(
     Args:
         root: The project root.
         task: The result to make.
+        found: What ASTRA's checker found of the result before the run,
+            one status per place. Read by the driver, where git is; a
+            worker asks nothing of ASTRA but its rule over them.
         context: The run's driver-resolved facts.
         refresh: Whether to remake a result that is merely behind.
-        decided: What the driver found the result to be before the run,
-            or ``None`` where something upstream of it may be remade —
-            then only this task, once its upstreams have landed, can ask.
         foreign: The commit that last wrote the result's files in place
             of its own run, or ``None`` — answered by the driver, because
             history is git's; handed to the one classification rule,
@@ -147,80 +147,55 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, context, refresh, decided, foreign, upstream, output)
+        return _materialize(root, task, found, context, refresh, foreign, upstream, output)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
-
-
-@dataclass(frozen=True)
-class Decided:
-    """What a result is, and the bytes its record gives if it is left alone."""
-
-    verdict: assets.Verdict
-    content_hash: str = ""
-    size: int = 0
-
-
-def decide(
-    found: tuple[Status, ...], environment: str, foreign: dataset.LastWrite | None
-) -> Decided:
-    """Classify one result from what ASTRA's checker found at its places.
-
-    Shared by the driver, which asks before a run, and a task downstream
-    of a remake, which asks again — so the two cannot word, or weigh, the
-    same finding differently.
-
-    Args:
-        found: The result's statuses, one per place.
-        environment: The IRI of the run's environment.
-        foreign: The commit that last wrote the result's files, if not
-            its own run.
-
-    Returns:
-        The verdict, with the recorded bytes of a result that has a
-        record.
-    """
-    verdict = assets.classify(found=found, environment=environment, foreign=foreign)
-    if (record := found[0].record) is None:
-        return Decided(verdict)
-    return Decided(verdict, record.content_hash, record.size)
 
 
 def _materialize(
     root: Path,
     task: Task,
+    found: tuple[Status, ...],
     context: RunContext,
     refresh: bool,
-    decided: Decided | None,
     foreign: dataset.LastWrite | None,
     upstream: tuple[TaskResult, ...],
     output: Callable[[str, bytes], None] | None,
 ) -> TaskResult:
+    from astra.api import Digest
+
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
         return TaskResult(
             task.key, "blocked", reason=f"upstream did not finish: {', '.join(absent)}"
         )
 
-    if decided is None:
-        # Something upstream may have been remade, and only ASTRA can say
-        # whether it came out as the bytes this result recorded reading —
-        # a byte-identical rebuild stops the cascade here.
-        found = assets.check(root)[task.places[0].record]
-        decided = decide(found, context.environment, foreign)
-    if decided.verdict.calls_for_a_remake(refresh=refresh):
+    # Every upstream has landed, so the bytes this result would read are
+    # known: a rebuild that came out byte-identical leaves it standing.
+    verdict = assets.classify(
+        found=found,
+        environment=context.environment,
+        read={
+            entry: Digest(reported[key].content_hash, reported[key].size)
+            for entry, key in task.produced_by.items()
+        },
+        foreign=foreign,
+    )
+    if verdict.calls_for_a_remake(refresh=refresh):
         return execute(root, task, reported, context, output=output)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
     # the files are pointers, and rehashing them would quietly report a
     # different output.
+    record = found[0].record
+    assert record is not None and verdict.status != "stale"  # the branch above
     return TaskResult(
         task.key,
-        decided.verdict.status,  # type: ignore[arg-type]  # stale was remade above
-        content_hash=decided.content_hash,
-        size=decided.size,
-        reason=decided.verdict.why,
+        verdict.status,
+        content_hash=record.content_hash,
+        size=record.size,
+        reason=verdict.why,
     )
 
 
@@ -257,8 +232,7 @@ def execute(
         ``ok`` with the hash and size of the result's bytes, or
         ``failed``. Commits nothing and never touches git.
     """
-    from astra import records
-    from astra.hashing import digest_file
+    from astra import api
 
     resources = TaskResources.parse(task.resources)
     if moved := _gate(root, context.environment):
@@ -271,18 +245,16 @@ def execute(
         if (key := task.produced_by.get(entry)) is not None:
             # What the upstream task reported, never a rehash: one left
             # alone on a clone without its content is a pointer here.
-            read.append(
-                records.RecordedInput(entry, upstream[key].content_hash, upstream[key].size)
-            )
+            read.append(api.RecordedInput(entry, upstream[key].content_hash, upstream[key].size))
         else:
             try:
                 assets.require_fetched(root / name)
-                hashed = digest_file(root / name)
+                hashed = api.digest_file(root / name)
             except (OSError, ProjectError) as e:
                 return TaskResult(
                     task.key, "failed", reason=f"the input `{entry}` cannot be read: {e}"
                 )
-            read.append(records.RecordedInput(entry, hashed.content_hash, hashed.size))
+            read.append(api.RecordedInput(entry, hashed.content_hash, hashed.size))
 
     made = root / task.places[0].bytes
     # Never the parent directory: siblings share it, and under Dask they
@@ -343,22 +315,24 @@ def execute(
         )
 
     try:
-        digest = digest_file(made)
+        digest = api.digest_file(made)
+        # One record at each place ASTRA gives the result, and its bytes at
+        # each default place: a result with two names is made once.
         for place in task.places:
             if place is not task.places[0]:
                 shutil.copyfile(made, root / place.bytes)
-            records.write_record(
+            api.write_record(
                 root / place.record,
-                records.Record(
+                api.Record(
                     address=place.address,
                     content_hash=digest.content_hash,
                     size=digest.size,
                     commit=context.commit,
                     environment=context.environment,
-                    runner=records.Runner("lightcone-cli", lc_version()),
+                    runner=api.Runner("lightcone-cli", lc_version()),
                     inputs=tuple(read),
-                    started=records.timestamp(started),
-                    finished=records.timestamp(finished),
+                    started=api.timestamp(started),
+                    finished=api.timestamp(finished),
                 ),
             )
     except (OSError, ProjectError) as e:
@@ -459,7 +433,7 @@ def main(argv: list[str]) -> int:
         result = execute(
             root,
             task,
-            _from_disk(root, graph, task),
+            _from_disk(graph, task),
             RunContext(
                 environment=identity.environment(root),
                 commit=dataset.head(root)[0],
@@ -478,16 +452,15 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
+def _from_disk(graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
     """What *task* reads of other results, from the records already in the tree.
 
     There is no graph in flight to take them from, so each upstream's
     record stands in for the result its task would have reported.
     """
-    found = assets.check(root) if task.depends_on else {}
     upstream = {}
     for key in task.depends_on:
-        if (record := found[graph.tasks[key].places[0].record][0].record) is None:
+        if (record := graph.found[key][0].record) is None:
             raise ProjectError(
                 f"`{key}`, which `{task.key}` reads, has no valid record. "
                 "Run `lc materialize <cluster>` instead."

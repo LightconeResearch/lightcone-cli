@@ -13,6 +13,7 @@ must *succeed*, or the test would pass without the sandbox doing anything.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -22,9 +23,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from astra.hashing import digest_bytes, digest_file
+from astra import api
 
-from lightcone.engine import assets, container, dataset, identity, plan, sandbox, worker
+from lightcone.engine import container, dataset, identity, plan, sandbox, worker
 from lightcone.engine.sandbox import Unavailable
 from lightcone.engine.worker import TaskResult
 
@@ -108,12 +109,16 @@ def _context(root: Path, environment: str | None = None) -> worker.RunContext:
 
 
 def _make(root: Path, key: str, *upstream: TaskResult, refresh: bool = False) -> TaskResult:
-    """Run one task the way Dask would, classified beforehand as the driver
-    does and handed its upstream results."""
-    task = _task(root, key)
-    context = _context(root)
-    decided = worker.decide(assets.check(root)[task.places[0].record], context.environment, None)
-    return worker.materialize(root, task, context, refresh, decided, None, *upstream)
+    """Run one task the way Dask would: handed what the driver read of it
+    before the run, and its upstream results."""
+    graph = plan.build(root)
+    return worker.materialize(
+        root, graph.tasks[key], graph.found[key], _context(root), refresh, None, *upstream
+    )
+
+
+def _digest(data: bytes) -> api.Digest:
+    return api.Digest(f"sha256:{hashlib.sha256(data).hexdigest()}", len(data))
 
 
 def _record(root: Path, path: str) -> dict[str, Any]:
@@ -143,7 +148,7 @@ def test_a_recipe_runs_and_its_output_is_recorded(root: Path) -> None:
 
     assert result.status == "ok"
     assert (root / _FIRST).read_text() == "one\n"
-    assert (result.content_hash, result.size) == (digest_bytes(b"one\n").content_hash, 4)
+    assert (result.content_hash, result.size) == (_digest(b"one\n").content_hash, 4)
 
 
 def test_the_record_says_what_the_run_was(root: Path) -> None:
@@ -163,7 +168,7 @@ def test_the_record_says_what_the_run_was(root: Path) -> None:
     assert run["runner"] == {"id": "lightcone-cli", "version": worker.lc_version()}
     assert run["started"] <= run["finished"]
     assert "inputs" not in run
-    assert assets.check(root)[_FIRST_RECORD][0].record_status == "unchanged"
+    assert plan.build(root).found["first#baseline"][0].record_status == "unchanged"
 
 
 def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., Path]) -> None:
@@ -179,7 +184,7 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
     assert (root / "results/fit.txt").read_text() == "measured\n"
     record = _record(root, ".astra/records/fit.json")
     assert record["address"] == "fit"
-    read = digest_bytes(b"measured\n")
+    read = _digest(b"measured\n")
     assert record["generated_by"]["inputs"] == [
         {"entry": "catalog", "content_hash": read.content_hash, "size": read.size}
     ]
@@ -343,28 +348,135 @@ def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
     second = _make(root, "second#baseline", first)
 
     assert second.status == "ok"
-    assert first.content_hash != digest_file(root / _FIRST).content_hash
+    assert first.content_hash != _digest((root / _FIRST).read_bytes()).content_hash
     assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
 
 
 # ---- downstream of a task that may be remade -------------------------------
+#
+# The driver reads what ASTRA's checker finds once, before the run, and
+# hands each task its own part. Whether a result downstream of a remake
+# still stands is then the task's to answer, from those findings and the
+# bytes its upstreams gave — with no second question to ASTRA, and no git.
 
 
-def _ask(root: Path, key: str, *upstream: TaskResult) -> TaskResult:
-    """Run one task the driver could not classify beforehand, because
-    something it reads was about to be remade."""
-    return worker.materialize(root, _task(root, key), _context(root), False, None, None, *upstream)
+def _stale_through_first(root: Path, read: api.Digest) -> tuple[api.Status, ...]:
+    """What the checker finds of `second` while `first` is stale: a record
+    of its own, which says it read *read*, and one finding — about what
+    it reads."""
+    place = api.Place(
+        "second", "second#baseline", _SECOND_RECORD, "results/baseline/second.txt"
+    )
+    record = api.Record(
+        place.address,
+        "sha256:" + "5" * 64,
+        7,
+        dataset.head(root)[0],
+        identity.environment(root),
+        api.Runner("lightcone-cli", "1.0"),
+        (api.RecordedInput("first", read.content_hash, read.size),),
+    )
+    reason = api.Reason(
+        "STALE_RESULT",
+        "error",
+        "`first#baseline`, which it reads, is stale",
+        api.Location(place.record, "", None, None),
+        change="result",
+        entry="first",
+    )
+    return (api.Status(place, "stale", "present", True, (reason,), record),)
+
+
+def _landed(read: api.Digest) -> TaskResult:
+    """`first`, remade, with the bytes it came out as."""
+    return TaskResult("first#baseline", "ok", read.content_hash, read.size)
+
+
+def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root: Path) -> None:
+    """Where the cascade stops: `first` was stale and was remade, but as
+    the bytes `second`'s record says it read — so no recipe runs, and the
+    task reports the bytes that record gives."""
+    read = _digest(b"one\n")
+    found = _stale_through_first(root, read)
+
+    result = worker.materialize(
+        root, _task(root, "second#baseline"), found, _context(root), False, None, _landed(read)
+    )
+
+    assert result.status == "current"
+    assert (result.content_hash, result.size) == ("sha256:" + "5" * 64, 7)
+    assert not (root / _SECOND).exists()
+
+
+def test_a_remake_that_gives_other_bytes_remakes_its_dependent(root: Path) -> None:
+    (root / _FIRST).parent.mkdir(parents=True)
+    (root / _FIRST).write_text("two\n")
+    found = _stale_through_first(root, _digest(b"one\n"))
+
+    result = worker.materialize(
+        root,
+        _task(root, "second#baseline"),
+        found,
+        _context(root),
+        False,
+        None,
+        _landed(_digest(b"two\n")),
+    )
+
+    assert result.status == "ok", result.reason
+    assert (root / _SECOND).read_text() == "two\n"
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(
+        _landed(_digest(b"two\n"))
+    )
+
+
+def test_a_task_asks_astra_nothing_but_its_rule(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker may be on a node with no git, and a second check would
+    read a tree other tasks are writing. What it needs of ASTRA came with
+    the task: the findings, and the rule over them."""
+    graph = plan.build(root)
+    first = worker.materialize(
+        root, graph.tasks["first#baseline"], graph.found["first#baseline"], _context(root),
+        False, None,
+    )
+    read = api.Digest(first.content_hash, first.size)
+    context = _context(root)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a task asked ASTRA about the project")
+
+    for question in ("check", "resolve", "validate", "bind", "history"):
+        monkeypatch.setattr(api, question, refuse)
+
+    left = worker.materialize(
+        root, graph.tasks["second#baseline"], _stale_through_first(root, read), context,
+        False, None, first,
+    )
+    made = worker.materialize(
+        root, graph.tasks["second#baseline"], graph.found["second#baseline"], context,
+        False, None, first,
+    )
+
+    assert left.status == "current"
+    assert made.status == "ok", made.reason
+    assert (root / _SECOND).read_text() == "one\n"
 
 
 def test_a_byte_identical_remake_leaves_its_dependents_current(root: Path) -> None:
-    """Where the cascade stops: the dependent's record still names the
-    bytes it read, so there is nothing to make again."""
+    """The same, over the real checker: the dependent's record still names
+    the bytes it read, so there is nothing to make again."""
     second = _make(root, "second#baseline", _make(root, "first#baseline"))
     (root / _SECOND).write_text("untouched\n")
-    remade = worker.execute(root, _task(root, "first#baseline"), {}, _context(root))
+    graph = plan.build(root)
+    remade = worker.execute(root, graph.tasks["first#baseline"], {}, _context(root))
     assert remade.status == "ok"
 
-    again = _ask(root, "second#baseline", remade)
+    again = worker.materialize(
+        root, graph.tasks["second#baseline"], graph.found["second#baseline"], _context(root),
+        False, None, remade,
+    )
 
     assert again.status == "current"
     assert again.content_hash == second.content_hash
@@ -374,15 +486,22 @@ def test_a_byte_identical_remake_leaves_its_dependents_current(root: Path) -> No
 def test_a_remake_with_other_bytes_remakes_its_dependents(
     analysis: Callable[..., Path],
 ) -> None:
+    """Both tasks are handed what the driver read before either ran:
+    `summary` is stale only through `fit`, and is remade because `fit`
+    came out differently."""
     root = analysis(_READS, files={"data/catalog.txt": "measured\n"})
     _make(root, "summary", _make(root, "fit"))
     assert (root / "results/summary.txt").read_text().strip() == "9"
     (root / "data/catalog.txt").write_text("measured again\n")
-    remade = _make(root, "fit")
+    graph, context = plan.build(root), _context(root)
+    assert [reason.change for reason in graph.found["summary"][0].reasons] == ["result"]
+
+    remade = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
+    again = worker.materialize(
+        root, graph.tasks["summary"], graph.found["summary"], context, False, None, remade
+    )
+
     assert remade.status == "ok"
-
-    again = _ask(root, "summary", remade)
-
     assert again.status == "ok"
     assert (root / "results/summary.txt").read_text().strip() == "15"
 
@@ -468,7 +587,7 @@ def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
     def refuse(*args: object, **kwargs: object) -> None:
         raise OSError("no space left on device")
 
-    monkeypatch.setattr("astra.records.write_record", refuse)
+    monkeypatch.setattr(api, "write_record", refuse)
 
     result = _make(root, "first#baseline")
 

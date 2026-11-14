@@ -1,22 +1,25 @@
-"""Tests for `lightcone.engine.plan` — ASTRA's plan, carried across as tasks.
+"""Tests for `lightcone.engine.plan` — the run's plan, read from ASTRA.
 
 What the spec *means* is ASTRA's and is tested there. What is pinned here
 is what lc adds: that each planned result becomes one task holding
-everything a worker needs, that every path in it is measured from the
-project root — wherever that sits in its repository — and that what this
-engine cannot execute, or a target that matches nothing, is an error
-rather than a guess.
+everything a worker needs, with its command filled by lc and every path
+in it measured from the project root — wherever that sits in its
+repository; that one question to ASTRA gets the tasks and how each stands;
+and that what this engine cannot execute, or a target that matches
+nothing, is an error rather than a guess.
 """
 
 from __future__ import annotations
 
 import subprocess
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from astra import api
 
-from lightcone.engine import plan
+from lightcone.engine import dataset, plan
 from lightcone.engine.project import ProjectError
 
 _SPEC = """
@@ -162,8 +165,10 @@ def test_a_result_built_once_has_no_universe_directory(tmp_path: Path) -> None:
     assert task.decisions == {}
 
 
-def test_the_command_arrives_rendered(tmp_path: Path) -> None:
-    """A worker is handed a shell command, never a template to fill."""
+def test_the_command_arrives_filled(tmp_path: Path) -> None:
+    """A worker is handed a shell command, never a template to fill. The
+    grammar is ASTRA's; the paths are lc's, spelled from where the recipe
+    runs."""
     task = plan.build(_project(tmp_path)).tasks["fit#alternative"]
     assert task.workdir == ""
     assert task.command == (
@@ -245,10 +250,20 @@ def test_a_result_of_another_analysis_is_keyed_under_its_folder(tmp_path: Path) 
 @pytest.mark.parametrize("spec", [_SPEC, _PINNED])
 def test_a_project_below_its_repository_top_plans_the_same(tmp_path: Path, spec: str) -> None:
     """ASTRA measures from the top of the repository; everything lc does
-    with a path starts at the project root."""
+    with a path starts at the project root. What the checker found and
+    what ASTRA notes are kept in ASTRA's own words, which name a folder
+    from the top — so of those, only what they say is compared."""
     at_top = plan.build(_project(tmp_path / "top", spec))
     below = plan.build(_project(tmp_path / "nested", spec, below="papers/one"))
-    assert below == at_top
+    assert below.tasks == at_top.tasks
+    assert _standing(below) == _standing(at_top)
+    assert len(below.notes) == len(at_top.notes)
+
+
+def _standing(graph: plan.Graph) -> dict[str, list[str]]:
+    return {
+        key: [status.record_status for status in found] for key, found in graph.found.items()
+    }
 
 
 def test_recipe_resources_are_carried_as_declared(tmp_path: Path) -> None:
@@ -275,6 +290,71 @@ def test_a_command_reaching_outside_its_analysis_is_noted_not_refused(tmp_path: 
     assert "report#baseline" in graph.tasks
     assert any("../src/report.py" in note for note in graph.notes)
     assert plan.build(_project(tmp_path / "clean")).notes == ()
+
+
+# ---- what ASTRA's checker found, kept beside the tasks ---------------------
+
+
+def test_every_task_has_what_the_checker_found_of_it(tmp_path: Path) -> None:
+    """One status per place, in the tasks' order: the state a run starts
+    from, read once and handed to whoever classifies."""
+    graph = plan.build(_project(tmp_path))
+    assert list(graph.found) == list(graph.tasks)
+    for key, task in graph.tasks.items():
+        assert len(graph.found[key]) == len(task.places)
+        assert [status.record_status for status in graph.found[key]] == ["missing"]
+
+
+def test_the_graph_is_read_with_one_question_to_astra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validity, the results and how each stands are one answer: asking
+    twice binds the stack twice, and could see two different trees."""
+    asked: list[Path] = []
+    check = api.check
+
+    def counted(path: Path) -> api.CheckReport:
+        asked.append(path)
+        return check(path)
+
+    def refused(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the graph is read through `check` alone")
+
+    monkeypatch.setattr(api, "check", counted)
+    monkeypatch.setattr(api, "resolve", refused)
+    monkeypatch.setattr(api, "validate", refused)
+    root = _project(tmp_path)
+
+    assert plan.build(root).tasks
+    assert asked == [root]
+
+
+def test_the_analysis_names_itself_in_its_own_words(tmp_path: Path) -> None:
+    """What a publication of the results is titled with — the file's
+    `label` and `description`, and nothing made up where it gives none."""
+    spec = 'label: "Supernova fit"\ndescription: "Fits the 2024 catalog."\n' + (
+        textwrap.dedent(_SPEC)
+    )
+    graph = plan.build(_project(tmp_path / "titled", spec))
+    assert (graph.label, graph.description) == ("Supernova fit", "Fits the 2024 catalog.")
+
+    untitled = plan.build(_project(tmp_path / "untitled"))
+    assert (untitled.label, untitled.description) == ("", "")
+
+
+def test_narrowing_keeps_what_was_found_of_what_is_left(tmp_path: Path) -> None:
+    graph = plan.build(_project(tmp_path))
+    closure = graph.closure(["fit#baseline"])
+    assert list(closure.found) == list(closure.tasks)
+    assert closure.found["summary"] == graph.found["summary"]
+
+
+def test_reading_the_graph_writes_nothing(analysis: Callable[..., Path]) -> None:
+    """ASTRA reads records, hashes inputs and reads git; a read-only verb
+    built on this must leave the tree as it found it."""
+    root = analysis(_SPEC, {"data/catalog.csv": "x,y\n1,2\n", "stage/astra.yaml": _STAGE})
+    plan.build(root)
+    assert dataset.status(root) == []
 
 
 # ---- closure, targets ------------------------------------------------------

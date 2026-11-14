@@ -1,19 +1,19 @@
-"""The spec, read as a graph of tasks.
+"""The run's plan: every result there is to make, and what making it needs.
 
-ASTRA plans the results of an analysis — one per output built once, one
-per universe for an output built per universe — and says of each where
-its bytes and its record go, what it reads, the options its decisions
-select and the command that makes it. A task is one planned result with
-everything executing it needs and nothing about *how* it will be
-executed.
+What an analysis *means* is ASTRA's to say, and one question gets all of
+it: ``astra.api.check`` validates the stack, resolves its planned results
+— one per output built once, one per universe for an output built per
+universe, each with where its bytes and its record go, what it reads and
+the options its decisions select — and says how each one's record stands.
+None of that is re-derived here.
 
-What the spec *means* is ASTRA's to say: ``astra.api.plan`` validates the
-stack, settles every universe's selection, follows declared analyses and
-fills the recipe grammar, so none of it is re-derived here. This module
-only carries each result across to the workers as plain data, and
-refuses what this engine cannot execute.
+What to *do* about it is lc's. This module turns each planned result into
+a task: its command filled with the paths this engine runs recipes with,
+everything measured from the project root, and plain data that crosses to
+a worker. It refuses what this engine cannot execute. Which tasks a run
+actually makes is decided from what the checker found, kept beside them.
 
-Nothing here schedules anything. The plan lists each result after every
+Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and that order is kept; at execution time ordering is
 Dask's job.
 """
@@ -23,16 +23,14 @@ from __future__ import annotations
 import posixpath
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 if TYPE_CHECKING:
-    from astra.diagnostics import Diagnostic
-    from astra.plan import Result
-    from astra.universes import Place
+    from astra.api import Diagnostic, Place, Result, Status
 
 #: A task's identity within a run: its result's address, after the folder
 #: of the analysis the result belongs to when that is not the project's own
@@ -76,9 +74,17 @@ class Graph:
     """Every task a run could make, each after the tasks it reads."""
 
     tasks: dict[Key, Task]
-    #: What ASTRA notes about the plan that a run would silently live with:
-    #: an output nothing plans, a command reaching outside its analysis.
+    #: What ASTRA's checker found of each task's result when the graph was
+    #: read, one status per place. The state a run starts from.
+    found: dict[Key, tuple[Status, ...]]
+    #: What ASTRA notes about the analysis that a run would silently live
+    #: with: an output nothing plans, a command reaching outside its
+    #: analysis.
     notes: tuple[str, ...] = ()
+    #: The analysis's ``label`` and ``description``, as its file writes
+    #: them: what a publication of its results is titled with.
+    label: str = ""
+    description: str = ""
 
     def closure(self, targets: list[Key]) -> Graph:
         """Narrow the graph to *targets* and what they depend on.
@@ -91,7 +97,7 @@ class Graph:
 
         Returns:
             A graph holding *targets* plus their transitive dependencies,
-            in the plan's order.
+            in the same order.
         """
         wanted: set[Key] = set()
         pending = list(targets)
@@ -101,7 +107,11 @@ class Graph:
                 continue
             wanted.add(key)
             pending.extend(self.tasks[key].depends_on)
-        return Graph(tasks={k: t for k, t in self.tasks.items() if k in wanted})
+        return replace(
+            self,
+            tasks={k: t for k, t in self.tasks.items() if k in wanted},
+            found={k: f for k, f in self.found.items() if k in wanted},
+        )
 
     def resolve(self, targets: list[str]) -> list[Key]:
         """Turn what a user typed into task keys.
@@ -145,31 +155,33 @@ def build(root: Path) -> Graph:
 
     Returns:
         One task per planned result this engine builds, each after the
-        tasks it reads.
+        tasks it reads, with what ASTRA's checker found of it.
 
     Raises:
         ProjectError: If there is no analysis, ASTRA finds it invalid, or
             it plans a result this engine cannot build.
     """
     from astra import api
-    from astra.plan import render_command
-    from astra.universes import Place
 
     with asking_astra(root):
-        planned = api.plan(root)
+        report = api.check(root)
+    if report.resolved is None:
+        raise ProjectError(invalid(root, report.errors))
     # ASTRA measures every path from the top of the repository; everything
     # lc does is measured from the project root, which may be below it.
-    above = posixpath.dirname(planned.root)
+    above = posixpath.dirname(report.root)
 
     def key_of(result: Result) -> Key:
         return posixpath.join(relative(result.owner.folder, above), result.places[0].address)
 
-    keys = {(result.output, result.universe): key_of(result) for result in planned.results}
+    keys = {checked.result.key: key_of(checked.result) for checked in report.results}
     tasks: dict[Key, Task] = {}
-    for result in planned.results:
-        if result.read_only:
+    found: dict[Key, tuple[Status, ...]] = {}
+    for checked in report.results:
+        result = checked.result
+        if result.from_commit:
             continue
-        key = keys[result.output, result.universe]
+        key = keys[result.key]
         from_commit = [read.entry for read in result.inputs if read.commit is not None]
         if result.run_at is not None or from_commit:
             what = f"reads `{from_commit[0]}` from" if from_commit else "belongs to"
@@ -185,38 +197,62 @@ def build(root: Path) -> Graph:
                 "repository of its own — lc commits results in the project's repository "
                 "only. Run lc from that analysis instead."
             )
+        workdir = relative(result.workdir, above)
+        inputs = {read.entry: relative(read.path, above) for read in result.inputs}
+        places = tuple(
+            api.Place(
+                place.name,
+                place.address,
+                relative(place.record, above),
+                relative(place.bytes, above),
+            )
+            for place in result.places
+        )
+        decisions = {k: v for k, v in result.decisions.items() if v is not None}
         tasks[key] = Task(
             key=key,
-            places=tuple(
-                Place(
-                    place.name,
-                    place.address,
-                    relative(place.record, above),
-                    relative(place.bytes, above),
-                )
-                for place in result.places
+            places=places,
+            # ASTRA owns the placeholder grammar; which paths fill it is the
+            # runner's choice, and lc's is the one a recipe author reads in
+            # their own folder: relative to where the recipe runs.
+            command=api.fill(
+                result.command,
+                inputs={
+                    entry: posixpath.relpath(path, workdir or ".")
+                    for entry, path in inputs.items()
+                },
+                decisions=decisions,
+                output=posixpath.relpath(places[0].bytes, workdir or "."),
             ),
-            command=render_command(result, root / relative(result.workdir, above)),
-            workdir=relative(result.workdir, above),
-            inputs={read.entry: relative(read.path, above) for read in result.inputs},
+            workdir=workdir,
+            inputs=inputs,
             produced_by={
-                read.entry: keys[read.result.output, read.result.universe]
-                for read in result.inputs
-                if read.result is not None
+                read.entry: keys[read.result] for read in result.inputs if read.result is not None
             },
-            decisions={k: v for k, v in result.decisions.items() if v is not None},
+            decisions=decisions,
             resources=(
                 {k: v for k, v in asdict(result.resources).items() if v is not None}
                 if result.resources
                 else {}
             ),
         )
-    notes = tuple(
-        note.message
-        for note in planned.notes
-        if note.built and note.kind in ("unplanned", "outside_folder")
+        found[key] = checked.statuses
+    written = report.resolved.analysis
+    return Graph(
+        tasks=tasks,
+        found=found,
+        # Of what ASTRA notes for an author, the two a run would silently
+        # live with. A pin that falls back and an output a switch leaves
+        # unbuilt are how an analysis is written, not something to repeat
+        # at every run.
+        notes=tuple(
+            note.message
+            for note in report.resolved.notes
+            if note.built and note.kind in ("unplanned", "outside_folder")
+        ),
+        label=written.label or "",
+        description=written.description or "",
     )
-    return Graph(tasks=tasks, notes=notes)
 
 
 def relative(path: str, above: str) -> str:
@@ -245,28 +281,24 @@ def _folders(folder: str) -> Iterator[str]:
 def asking_astra(root: Path) -> Iterator[None]:
     """Turn what ASTRA raises about a project into a ``ProjectError``.
 
-    One place, because every question lc puts to ASTRA — the plan, the
-    check — can fail the same ways, and each must reach the user as the
-    same clean refusal rather than as another package's traceback.
+    One place, because every question lc puts to ASTRA can fail the same
+    ways, and each must reach the user as the same clean refusal rather
+    than as another package's traceback.
 
     Args:
         root: The project root, for naming a missing analysis.
 
     Raises:
-        ProjectError: If there is no analysis, it breaks one of ASTRA's
-            rules, or git or ASTRA's cache cannot be used.
+        ProjectError: If there is no analysis, or git or ASTRA's cache
+            cannot be used.
     """
     from astra import api
-    from astra.cache import CacheError
-    from astra.sources.git import GitError
 
     if not (root / SPEC_FILENAME).is_file():
         raise ProjectError(f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize.")
     try:
         yield
-    except api.InvalidAnalysisError as e:
-        raise ProjectError(invalid(root, e.report.diagnostics)) from e
-    except (api.NoAnalysisError, GitError, CacheError, OSError) as e:
+    except (api.NoAnalysisError, api.GitError, api.CacheError, OSError) as e:
         raise ProjectError(str(e)) from e
 
 

@@ -188,21 +188,19 @@ def test_the_iri_is_one_a_record_may_hold(root: Path) -> None:
     from importlib.resources import files
 
     schema = json.loads(
-        (files("astra.schema") / "generated" / "provenance.schema.json").read_text()
+        (files("astra.schema") / "jsonschema" / "provenance.schema.json").read_text()
     )
     pattern = schema["$defs"]["Environment"]["properties"]["iri"]["pattern"]
     assert re.fullmatch(pattern, environment(root))
 
 
-def test_astra_check_is_told_the_environment_can_be_recreated(root: Path) -> None:
-    """The scheme is found through the entry point, the way `astra check`
-    finds it, and answers only for IRIs lc records."""
-    from astra import environments
+def test_what_an_environment_holds_is_not_registered_with_astra() -> None:
+    """lc minted the name, so lc is who says what it holds: `astra check`
+    is handed no plug-in to answer for it."""
+    import tomllib
 
-    answers = environments.answers(environment(root), environments.registered())
-    assert [(answer.scheme, answer.recreatable) for answer in answers] == [("lightcone", True)]
-    assert "uv.lock" in answers[0].holds
-    assert environments.answers("urn:example:env:1", environments.registered()) == ()
+    declared = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    assert "astra.environments" not in declared["project"].get("entry-points", {})
 
 
 # ---- the lock scan ---------------------------------------------------------

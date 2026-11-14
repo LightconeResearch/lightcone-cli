@@ -3,10 +3,12 @@
 A result's recorded run, read from its ASTRA record, so the page never
 parses that format and the server never has to open dotfiles to it;
 every result's state, classified by the engine exactly as ``lc status``
-does, so the page holds no copy of that rule; and the cited
-papers in astra's cache, which lies outside the project (``astra paper
-add`` fills it, and quotes are verified against it). Nothing here writes
-the cache. Every route needs the token, like the rest of the server.
+does, so the page holds no copy of that rule; and the cited papers in
+astra's paper cache, which lies outside the
+project (``astra paper add`` fills it, and quotes are verified against it).
+The paper routes are adapted from jupyterlab-lightcone's ``routes.py``
+(BSD-3-Clause, Lightcone Research), without its fetch route: nothing here
+writes the cache. Every route needs the token, like the rest of the server.
 """
 
 from __future__ import annotations
@@ -17,45 +19,50 @@ import os
 from pathlib import Path
 from typing import Any
 
-from astra.evidence import papers
-from astra.records import Record
+from astra.api import Record
+from astra.papers.cache import CachedPaper, PaperCache
 from jupyter_core.utils import ensure_async
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
 from tornado import web
-from tornado.httputil import url_concat
 
-from lightcone.app.files import open_fd
+from lightcone.app.files import ProjectFileHandler, open_fd
 from lightcone.engine import assets, materialize
 from lightcone.engine.project import ProjectError, current_project
 
+_PAPERS = PaperCache().cache_dir
+
+
+def _cached() -> dict[str, CachedPaper]:
+    """Every cached paper by DOI as the SDK normalizes it, unversioned first."""
+    papers: dict[str, CachedPaper] = {}
+    for paper in PaperCache().list_papers():
+        doi = paper.metadata.doi.strip().lower()
+        if doi not in papers or paper.metadata.version is None:
+            papers[doi] = paper
+    return papers
+
 
 class PapersHandler(APIHandler):
-    """Which of the cited DOIs the cache holds a PDF of, and where to get it."""
+    """Title, authors and PDF of the cited DOIs the cache holds."""
 
     @web.authenticated
     async def get(self) -> None:
-        """Answer the repeated ``doi`` arguments from the cache."""
-        found: dict[str, dict[str, str]] = {}
+        """Answer the repeated ``doi`` arguments from one scan of the cache."""
+        cached = await asyncio.to_thread(_cached)
+        papers: dict[str, dict[str, str]] = {}
         for doi in self.get_arguments("doi"):
-            if await asyncio.to_thread(papers.get, doi, None) is not None:
-                url = url_path_join(self.base_url, "lightcone/api/paper")
-                found[doi] = {"pdfUrl": url_concat(url, {"doi": doi})}
+            if (paper := cached.get(doi)) is None:
+                continue
+            pdf = paper.pdf_path.relative_to(_PAPERS).as_posix()
+            metadata = {
+                "title": paper.metadata.title,
+                "authors": ", ".join(paper.metadata.authors or []),
+                "pdfUrl": url_path_join(self.base_url, "lightcone/papers", pdf),
+            }
+            papers[doi] = {key: value for key, value in metadata.items() if value}
         self.set_header("Cache-Control", "private, no-store")
-        self.finish({"papers": found})
-
-
-class PaperHandler(APIHandler):
-    """The PDF the cache holds for one DOI."""
-
-    @web.authenticated
-    async def get(self) -> None:
-        """Send the paper the ``doi`` argument names, or a 404."""
-        pdf = await asyncio.to_thread(papers.get, self.get_query_argument("doi"), None)
-        if pdf is None:
-            raise web.HTTPError(404)
-        self.set_header("Cache-Control", "private, no-store")
-        self.finish(pdf, set_content_type="application/pdf")
+        self.finish({"papers": papers})
 
 
 class RunHandler(APIHandler):
@@ -124,7 +131,8 @@ class StatusHandler(APIHandler):
 
 HANDLERS = [
     ("/lightcone/api/papers", PapersHandler),
-    ("/lightcone/api/paper", PaperHandler),
     ("/lightcone/api/run", RunHandler),
     ("/lightcone/api/status", StatusHandler),
+    # Jupyter's own file handler: ranges for pdf.js, 304s on reopening.
+    ("/lightcone/papers/(.*)", ProjectFileHandler, {"path": str(_PAPERS)}),
 ]

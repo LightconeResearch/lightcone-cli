@@ -167,6 +167,26 @@ def test_an_input_of_a_declared_analysis_is_a_read_path_too(project: Path) -> No
     ]
 
 
+def test_reading_the_declared_inputs_fetches_nothing(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe reads the project. An analysis declared at a remote has no
+    input a probe could reach, so ASTRA is told not to go and get it."""
+    from astra import api
+
+    asked: list[bool] = []
+    bind = api.bind
+
+    def offline_only(path: Path, *, offline: bool = False) -> api.Bound:
+        asked.append(offline)
+        return bind(path, offline=offline)
+
+    monkeypatch.setattr(api, "bind", offline_only)
+
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
+    assert asked == [True]
+
+
 def test_a_declared_input_that_is_not_there_is_left_out(project: Path) -> None:
     """The read set names files; a declaration whose file is absent has
     nothing to grant."""

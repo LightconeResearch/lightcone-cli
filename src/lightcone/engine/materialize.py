@@ -49,7 +49,7 @@ from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
-    from astra.records import Record
+    from astra.api import Digest, Record
 
     from lightcone.engine.compute.output import Forwarder
 
@@ -140,7 +140,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     report = MaterializeReport()
     graph, environment, _ = _graph(root, targets, report)
     for found in _classify(root, graph, environment, refresh=refresh):
-        verdict = found.decided.verdict
+        verdict = found.verdict
         if verdict.calls_for_a_remake(refresh=refresh):
             report.planned[found.task.key] = verdict.why
         elif found.upstream:
@@ -161,20 +161,19 @@ class _Classified:
     """One task, and what the project's state says of its result."""
 
     task: Task
-    decided: worker.Decided
+    #: What the result is. Where something upstream may be remade, what
+    #: it is in itself: only the task, once that has landed, can say more.
+    verdict: assets.Verdict
     #: The record at the result's first place, where it has one of its own.
     record: Record | None
     #: The commit that last wrote the result's files, if not its own run.
     foreign: dataset.LastWrite | None
-    #: A task upstream of this one that may run, or empty. Only once it
-    #: has landed can anything say whether this result still stands.
+    #: A task upstream of this one that may run, or empty.
     upstream: Key
-    #: ASTRA finds no valid record, so no upstream outcome can spare it.
-    missing: bool
 
     def may_run(self, *, refresh: bool) -> bool:
         """Whether a run has to hand this task to a worker."""
-        return bool(self.upstream) or self.decided.verdict.calls_for_a_remake(refresh=refresh)
+        return bool(self.upstream) or self.verdict.calls_for_a_remake(refresh=refresh)
 
 
 def _classify(
@@ -184,9 +183,9 @@ def _classify(
     the project.
 
     The walk every mode shares, so there is one answer to "what is this
-    result" and not one per verb: ASTRA's checker is asked once, and each
-    task's findings go through the one classification rule, with the
-    history only the driver can read.
+    result" and not one per verb: what ASTRA's checker found of each task
+    goes through the one classification rule, with the history only the
+    driver can read.
 
     Args:
         root: The project root.
@@ -198,22 +197,38 @@ def _classify(
     Returns:
         One entry per task, in the graph's order.
     """
-    checked = assets.check(root)
+
+    def recorded(key: Key) -> Digest:
+        record = graph.found[key][0].record
+        assert record is not None  # a result left alone has a record of its own
+        return record.digest
+
     may_run: set[Key] = set()
     classified = []
     for key, task in graph.tasks.items():
-        found = checked[task.places[0].record]
+        found = graph.found[key]
         record = found[0].record
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives.
         foreign = None if record is None else _foreign_write(root, task)
+        upstream = next((dep for dep in task.depends_on if dep in may_run), "")
         entry = _Classified(
             task,
-            worker.decide(found, environment, foreign),
+            assets.classify(
+                found=found,
+                environment=environment,
+                # A result left alone gives the bytes its record does. One
+                # that may be remade gives bytes nobody knows yet.
+                read=(
+                    None
+                    if upstream
+                    else {entry: recorded(dep) for entry, dep in task.produced_by.items()}
+                ),
+                foreign=foreign,
+            ),
             record,
             foreign,
-            upstream=next((dep for dep in task.depends_on if dep in may_run), ""),
-            missing=any(status.record_status == "missing" for status in found),
+            upstream,
         )
         if entry.may_run(refresh=refresh):
             may_run.add(key)
@@ -242,6 +257,11 @@ class OutputStatus:
     git_sha: str
     #: Its content identity, or empty if it was never materialized.
     data_version: str
+    #: The environment its recipe ran in, as its record names it, or empty
+    #: if it was never materialized. lc minted the name, so lc is who says
+    #: what it holds: the lock, the interpreter pin, uv's install settings
+    #: and the image definition of the commit in ``git_sha``.
+    environment: str
     #: Empty when the commit that last touched the result's files is its
     #: own run. Otherwise that foreign commit's sha — the
     #: agent-forged-file fact, which also makes the result read `stale`:
@@ -281,6 +301,9 @@ class StatusReport:
     image: dict[str, str] | None = None
     #: One line naming the enforcement a run here would get.
     sandbox: str = ""
+    #: The project's environment as a record made now would name it. An
+    #: output whose own ``environment`` differs is the one that is behind.
+    environment: str = ""
     #: Where the publication view stands — maintained, and if so whether
     #: it still reflects the outputs. Repository facts only, like the
     #: rest of the header.
@@ -304,6 +327,7 @@ class StatusReport:
             "mode": self.mode,
             "image": self.image,
             "sandbox": self.sandbox,
+            "environment": self.environment,
             "crate": self.crate,
             "counts": self.counts,
             "outputs": [output.as_dict() for output in self.outputs],
@@ -337,16 +361,18 @@ def status(root: Path) -> StatusReport:
     result.sandbox = _sandbox_line(result.mode)
     stamps = []
     graph, environment, _ = _graph(root, [], report)
+    result.environment = environment
     for found in _classify(root, graph, environment, refresh=False):
         if found.record and found.record.finished:
             stamps.append(found.record.finished)
         result.outputs.append(
             OutputStatus(
                 output=found.task.key,
-                status=found.decided.verdict.status,
-                why=found.decided.verdict.why,
+                status=found.verdict.status,
+                why=found.verdict.why,
                 git_sha=found.record.commit if found.record else "",
                 data_version=found.record.content_hash if found.record else "",
+                environment=found.record.environment if found.record else "",
                 foreign_write=found.foreign.sha if found.foreign else "",
             )
         )
@@ -504,29 +530,30 @@ def materialize(
         # Results left alone are values, not Dask tasks: they need no allocation
         # resources. Futures for everything that may run retain dependency order.
         for found in classified:
-            task, decided = found.task, found.decided
+            task, verdict = found.task, found.verdict
             if not found.may_run(refresh=refresh):
+                assert found.record is not None and verdict.status != "stale"
                 result = worker.TaskResult(
                     task.key,
-                    decided.verdict.status,  # type: ignore[arg-type]  # stale may run
-                    decided.content_hash,
-                    decided.size,
-                    reason=decided.verdict.why,
+                    verdict.status,
+                    found.record.content_hash,
+                    found.record.size,
+                    reason=verdict.why,
                 )
                 pending[task.key] = result
                 _consume(root, task, result, dsid, runtime, report)
                 continue
+            # What the checker found goes with the task: downstream of a
+            # remake, whether the result still stands is known only once
+            # its upstreams have landed, and the task answers that from
+            # these findings and the bytes they gave, without git.
             pending[task.key] = scheduler.submit(
                 worker.materialize,
                 root,
                 task,
+                graph.found[task.key],
                 context,
                 refresh,
-                # Downstream of a remake, what the driver found may not
-                # survive it, so the task asks again once its upstreams have
-                # landed — unless it has no record, which nothing upstream
-                # can spare.
-                None if found.upstream and not found.missing else decided,
                 found.foreign,
                 *[pending[dep] for dep in task.depends_on],
                 key=task.key,
@@ -765,7 +792,8 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
     Args:
         root: The project root.
         report: Collects the one maintenance line and any warnings.
-        full: The whole-project graph — never a run's narrowed one.
+        full: The whole-project graph, as read before the run — never a
+            run's narrowed one.
         dsid: The dataset's UUID, already read by the caller.
     """
     # Deferred so `lc status` and `--check` never import rocrate — the
@@ -794,6 +822,10 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "so that result is not in the publication view"
         )
     try:
+        # The graph holds the records as they were when the run started;
+        # what the run made has new ones, so they are read again.
+        if report.made:
+            full = plan.build(root)
         document = crate.render(
             root,
             full,
