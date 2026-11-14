@@ -14,16 +14,15 @@ one it finishes with.
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
-from lightcone.engine import container, sandbox
+from lightcone.engine import container, plan, sandbox
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
-    SPEC_FILENAME,
     ProjectError,
     child_env,
     require_uv,
@@ -50,7 +49,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     from lightcone.engine.compute.output import call, forwarding
 
     require_uv()
-    paths = input_paths(project, read_spec(project))
+    paths = input_paths(project)
     with compute.connect(cluster_id) as client:
         resources = TaskResources().requirements(
             worker_capacities(client.scheduler_info()["workers"]), whole_worker=True,
@@ -99,59 +98,39 @@ def _probe(
     return outcome
 
 
-def read_spec(project: Path) -> dict[str, Any]:
-    """Read the project's spec, best-effort.
+def input_paths(project: Path) -> list[Path]:
+    """Collect the files the analysis declares as inputs, best-effort.
 
-    A probe exists to debug a project, and a spec whose sub-analysis
-    references are stale is exactly when someone runs one.
+    Every analysis of the stack read in the working tree, not just the
+    project's own: a declared analysis has inputs of its own, and a probe
+    denied one is a denial the researcher cannot act on — the file is
+    declared, just not at the top of the tree. Bound rather than
+    validated, because a probe exists to debug a project, and a spec that
+    breaks a rule is exactly when someone runs one.
 
     Args:
         project: The project root.
 
     Returns:
-        The spec with sub-analyses merged in; the top-level document alone
-        if the tree will not resolve; an empty spec if there is none.
+        The resolved paths that exist; none where there is no analysis
+        ASTRA can read.
     """
-    from astra.helpers import load_yaml, resolve_analysis_tree
+    from astra import api
+    from astra.cache import CacheError
+    from astra.sources.git import GitError
 
-    spec_path = project / SPEC_FILENAME
-    if not spec_path.exists():
-        return {}
-    data: dict[str, Any] = load_yaml(spec_path)
     try:
-        return dict(resolve_analysis_tree(data, project))
-    except Exception:
-        return data
-
-
-def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
-    """Collect the declared inputs that are filesystem paths.
-
-    ASTRA's ``source`` is free-form — a URI, a dotted name, a path — so
-    the test for "is this a path" is whether it resolves to something that
-    exists. Anything else is somebody else's input kind.
-
-    Args:
-        project: The project root, for resolving relative sources.
-        spec: The spec to read inputs from.
-
-    Returns:
-        The resolved paths that exist.
-    """
-    from astra.helpers import get_inputs
-    from astra.resolve import iter_analysis_nodes
-
+        stack = api.bind(project).stack
+    except (api.NoAnalysisError, GitError, CacheError, OSError):
+        return []
+    if stack is None:
+        return []
+    above = posixpath.dirname(stack.analyses[stack.root].file)
     found: list[Path] = []
-    # Every node, not just the root: a sub-analysis declares its own
-    # inputs, and a probe denied one is a denial the researcher cannot act
-    # on — the file is declared, just not at the top of the tree.
-    for _scope, node in iter_analysis_nodes(spec):
-        for declared in get_inputs(node):
-            source = declared.get("source")
-            if not isinstance(source, str) or not source:
-                continue
-            candidate = Path(source)
-            resolved = candidate if candidate.is_absolute() else project / candidate
-            if resolved.exists():
-                found.append(resolved.resolve())
+    for member, analysis in stack.determined():
+        if member.identity.commit is None:
+            folder = project / plan.relative(member.identity.folder, above)
+            for declared in analysis.inputs.values():
+                if (path := folder / declared.path).exists():
+                    found.append(path.resolve())
     return list(dict.fromkeys(found))

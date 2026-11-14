@@ -1,11 +1,4 @@
-"""What a materialized output is identified by.
-
-Two hashes, and they answer different questions on purpose.
-
-``definition_version`` is what the spec says an output *is*: its rendered
-recipe and the decisions it was made under. It is the rebuild trigger —
-when it moves, the artifact on disk is no longer an instance of the thing
-the spec describes, so keeping it would be mislabelling it.
+"""The environment a result ran under, and how far its identity reaches.
 
 ``env_version`` is the environment's identity: the lock's bytes, the
 interpreter pin's bytes, the settings that decide *which artifacts*
@@ -15,25 +8,24 @@ over-sensitive — raw lock bytes, so a comment reflow moves it — because
 the alternative is a parse that silently disagrees with uv about what the
 lock means.
 
-**``env_version`` is not part of ``definition_version``**, and that is the
-whole shape of the model. An environment moves for reasons that have
-nothing to do with a given output — one added dependency rewrites the lock
-for the whole project — and a research artifact costs hours to remake and
-is often already looked at. So an environment edit does not stale
-anything; it makes an artifact *behind*, which is a fact the report states
-and a rebuild the caller can ask for. Over-sensitivity is affordable
-exactly because it no longer spends compute.
+A record names the environment its recipe ran in by an IRI, and
+:func:`environment` is that IRI: ``env_version`` under lc's own ``urn:``
+prefix. ASTRA records the environment and never compares it, **and
+neither does the rebuild rule** — that is the whole shape of the model.
+An environment moves for reasons that have nothing to do with a given
+output — one added dependency rewrites the lock for the whole project —
+and a research artifact costs hours to remake and is often already looked
+at. So an environment edit does not stale anything; it makes an artifact
+*behind*, which is a fact the report states and a rebuild the caller can
+ask for. Over-sensitivity is affordable exactly because it no longer
+spends compute.
 
-What makes that safe is that nothing is lost: the environment an output
-was made under is recorded in its manifest, and the commit alongside it
-reconstructs that environment from the lock of the day.
+What makes that safe is that nothing is lost: every file the hash covers
+is committed, so the commit a record names reconstructs the environment
+its IRI names from the lock of the day.
 
-The git commit is not an input to either hash. It is tree-wide, so
-hashing it would stale every output in the repository on a README edit.
-
-Both hashes are length-framed. Concatenating fields raw lets a boundary
-shift between them produce the same digest from different inputs — a
-recipe ending in a character the decisions begin with, say — and nothing
+The hash is length-framed. Concatenating fields raw lets a boundary shift
+between them produce the same digest from different inputs, and nothing
 about a content hash is worth having if it can be shifted.
 """
 
@@ -44,7 +36,6 @@ import json
 import os
 import re
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -109,32 +100,51 @@ def env_version(root: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
-def definition_version(*, recipe: str, decisions: Mapping[str, str], fmt: str) -> str:
-    """Compute what the spec says one output is.
+_IRI = "urn:lightcone:env:"
 
-    ``sha256(recipe ‖ canonical decisions ‖ format)``, length-framed. The
-    environment is deliberately absent: see this module's docstring.
 
-    The format is framed in its own right rather than left to arrive
-    through the rendered recipe's ``{output}`` path, because a recipe need
-    not use that placeholder at all. One that does not would keep its
-    digest across a re-declared serialization while the manifest — whose
-    sidecar is named from the id alone, so it does not move either — went
-    on describing an output at a path that no longer exists.
+def environment(root: Path) -> str:
+    """Name the project's environment as a record does.
 
     Args:
-        recipe: The rendered recipe command.
-        decisions: The decisions this output declares, as id → option.
-        fmt: The declared serialization.
+        root: The project root.
 
     Returns:
-        The digest, as ``sha256:<hex>``.
+        The IRI: :func:`env_version` under lc's ``urn:`` prefix.
+
+    Raises:
+        ProjectError: If ``uv.lock`` or ``.python-version`` is missing.
     """
-    h = hashlib.sha256()
-    _frame(h, "recipe", recipe.encode())
-    _frame(h, "decisions", _canonical(dict(decisions)).encode())
-    _frame(h, "format", fmt.encode())
-    return f"sha256:{h.hexdigest()}"
+    return _IRI + env_version(root)
+
+
+class Scheme:
+    """What lc answers ASTRA's checker about an environment it recorded.
+
+    :data:`SCHEME` is registered in the ``astra.environments`` entry-point
+    group, which is how ``astra check`` learns that an IRI is one a runner
+    can recreate.
+    """
+
+    name = "lightcone"
+
+    def recognises(self, iri: str) -> bool:
+        """Whether *iri* is one lc records."""
+        return iri.startswith(_IRI)
+
+    def holds(self, iri: str) -> str:
+        """Say what an environment lc recorded is made of."""
+        return (
+            "the uv environment of the record's commit: uv.lock, .python-version, uv's "
+            "install settings and, in a containerized project, the image definition"
+        )
+
+    def recreatable(self, iri: str) -> bool:
+        """Every file the hash covers is in the record's commit."""
+        return True
+
+
+SCHEME = Scheme()
 
 
 def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:

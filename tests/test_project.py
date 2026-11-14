@@ -22,7 +22,6 @@ from lightcone.engine.project import (
 #: Every path convergence is responsible for.
 SCAFFOLD = (
     "astra.yaml",
-    "universes/baseline.yaml",
     "pyproject.toml",
     ".python-version",
     ".gitignore",
@@ -110,14 +109,14 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
-def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path) -> None:
-    """The scaffold is an empty analysis, not an example to delete — and
-    still one ASTRA accepts and lc can plan, so every verb works on a
-    project nobody has edited yet."""
+def test_a_fresh_spec_passes_the_gate(tmp_path: Path, real_tools: None) -> None:
+    """The scaffold is the minimal analysis `astra init` writes — one
+    ASTRA accepts and lc can plan, so every verb works on a project nobody
+    has edited yet. Real tools, because ASTRA validates against git."""
     project = tmp_path / "proj"
     converge(project)
 
-    assert plan.build(project).tasks == {}
+    assert list(plan.build(project).tasks) == ["result"]
 
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
@@ -200,18 +199,15 @@ def test_converge_adopts_an_existing_spec_without_touching_it(tmp_path: Path) ->
 
 
 def test_adoption_adds_no_layout_of_its_own(tmp_path: Path) -> None:
-    """Neither `src/` nor an empty `universes/` is created beside a
-    user-authored spec: git cannot track an empty directory, so converging
-    one would report drift on every fresh clone. Where analysis code lives
-    is the user's layout (astra-tools#100), and universes are discovered by
-    glob — a missing directory yields no universes, not an error."""
+    """No `src/` is created beside a user-authored spec: git cannot track
+    an empty directory, so converging one would report drift on every
+    fresh clone. Where analysis code lives is the user's layout."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / SPEC_FILENAME).write_text('name: "mine"\n')
 
     converge(project)
     assert not (project / "src").exists()
-    assert not (project / "universes").exists()
     assert converge(project).converged
 
 

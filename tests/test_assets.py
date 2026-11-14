@@ -1,11 +1,10 @@
-"""Tests for `lightcone.engine.assets` — an output's bytes, record, and
-whether it is still current.
+"""Tests for `lightcone.engine.assets` — whether a result is still current.
 
-The classification table is the important part of this file. It is driven
-the way both callers drive it — the worker with live content identities,
-and `--check` with `None` for anything it has already decided will be
-remade — because the entire justification for one rule is that those two
-cannot disagree.
+The classification table is the important part of this file. Whether a
+record still describes the analysis is ASTRA's checker's to say, so the
+rule is driven with the statuses that checker returns; what is pinned is
+what lc makes of them, and the two things it adds — the environment a
+result ran under, and whether its files were last written by its own run.
 
 The `stale` / `behind` split is the other half. `stale` means the artifact
 contradicts the project and must be remade; `behind` means it is still
@@ -17,179 +16,85 @@ environment that no longer exists.
 
 from __future__ import annotations
 
-import hashlib
-import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from astra.check import Reason, Status
+from astra.diagnostics import Location
+from astra.records import Record, Runner
+from astra.universes import Place
+from conftest import CLUSTER_ID
 
-from lightcone.engine import assets, dataset
-from lightcone.engine.assets import Manifest, classify, data_version, output_path
+from lightcone.engine import assets, dataset, identity, materialize
+from lightcone.engine.assets import classify
 from lightcone.engine.project import ProjectError
 
-
-def _manifest(**overrides: object) -> Manifest:
-    base: dict[str, object] = {
-        "output_id": "best_fit",
-        "universe_id": "baseline",
-        "recipe": "python src/fit.py {output}",
-        "definition_version": "sha256:code",
-        "env_version": "sha256:env",
-        "data_version": "sha256:data",
-        "decisions": {"method": "mcmc"},
-        "input_versions": {"catalog": "sha256:cat"},
-        "git_sha": "abc123",
-        "git_remote": "https://example/demo.git",
-        "lc_version": "0.4.2",
-        "uv_version": "0.12.5",
-        "hermeticity": {"mechanism": "landlock", "fs": "declared", "network": "allowed"},
-    }
-    return Manifest(**{**base, **overrides})  # type: ignore[arg-type]
+_PLACE = Place(
+    "best_fit",
+    "best_fit#baseline",
+    ".astra/records/baseline/best_fit.json",
+    "results/baseline/best_fit.csv",
+)
 
 
-# ---- where an asset lives --------------------------------------------------
+# ---- where the record lives ------------------------------------------------
 
 
-def test_an_asset_is_addressed_by_its_path(tmp_path: Path) -> None:
-    """The path in a rendered recipe is the path on disk — no staging, no
-    scratch, no relocation."""
-    assert output_path(tmp_path, "baseline", "best_fit", "csv") == (
-        tmp_path / "results/baseline/best_fit.csv"
-    )
+def test_a_result_file_names_its_record() -> None:
+    assert assets.record_places("results/baseline/fit.json") == [
+        ".astra/records/baseline/fit.json"
+    ]
+    assert assets.record_places("results/summary.csv") == [".astra/records/summary.json"]
 
 
-# ---- content identity ------------------------------------------------------
+def test_a_result_of_an_analysis_in_a_folder_keeps_its_record_there() -> None:
+    assert assets.record_places("stage/results/v/mask.txt") == [
+        "stage/.astra/records/v/mask.json"
+    ]
 
 
-def test_the_same_bytes_hash_the_same(tmp_path: Path) -> None:
-    for name in ("a", "b"):
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "fit.csv").write_text("x,y\n1,2\n")
-    assert data_version(tmp_path / "a") == data_version(tmp_path / "b")
+def test_a_dotted_file_name_offers_every_split() -> None:
+    """A name is ids joined by dots and a format may hold dots too, so the
+    file's name alone cannot say where one ends."""
+    assert assets.record_places("results/u/stage.chain.tar.gz") == [
+        ".astra/records/u/stage.json",
+        ".astra/records/u/stage.chain.json",
+        ".astra/records/u/stage.chain.tar.json",
+    ]
 
 
-def test_changed_bytes_move_it(tmp_path: Path) -> None:
-    (tmp_path / "fit.csv").write_text("x,y\n1,2\n")
-    before = data_version(tmp_path)
-    (tmp_path / "fit.csv").write_text("x,y\n1,3\n")
-    assert data_version(tmp_path) != before
+@pytest.mark.parametrize(
+    "path",
+    [
+        "data/catalog.csv",
+        "astra.yaml",
+        "results/a/b/fit.json",
+        "results/baseline/README",
+    ],
+)
+def test_a_file_at_no_results_place_has_no_record(path: str) -> None:
+    """Two levels under `results/` is no place ASTRA gives, and a name
+    with no format is nobody's bytes."""
+    assert assets.record_places(path) == []
 
 
-def test_a_rename_moves_it(tmp_path: Path) -> None:
-    """The path goes into the hash beside the bytes: the same content under
-    a different name is a different output."""
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path)
-    (tmp_path / "fit.csv").rename(tmp_path / "result.csv")
-    assert data_version(tmp_path) != before
+# ---- content that is not there ---------------------------------------------
 
 
-def test_touching_a_file_does_not_move_it(tmp_path: Path) -> None:
-    """Content, never mtime. A file restored from history carries an old
-    timestamp and must not look changed because of it."""
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path)
-    (tmp_path / "fit.csv").touch()
-    assert data_version(tmp_path) == before
-
-
-def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
-    """It carries the hash, so hashing it would be circular. Structural
-    now rather than an exclusion: the manifest is a sidecar beside the
-    output, so hashing one file cannot reach it."""
-    output = tmp_path / "fit.csv"
-    output.write_text("x,y\n")
-    before = data_version(output)
-    assets.write(assets.manifest_path(output), _manifest())
-    assert data_version(output) == before
-
-
-def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None:
-    """A declared input can be either, and the two must never collide.
-    Only the directory side is framed now — enough to keep them apart,
-    while a file's digest stays a plain sha256 of its own bytes."""
-    (tmp_path / "one").mkdir()
-    (tmp_path / "one" / "fit.csv").write_text("x,y\n")
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    assert data_version(tmp_path / "one") != data_version(tmp_path / "fit.csv")
-
-
-@pytest.mark.parametrize("bad", ["", "/", "..", ".", "a/b", "results/../.."])
-def test_output_path_refuses_a_part_that_is_not_one_path_component(
-    tmp_path: Path, bad: str
-) -> None:
-    """The path is composed, so a part carrying a separator would put an
-    output outside the tree every guard above it checked."""
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, bad, "best_fit", "csv")
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", bad, "csv")
-
-
-@pytest.mark.parametrize("bad", ["", "/", "a/b", ".hidden"])
-def test_output_path_refuses_a_format_that_cannot_be_an_extension(
-    tmp_path: Path, bad: str
-) -> None:
-    """A leading dot would make the output look like its own sidecar; a
-    separator would move it entirely."""
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", "best_fit", bad)
-
-
-def test_output_path_refuses_an_id_carrying_a_dot(tmp_path: Path) -> None:
-    """The sidecar is the id with a leading dot and `.manifest.json` after
-    it, recovered by partitioning on the first dot — so an id carrying one
-    of its own would name a manifest for something else."""
-    with pytest.raises(ProjectError, match="dot"):
-        assets.output_path(tmp_path, "baseline", "fit.plot", "png")
-
-
-def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
-    """A format may contain dots, and `Path.stem` would answer `x.tar` for
-    `x.tar.gz`. Naming the sidecar from the id alone also keeps its path —
-    and so its history — across a re-declared serialization."""
-    packed = assets.output_path(tmp_path, "baseline", "chain", "tar.gz")
-    plain = assets.output_path(tmp_path, "baseline", "chain", "npz")
-    assert assets.manifest_path(packed).name == ".chain.manifest.json"
-    assert assets.manifest_path(packed) == assets.manifest_path(plain)
-
-
-def test_a_file_hashes_its_own_bytes_and_nothing_else(tmp_path: Path) -> None:
-    """Unframed, so the digest is one an outsider reproduces with
-    `sha256sum` — and the same number the crate publishes for that file."""
-    output = tmp_path / "fit.csv"
-    body = b"x,y\n"
-    output.write_bytes(body)
-    assert data_version(output) == f"sha256:{hashlib.sha256(body).hexdigest()}"
-
-
-def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None:
+def test_an_unfetched_annexed_file_is_refused(tmp_path: Path) -> None:
     """`filter=annex` leaves a pointer file where the content would be, so
-    the path *exists* and is readable. Hashing it would be a well-formed
-    answer to the wrong question, and would land in a manifest as if it
-    described the data."""
+    the path *exists* and is readable — using it would be a well-formed
+    answer to the wrong question."""
     pointer = tmp_path / "catalog.fits"
-    pointer.write_text(
-        "/annex/objects/SHA256E-s300000--4367c4a63392fa9b887bbcf046033d89.fits\n"
-    )
+    pointer.write_text("/annex/objects/SHA256E-s300000--4367c4a63392fa9b887bbcf046033d89.fits\n")
 
+    assert assets.is_pointer(pointer)
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        data_version(pointer)
+        assets.require_fetched(pointer)
 
 
-def test_a_directory_holding_an_unfetched_file_is_refused_too(tmp_path: Path) -> None:
-    """An output directory is hashed as a whole, so one absent file must
-    not be quietly folded in as its pointer."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
-    (tmp_path / "big.bin").write_text("/annex/objects/SHA256E-s9--abc.bin\n")
-
-    with pytest.raises(assets.ContentNotFetchedError):
-        data_version(tmp_path)
-
-
-def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
-    tmp_path: Path,
-) -> None:
+def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(tmp_path: Path) -> None:
     """The other shape an annexed file takes. A researcher may run `git
     annex lock`, or set `annex.thin`, whenever they like — so detection
     cannot depend on which one lc's own writes happen to produce."""
@@ -198,115 +103,45 @@ def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
 
     assert locked.is_symlink() and not locked.exists()
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        data_version(locked)
+        assets.require_fetched(locked)
 
 
-def test_a_directory_holding_an_unfetched_locked_file_is_refused_too(
-    tmp_path: Path,
-) -> None:
-    """The quiet one. A dangling symlink answers False to `is_file()`, so
-    filtering a directory walk on that alone drops the absent file from the
-    digest without a word — reporting a hash of the subset that happens to
-    be present, which is a worse lie than the pointer's."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
-    (tmp_path / "big.bin").symlink_to("../.git/annex/objects/xx/yy/SHA256E-s9--abc.bin")
+def test_a_fetched_file_passes_in_either_shape(tmp_path: Path) -> None:
+    content = tmp_path / "object.fits"
+    content.write_text("x,y\n1,2\n")
+    locked = tmp_path / "catalog.fits"
+    locked.symlink_to(content)
 
-    with pytest.raises(assets.ContentNotFetchedError):
-        data_version(tmp_path)
+    assets.require_fetched(content)
+    assets.require_fetched(locked)
 
 
-def test_a_broken_symlink_that_is_not_annexed_is_still_loud(tmp_path: Path) -> None:
-    """Not git-annex's doing, so not `git annex get`'s to fix — but it may
-    not vanish from the digest either."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
-    (tmp_path / "scratch.dat").symlink_to("/tmp/gone-with-the-scratch-dir")
+def test_a_broken_symlink_that_is_not_annexed_is_not_called_unfetched(tmp_path: Path) -> None:
+    """Not git-annex's doing, so not `git annex get`'s to fix — whatever
+    opens the file reports it."""
+    stray = tmp_path / "scratch.dat"
+    stray.symlink_to(tmp_path / "gone-with-the-scratch-dir")
 
-    with pytest.raises(FileNotFoundError):
-        data_version(tmp_path)
+    assets.require_fetched(stray)
 
 
-def test_a_file_that_merely_mentions_the_prefix_is_still_hashed(tmp_path: Path) -> None:
+def test_a_file_that_merely_mentions_the_prefix_is_content(tmp_path: Path) -> None:
     """The test is the prefix at the very start, as git-annex's own is —
     a script that talks about annex paths is not a pointer."""
     script = tmp_path / "fit.py"
     script.write_text("# reads /annex/objects/ sometimes\nprint(1)\n")
 
-    assert data_version(script).startswith("sha256:")
+    assert not assets.is_pointer(script)
+    assets.require_fetched(script)
 
 
-def test_a_missing_path_is_an_error_not_an_empty_hash(tmp_path: Path) -> None:
-    """The failure mode worth refusing loudly: a constant digest for
-    everything absent would silently disable the whole chain."""
-    with pytest.raises(FileNotFoundError):
-        data_version(tmp_path / "nothing")
+def test_a_large_file_is_never_a_pointer(tmp_path: Path) -> None:
+    """git-annex's own bound: a pointer is small, so real content that
+    happens to begin like one is still content."""
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"/annex/objects/" + b"0" * (32 * 1024))
 
-
-def test_one_input_is_hashed_once_per_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A declared input is asked for once per `(universe, output)` that names
-    it — for a multiverse spec, the same bytes over and over. Eight
-    universes times four outputs sharing one catalog is thirty-two reads of
-    one file."""
-    catalog = tmp_path / "catalog.txt"
-    catalog.write_text("measured\n")
-    hashed: list[Path] = []
-    real = assets.data_version
-    monkeypatch.setattr(assets, "data_version", lambda p: (hashed.append(p), real(p))[1])
-
-    versions = assets.Versions()
-    digests = {versions.of(catalog) for _ in range(32)}
-
-    assert len(hashed) == 1
-    assert digests == {real(catalog)}
-
-
-def test_the_memo_does_not_confuse_two_inputs(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("one\n")
-    (tmp_path / "b.txt").write_text("two\n")
-    versions = assets.Versions()
-
-    assert versions.of(tmp_path / "a.txt") != versions.of(tmp_path / "b.txt")
-
-
-# ---- the manifest ----------------------------------------------------------
-
-
-def test_a_manifest_round_trips(tmp_path: Path) -> None:
-    written = _manifest()
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
-    assets.write(sidecar, written)
-    assert assets.read(sidecar) == written
-
-
-def test_the_manifest_is_readable_json_with_the_schema_first(tmp_path: Path) -> None:
-    """It stays out of the annex precisely so a clone with no content
-    fetched can read it — including with a plain `grep`."""
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
-    assets.write(sidecar, _manifest())
-    text = sidecar.read_text()
-    assert next(iter(json.loads(text))) == "schema_version"
-    assert "best_fit" in text
-
-
-def test_no_manifest_reads_as_none(tmp_path: Path) -> None:
-    assert assets.read(assets.manifest_path(tmp_path / "best_fit.csv")) is None
-
-
-def test_an_unparseable_manifest_reads_as_none(tmp_path: Path) -> None:
-    """The safe direction: an unreadable record means make it again, not
-    trust it."""
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
-    sidecar.write_text("{not json")
-    assert assets.read(sidecar) is None
-
-
-def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> None:
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
-    assets.write(sidecar, _manifest())
-    assets.write(sidecar, _manifest(data_version="sha256:second"))
-
-    manifest = assets.read(sidecar)
-    assert manifest is not None and manifest.data_version == "sha256:second"
-    assert not list(tmp_path.glob("*.tmp"))
+    assert not assets.is_pointer(big)
 
 
 # ---- classification --------------------------------------------------------
@@ -314,90 +149,81 @@ def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> N
 # Every case names the environment it is classified against, because that
 # argument is what decides `behind`, and a default would hide it.
 
-_ENV = "sha256:env"
-
+_ENV = "urn:lightcone:env:sha256:env"
 
 _TWEAK = dataset.LastWrite(
     "8d31f00" + "0" * 33, "tweak colors", "Ada", "ada@example.org", "2026-08-19"
 )
 
-
-def _classify(**overrides: object) -> assets.Verdict:
-    """Classify against the manifest `_manifest()` builds, unchanged."""
-    call: dict[str, object] = {
-        "definition_version": "sha256:code",
-        "env_version": _ENV,
-        "manifest": _manifest(),
-        "inputs": {"catalog": "sha256:cat"},
-    }
-    return classify(**{**call, **overrides})  # type: ignore[arg-type]
+_AT = Location(_PLACE.record, "", None, None)
 
 
-def test_a_never_materialized_output_is_stale() -> None:
-    verdict = _classify(manifest=None, inputs={})
-    assert verdict.status == "stale"
-    assert verdict.calls_for_a_remake(refresh=False)
-    assert "never been materialized" in verdict.why
-
-
-def test_an_unchanged_output_is_current() -> None:
-    verdict = _classify()
-    assert verdict.status == "current"
-    assert not verdict.calls_for_a_remake(refresh=False)
-    assert verdict.why == ""
-
-
-def test_a_drifted_definition_is_stale() -> None:
-    """One reason covers the recipe and the decisions, because
-    `definition_version` is what both feed."""
-    verdict = _classify(definition_version="sha256:other")
-    assert verdict.status == "stale"
-    assert "recipe or its decisions" in verdict.why
-
-
-def test_a_drifted_input_is_stale_and_says_which() -> None:
-    verdict = _classify(inputs={"catalog": "sha256:new"})
-    assert verdict.status == "stale"
-    assert "`catalog`" in verdict.why
-
-
-def test_a_newly_declared_input_is_stale() -> None:
-    """The manifest has no version recorded for it, so the sets differ."""
-    verdict = _classify(inputs={"catalog": "sha256:cat", "mask": "sha256:mask"})
-    assert verdict.status == "stale"
-    assert "`mask`" in verdict.why
-
-
-def test_an_input_the_output_no_longer_declares_is_stale() -> None:
-    """`definition_version` hashes the recipe and the decisions — neither of
-    which a dropped input moves — so nothing else would catch it and the
-    output would stay current with a dependency set that changed."""
-    verdict = _classify(inputs={})
-    assert verdict.status == "stale"
-    assert "`catalog`" in verdict.why
-
-
-def test_an_input_that_will_be_remade_is_stale() -> None:
-    """`--check`'s sentinel. It cannot know whether a rebuild comes out
-    byte-identical, so `None` means "this is going to change" — deliberate
-    over-approximation, and the only difference between the two callers."""
-    assert _classify(inputs={"catalog": None}).status == "stale"
-
-
-def test_the_sentinel_and_a_real_drift_give_the_same_verdict() -> None:
-    """The property that justifies one rule with two callers: for the same
-    state they agree, and `--check` differs from the worker only in what it
-    is able to know."""
-    assert _classify(inputs={"catalog": None}) == _classify(
-        inputs={"catalog": "sha256:rebuilt"}
+def _record(environment: str = _ENV) -> Record:
+    return Record(
+        _PLACE.address, "sha256:data", 8, "c" * 40, environment, Runner("lightcone-cli", "1.0")
     )
 
 
-def test_a_byte_identical_rebuild_stops_the_cascade() -> None:
-    """What content hashing buys, and what the sentinel deliberately gives
-    up: the worker sees the upstream came out the same and does not rerun,
-    where `--check` had to assume it would."""
-    assert _classify(inputs={"catalog": "sha256:cat"}).status == "current"
+def _unchanged(environment: str = _ENV, *, absent: bool = False) -> Status:
+    reasons = (Reason("ABSENT_RESULT", "warning", "the bytes are not here", _AT),) if absent else ()
+    return Status(
+        _PLACE, "unchanged", "absent" if absent else "present", True, reasons,
+        _record(environment), (),
+    )
+
+
+def _changed(*messages: str, environment: str = _ENV) -> Status:
+    reasons = tuple(Reason("STALE_RESULT", "error", message, _AT) for message in messages)
+    return Status(_PLACE, "stale", "present", True, reasons, _record(environment), ())
+
+
+_MISSING = Status(
+    _PLACE, "missing", "absent", False,
+    (Reason("MISSING_RECORD", "error", "no record is at the place", _AT),), None, (),
+)
+
+
+def test_a_result_with_no_record_is_stale() -> None:
+    verdict = classify(found=[_MISSING], environment=_ENV)
+    assert verdict.status == "stale"
+    assert verdict.calls_for_a_remake(refresh=False)
+    assert verdict.why == "no record is at the place"
+
+
+def test_an_unchanged_result_is_current() -> None:
+    verdict = classify(found=[_unchanged()], environment=_ENV)
+    assert verdict.status == "current"
+    assert not verdict.calls_for_a_remake(refresh=False)
+    assert not verdict.calls_for_a_remake(refresh=True)
+    assert verdict.why == ""
+
+
+def test_a_result_astra_finds_changed_is_stale_in_astras_words() -> None:
+    """Every reason, because a result can have moved in more than one way
+    and the user fixes them in one pass."""
+    verdict = classify(
+        found=[_changed("the command changed", "`catalog` changed")], environment=_ENV
+    )
+    assert verdict.status == "stale"
+    assert verdict.why == "the command changed; `catalog` changed"
+
+
+def test_one_reason_found_at_two_places_is_said_once() -> None:
+    found = [_changed("the command changed"), _changed("the command changed")]
+    assert classify(found=found, environment=_ENV).why == "the command changed"
+
+
+def test_one_place_that_is_not_unchanged_makes_the_result_stale() -> None:
+    """The recipe writes every place in one run, so there is no remaking
+    half a result."""
+    verdict = classify(found=[_unchanged(), _MISSING], environment=_ENV)
+    assert verdict.status == "stale"
+
+
+def test_absent_bytes_alone_do_not_make_a_result_stale() -> None:
+    """A clone that has fetched no annex content holds results that are
+    perfectly up to date."""
+    assert classify(found=[_unchanged(absent=True)], environment=_ENV).status == "current"
 
 
 # ---- behind, which is the whole point of the split -------------------------
@@ -407,59 +233,155 @@ def test_a_moved_environment_is_behind_and_not_stale() -> None:
     """The headline. One added dependency rewrites `uv.lock` for the whole
     project, and folding that into the rebuild trigger is what made a
     week-old result disappear over a plotting library."""
-    verdict = _classify(env_version="sha256:moved")
+    verdict = classify(found=[_unchanged("urn:lightcone:env:sha256:old")], environment=_ENV)
     assert verdict.status == "behind"
     assert not verdict.calls_for_a_remake(refresh=False)
+    assert verdict.calls_for_a_remake(refresh=True)
 
 
 def test_the_reason_says_what_happened_and_not_where() -> None:
-    """The commit an output came from is a field of its manifest, not a
-    phrase in a sentence — a caller with a column for it reads the record.
-    Interpolating it here would also have to handle a repository with no
-    commit yet, which records an empty sha."""
-    verdict = _classify(env_version="sha256:moved")
+    """The commit a result came from is a field of its record, not a
+    phrase in a sentence — a caller with a column for it reads the record."""
+    verdict = classify(found=[_unchanged("urn:lightcone:env:sha256:old")], environment=_ENV)
     assert verdict.why == "made under an earlier environment"
+
+
+def test_one_place_made_under_an_earlier_environment_is_behind() -> None:
+    found = [_unchanged(), _unchanged("urn:lightcone:env:sha256:old")]
+    assert classify(found=found, environment=_ENV).status == "behind"
 
 
 def test_stale_wins_over_behind() -> None:
     """Both moved. The artifact has to be remade either way, so the reason
     reported is the one that calls for the work — a `behind` verdict here
     would say "left alone" about something about to run."""
-    verdict = _classify(definition_version="sha256:other", env_version="sha256:moved")
+    verdict = classify(
+        found=[_changed("the command changed", environment="urn:lightcone:env:sha256:old")],
+        environment=_ENV,
+    )
     assert verdict.status == "stale"
     assert verdict.calls_for_a_remake(refresh=False)
 
 
 def test_a_foreign_write_is_stale_and_the_prose_is_composed_here() -> None:
     """History enters the one rule as a value — the caller with git hands
-    over the offending commit, and a hit is a contradiction: the manifest
-    no longer describes the bytes. The sentence, like every other why,
-    is this module's."""
-    verdict = _classify(foreign=_TWEAK)
+    over the offending commit, and a hit is a contradiction: the record
+    no longer describes the bytes. ASTRA knows nothing of it, so the
+    sentence is this module's."""
+    verdict = classify(found=[_unchanged()], environment=_ENV, foreign=_TWEAK)
     assert verdict.status == "stale"
     assert verdict.calls_for_a_remake(refresh=False)
     assert "8d31f00" in verdict.why and "tweak colors" in verdict.why
     assert "git show 8d31f00" in verdict.why
 
 
-def test_a_definition_stale_output_keeps_its_own_why_over_a_foreign_write() -> None:
-    """Both call for the same remake, and the definition drift is the more
-    actionable reason to report."""
-    verdict = _classify(definition_version="sha256:other", foreign=_TWEAK)
+def test_a_result_astra_finds_stale_keeps_its_own_why_over_a_foreign_write() -> None:
+    """Both call for the same remake, and what changed in the analysis is
+    the more actionable reason to report."""
+    verdict = classify(found=[_changed("the command changed")], environment=_ENV, foreign=_TWEAK)
     assert verdict.status == "stale"
     assert "tweak colors" not in verdict.why
 
 
 def test_a_foreign_write_wins_over_behind() -> None:
-    """A behind output is not wrong; a foreign-written one is — reporting
+    """A behind result is not wrong; a foreign-written one is — reporting
     "left alone" about something the run is about to remake is the one
     wrong answer, the same rule as stale-over-behind."""
-    verdict = _classify(env_version="sha256:moved", foreign=_TWEAK)
+    verdict = classify(
+        found=[_unchanged("urn:lightcone:env:sha256:old")], environment=_ENV, foreign=_TWEAK
+    )
     assert verdict.status == "stale"
     assert "tweak colors" in verdict.why
 
 
-def test_an_environment_that_did_not_move_is_not_behind() -> None:
-    """The negative half of the sensitivity pair: `behind` has to be off by
-    default, or every output reports it forever and the signal is dead."""
-    assert _classify(env_version=_ENV).status == "current"
+# ---- asking ASTRA's checker about a real project ---------------------------
+
+_SPEC = """
+spec_version: "0.1.0"
+inputs:
+  catalog: {path: data/catalog.txt}
+decisions:
+  method:
+    options:
+      mcmc: {}
+      nested: {}
+universes:
+  baseline: {decisions: {method: mcmc}}
+outputs:
+  summary:
+    type: data
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cp {inputs.catalog} {output}
+  fit:
+    type: data
+    format: txt
+    inputs: [summary]
+    decisions: [method]
+    recipe:
+      command: cp {inputs.summary} {output}
+"""
+
+_SUMMARY = ".astra/records/summary.json"
+_FIT = ".astra/records/baseline/fit.json"
+
+
+def test_before_any_run_every_planned_result_is_missing_and_so_stale(
+    analysis: Callable[..., Path],
+) -> None:
+    """Keyed by where the record would be, from the project root — the
+    one name the driver, the worker and `lc view` all hold for a result."""
+    root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
+
+    found = assets.check(root)
+
+    assert list(found) == [_SUMMARY, _FIT]
+    for statuses in found.values():
+        assert [status.record_status for status in statuses] == ["missing"]
+        verdict = classify(found=statuses, environment=identity.environment(root))
+        assert verdict.status == "stale" and verdict.why
+
+
+def test_checking_writes_nothing(analysis: Callable[..., Path]) -> None:
+    root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
+    assets.check(root)
+    assert dataset.status(root) == []
+
+
+def test_a_materialized_result_is_current_until_something_it_is_made_from_moves(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The rule over the real checker, end to end: current after its own
+    run, behind against another environment, stale once its input changes
+    — and the result reading it stale with it."""
+    root = analysis(_SPEC, {"data/catalog.txt": "measured\n"})
+    assert materialize.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    environment = identity.environment(root)
+
+    found = assets.check(root)
+    for statuses in found.values():
+        assert [status.record_status for status in statuses] == ["unchanged"]
+        assert statuses[0].record is not None
+        assert statuses[0].record.environment == environment
+        assert classify(found=statuses, environment=environment).status == "current"
+        assert classify(found=statuses, environment=environment + "0").status == "behind"
+
+    (root / "data" / "catalog.txt").write_text("measured again\n")
+    dataset.save(root, [root / "data"], "new catalog")
+
+    found = assets.check(root)
+    for record in (_SUMMARY, _FIT):
+        assert classify(found=found[record], environment=environment).status == "stale"
+    assert "catalog" in classify(found=found[_SUMMARY], environment=environment).why
+
+
+def test_a_spec_astra_rejects_is_a_clean_error(analysis: Callable[..., Path]) -> None:
+    root = analysis(_SPEC.replace("inputs: [catalog]", "inputs: [missing]"))
+    with pytest.raises(ProjectError, match="does not validate"):
+        assets.check(root)
+
+
+def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:
+    with pytest.raises(ProjectError, match="no astra.yaml"):
+        assets.check(tmp_path)

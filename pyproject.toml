@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools==0.2.18",
+    "astra-tools[evidence]>=0.2.19.dev0",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",
@@ -54,8 +54,23 @@ dev = [
 ]
 
 
+# ASTRA 0.1 is not on PyPI yet: both halves are pinned to the commits this
+# engine is tested against. astra-tools names astra-spec by a path beside its
+# own checkout, which a git source does not have, hence the override.
+[tool.uv]
+override-dependencies = [
+    "astra-spec @ git+https://github.com/LightconeResearch/astra-spec@7de4f21e57a7f23231821a5c3a4b6c560274f36b",
+]
+
+[tool.uv.sources]
+astra-tools = { git = "https://github.com/LightconeResearch/astra-tools", rev = "ecbe9504a6ecb8ed303176b51e836d0e4ecc3d9f" }
+
 [project.urls]
 Repository = "https://github.com/LightconeResearch/lightcone-cli"
+
+# What `astra check` asks about an environment a record names.
+[project.entry-points."astra.environments"]
+lightcone = "lightcone.engine.identity:SCHEME"
 
 [project.scripts]
 lc = "lightcone.cli:main"
@@ -105,7 +120,7 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["astra.*", "rocrate.*"]
+module = ["rocrate.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 

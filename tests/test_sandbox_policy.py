@@ -517,9 +517,8 @@ def test_nonexistent_paths_are_dropped(built: policy_module.Policy) -> None:
 
 
 def test_the_allowlist_version_reaches_the_attestation(built: policy_module.Policy) -> None:
-    """The exec allowlist is a maintained surface; an output stays
-    interpretable after it grows only because the version rode along into
-    the manifest."""
+    """The exec allowlist is a maintained surface, so what a backend
+    attests names the version of it that was in force."""
     from lightcone.engine.sandbox.landlock import LandlockBackend
     from lightcone.engine.sandbox.model import Capability
 

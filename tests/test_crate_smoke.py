@@ -9,8 +9,7 @@ two tests cover the guard itself — an unfailing guard is worse than none.
 
 At RECOMMENDED there is a known floor, pinned as a *set* rather than a
 count: the workflow's id is the file in the crate and cannot be an http
-URI, the image lives in the annex and has no registry, and lc knows no
-publisher and no author affiliation. A new failure is a regression; a
+URI, and lc knows no publisher and no author affiliation. A new failure is a regression; a
 disappearing one is the floor to shrink.
 """
 
@@ -38,8 +37,6 @@ _VALIDATOR = importlib.util.find_spec("rocrate_validator") is not None
 _FLOOR = {
     # the workflow's id is its path in the crate, and the shape wants http
     "process-run-crate-0.5_5.1",
-    # the image is bytes in the annex; there is no registry to name
-    "process-run-crate-0.5_13.2",
     # lc knows no publishing organization and no author affiliation
     "ro-crate-1.1_22.3",
     "ro-crate-1.1_30.2",
@@ -47,37 +44,41 @@ _FLOOR = {
 }
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
+spec_version: "0.1.0"
+label: analysis
 description: A two-step analysis for the crate smoke test.
 
 inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
+  catalog:
+    path: data/catalog.fits
+
+decisions:
+  method:
+    label: Method
+    options:
+      alpha: {label: alpha}
+      beta: {label: beta}
 
 outputs:
-  - id: first
+  first:
     type: metric
     format: txt
+    inputs: [catalog]
     decisions: [method]
     recipe:
       command: echo {decisions.method} > {output}
 
-  - id: second
+  second:
     type: report
     format: txt
     inputs: [first]
     recipe:
       command: cat {inputs.first} > {output}
 
-decisions:
-  method:
-    label: Method
-    default: alpha
-    options:
-      alpha: {label: alpha}
-      beta: {label: beta}
+universes:
+  baseline:
+    decisions:
+      method: alpha
 """
 
 
@@ -117,11 +118,10 @@ def test_a_materialized_crate_validates_against_the_provenance_profile(
     root = analysis(
         _SPEC,
         files={"data/catalog.fits": "stars\n", "README.md": "# analysis\n\nA demo.\n"},
-        universes={"baseline": "id: baseline\ndecisions:\n  method: alpha\n"},
     )
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
-    # A remote gives the tools http ids; the manifests record origin.
+    # A remote gives the tools http ids.
     dataset._git(["remote", "add", "origin", "https://github.com/example/analysis.git"], cwd=root)
     dataset.save(root, [root], "license and remote")
 

@@ -1,74 +1,69 @@
 """The app's own routes: what the page needs and the Contents API cannot give.
 
-An output's recorded run, read by lc's own manifest reader, so the page
-never parses lc's format and the server never has to open dotfiles to it;
-every output's state, classified by the engine exactly as ``lc status``
-does, so the page holds no copy of that rule; and the cited papers in
-astra's paper cache, which lies outside the
-project (``astra paper add`` fills it, and quotes are verified against it).
-The paper routes are adapted from jupyterlab-lightcone's ``routes.py``
-(BSD-3-Clause, Lightcone Research), without its fetch route: nothing here
-writes the cache. Every route needs the token, like the rest of the server.
+A result's recorded run, read from its ASTRA record, so the page never
+parses that format and the server never has to open dotfiles to it;
+every result's state, classified by the engine exactly as ``lc status``
+does, so the page holds no copy of that rule; and the cited
+papers in astra's cache, which lies outside the project (``astra paper
+add`` fills it, and quotes are verified against it). Nothing here writes
+the cache. Every route needs the token, like the rest of the server.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Any
 
-from astra.papers.cache import CachedPaper, PaperCache
+from astra.evidence import papers
+from astra.records import Record
 from jupyter_core.utils import ensure_async
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
 from tornado import web
+from tornado.httputil import url_concat
 
-from lightcone.app.files import ProjectFileHandler, open_fd
+from lightcone.app.files import open_fd
 from lightcone.engine import assets, materialize
 from lightcone.engine.project import ProjectError, current_project
 
-_PAPERS = PaperCache().cache_dir
-
-
-def _cached() -> dict[str, CachedPaper]:
-    """Every cached paper by DOI as the SDK normalizes it, unversioned first."""
-    papers: dict[str, CachedPaper] = {}
-    for paper in PaperCache().list_papers():
-        doi = paper.metadata.doi.strip().lower()
-        if doi not in papers or paper.metadata.version is None:
-            papers[doi] = paper
-    return papers
-
 
 class PapersHandler(APIHandler):
-    """Title, authors and PDF of the cited DOIs the cache holds."""
+    """Which of the cited DOIs the cache holds a PDF of, and where to get it."""
 
     @web.authenticated
     async def get(self) -> None:
-        """Answer the repeated ``doi`` arguments from one scan of the cache."""
-        cached = await asyncio.to_thread(_cached)
-        papers: dict[str, dict[str, str]] = {}
+        """Answer the repeated ``doi`` arguments from the cache."""
+        found: dict[str, dict[str, str]] = {}
         for doi in self.get_arguments("doi"):
-            if (paper := cached.get(doi)) is None:
-                continue
-            pdf = paper.pdf_path.relative_to(_PAPERS).as_posix()
-            metadata = {
-                "title": paper.metadata.title,
-                "authors": ", ".join(paper.metadata.authors or []),
-                "pdfUrl": url_path_join(self.base_url, "lightcone/papers", pdf),
-            }
-            papers[doi] = {key: value for key, value in metadata.items() if value}
+            if await asyncio.to_thread(papers.get, doi, None) is not None:
+                url = url_path_join(self.base_url, "lightcone/api/paper")
+                found[doi] = {"pdfUrl": url_concat(url, {"doi": doi})}
         self.set_header("Cache-Control", "private, no-store")
-        self.finish({"papers": papers})
+        self.finish({"papers": found})
+
+
+class PaperHandler(APIHandler):
+    """The PDF the cache holds for one DOI."""
+
+    @web.authenticated
+    async def get(self) -> None:
+        """Send the paper the ``doi`` argument names, or a 404."""
+        pdf = await asyncio.to_thread(papers.get, self.get_query_argument("doi"), None)
+        if pdf is None:
+            raise web.HTTPError(404)
+        self.set_header("Cache-Control", "private, no-store")
+        self.finish(pdf, set_content_type="application/pdf")
 
 
 class RunHandler(APIHandler):
-    """The run lc recorded for one output, or ``null`` when there is none."""
+    """The run recorded for one result, or ``null`` when there is none."""
 
     @web.authenticated
     async def get(self) -> None:
-        """Read the manifest beside the output the ``path`` argument names."""
+        """Read the record of the result the ``path`` argument names."""
         # Whether the path is a file in the project is the contents manager's
         # to say, as it does for /files/: outside the root, hidden, absent or
         # a directory is refused before anything is read.
@@ -77,25 +72,33 @@ class RunHandler(APIHandler):
         if not cm.allow_hidden and await ensure_async(cm.is_hidden(path)):
             raise web.HTTPError(404)
         model = await ensure_async(cm.get(path, type="file", content=False))
-        # The sidecar is hidden, but uses the same confined opener as artifacts.
         root = Path(cm.root_dir).resolve()
-        sidecar = assets.manifest_path(root / model["path"])
-        try:
-            with open_fd(root, sidecar, hidden=True) as fd:
-                with os.fdopen(fd, "r", closefd=False) as file:
-                    manifest = assets.loads(file.read())
-        except (web.HTTPError, UnicodeDecodeError):
-            manifest = None
+
+        def read(name: str) -> str | None:
+            # The record is hidden, but uses the same confined opener as artifacts.
+            try:
+                with open_fd(root, root / name, hidden=True) as fd:
+                    with os.fdopen(fd, "r", closefd=False) as file:
+                        return file.read()
+            except (web.HTTPError, UnicodeDecodeError):
+                return None
+
         run: dict[str, Any] | None = None
-        if manifest is not None:
+        for record_path in assets.record_places(model["path"]):
+            if (text := read(record_path)) is None:
+                continue
+            try:
+                record = Record.from_json(json.loads(text))
+            except (ValueError, KeyError, TypeError):
+                continue
             run = {
-                "finishedAt": manifest.finished_at,
-                "gitRevision": manifest.git_sha,
-                "recipe": manifest.recipe,
-                "environment": manifest.env_version,
-                "cliVersion": manifest.lc_version,
-                "inputVersions": manifest.input_versions,
+                "finishedAt": record.finished or "",
+                "gitRevision": record.commit,
+                "environment": record.environment,
+                "cliVersion": record.runner.version,
+                "inputVersions": {item.entry: item.content_hash for item in record.inputs},
             }
+            break
         self.set_header("Cache-Control", "private, no-store")
         self.finish({"run": run})
 
@@ -121,8 +124,7 @@ class StatusHandler(APIHandler):
 
 HANDLERS = [
     ("/lightcone/api/papers", PapersHandler),
+    ("/lightcone/api/paper", PaperHandler),
     ("/lightcone/api/run", RunHandler),
     ("/lightcone/api/status", StatusHandler),
-    # Jupyter's own file handler: ranges for pdf.js, 304s on reopening.
-    ("/lightcone/papers/(.*)", ProjectFileHandler, {"path": str(_PAPERS)}),
 ]
