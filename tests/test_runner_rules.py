@@ -162,10 +162,10 @@ def test_unrecorded_result(analysis: Callable[..., Path], inline: None) -> None:
     twice = plan.build(root).tasks["inner.fit#u1"].result
     assert [place.address for place in twice.places] == ["inner.fit#u1", "stage.inner.fit#u1"]
     for place in twice.places:
-        assert (root / place.bytes_path).read_text() == "alpha\n"
+        assert (root / place.file_path).read_text() == "alpha\n"
         record = _record(root, place.record_path)
         assert record["address"] == place.address
-        assert record["content_hash"] == _sha256(root / place.bytes_path)
+        assert record["content_hash"] == _sha256(root / place.file_path)
     assert (root / "results/u1/report.txt").read_text() == "alpha\nalpha\n"
     assert dataset.status(root) == []  # recorded, and committed
 
@@ -356,7 +356,7 @@ def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) ->
 
     task = plan.build(root).tasks["stage.fit#u1"]
     assert task.workdir == "stage"
-    assert task.result.places[0].bytes_path == "results/u1/stage.fit.txt"
+    assert task.result.places[0].file_path == "results/u1/stage.fit.txt"
     here, cwd = (root / "results/u1/stage.fit.txt").read_text().splitlines()
     assert here == "in the stage's folder"
     assert Path(cwd).resolve() == (root / "stage").resolve()

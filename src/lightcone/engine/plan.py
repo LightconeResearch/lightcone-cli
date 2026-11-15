@@ -214,7 +214,7 @@ def build(root: Path) -> Graph:
         result.id: universes[result.universe][0] if result.universe else outputs[result.output][0]
         for result in analysis.results
     }
-    made_at = {result.id: result.places[0].bytes_path for result in analysis.results}
+    made_at = {result.id: result.places[0].file_path for result in analysis.results}
 
     def read_in(source: Source) -> Analysis:
         """The analysis that holds what an entry reads: an input's own, or

@@ -116,7 +116,7 @@ def _made(
     the graph, what ASTRA's checker then finds of it."""
     task = graph.tasks[key]
     place = task.result.places[0]
-    output = root / place.bytes_path
+    output = root / place.file_path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(f"{place.address}\n")
     content_hash, size = assets.digest_file(output)
@@ -153,7 +153,7 @@ def _graph(universes: tuple[str, ...] = ("baseline",)) -> Graph:
         second = _task(
             "second",
             universe,
-            reads={"first": first.result.places[0].bytes_path},
+            reads={"first": first.result.places[0].file_path},
             made_by={"first": first.key},
         )
         tasks += [first, second]

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from astra.api import (
+    Bytes,
     Diagnostic,
     Environment,
     Generation,
@@ -490,12 +491,12 @@ def test_a_materialized_result_is_current_until_something_it_is_made_from_moves(
     graph = plan.build(root)
     found = graph.found
     for key, status in found.items():
-        assert (status.state, status.bytes, status.why) == ("unchanged", "present", ())
+        assert (status.state, status.bytes, status.why) == ("unchanged", Bytes("present"), ())
         assert status.record is not None
         assert status.record.generated_by.environment.iri == environment
         # The record gives the bytes as this module hashes them, which is
         # how ASTRA's checker found them present.
-        made = root / graph.tasks[key].result.places[0].bytes_path
+        made = root / graph.tasks[key].result.places[0].file_path
         assert assets.digest_file(made) == (status.record.content_hash, status.record.size)
         assert classify(found=status, environment=environment).status == "current"
         assert classify(found=status, environment=environment + "0").status == "behind"

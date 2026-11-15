@@ -443,7 +443,7 @@ def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
 def _files(task: Task) -> list[str]:
     """The bytes and the record at each of *task*'s places."""
     return [
-        path for place in task.result.places for path in (place.bytes_path, place.record_path)
+        path for place in task.result.places for path in (place.file_path, place.record_path)
     ]
 
 
@@ -1091,7 +1091,7 @@ def _owned(task: Task) -> list[str]:
     """
     owned = []
     for place in task.result.places:
-        folder = posixpath.dirname(place.bytes_path)
+        folder = posixpath.dirname(place.file_path)
         owned += [f":(glob){folder}/{plan.name(place)}.*", place.record_path]
     return owned
 

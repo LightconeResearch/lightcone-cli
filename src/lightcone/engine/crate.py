@@ -379,7 +379,7 @@ class _Builder:
         """One result's crate id — the place ASTRA gives its bytes, never
         a second spelling of the results layout. No trailing slash: a
         result is one file, so the entity is a ``File``."""
-        return self.graph.tasks[key].result.places[0].bytes_path
+        return self.graph.tasks[key].result.places[0].file_path
 
     def _dataset(self, key: Key, record: ProvenanceRecord) -> None:
         place = self.graph.tasks[key].result.places[0]
@@ -398,7 +398,7 @@ class _Builder:
 
     def _action(self, key: Key, record: ProvenanceRecord) -> str:
         place = self.graph.tasks[key].result.places[0]
-        write = self.writer(place.bytes_path, place.record_path)
+        write = self.writer(place.file_path, place.record_path)
         made = record.generated_by
         self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {

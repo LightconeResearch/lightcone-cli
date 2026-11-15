@@ -153,7 +153,7 @@ def test_a_result_built_per_universe_has_its_place_under_the_universe(tmp_path: 
     task = plan.build(_project(tmp_path)).tasks["fit#baseline"]
     (place,) = task.result.places
     assert (plan.name(place), place.address) == ("fit", "fit#baseline")
-    assert place.bytes_path == "results/baseline/fit.json"
+    assert place.file_path == "results/baseline/fit.json"
     assert place.record_path == ".astra/records/baseline/fit.json"
 
 
@@ -161,7 +161,7 @@ def test_a_result_built_once_has_no_universe_directory(tmp_path: Path) -> None:
     task = plan.build(_project(tmp_path)).tasks["summary"]
     (place,) = task.result.places
     assert (plan.name(place), place.address) == ("summary", "summary")
-    assert place.bytes_path == "results/summary.csv"
+    assert place.file_path == "results/summary.csv"
     assert place.record_path == ".astra/records/summary.json"
     assert task.decisions == {}
 
@@ -246,7 +246,7 @@ def test_a_driven_analysis_result_belongs_to_the_project_and_runs_in_its_own_fol
     task = plan.build(_project(tmp_path)).tasks["stage.mask#baseline"]
     (place,) = task.result.places
     assert plan.name(place) == "stage.mask"
-    assert place.bytes_path == "results/baseline/stage.mask.txt"
+    assert place.file_path == "results/baseline/stage.mask.txt"
     assert place.record_path == ".astra/records/baseline/stage.mask.json"
     assert task.workdir == "stage"
     assert task.command == "python mask.py deep ../results/baseline/stage.mask.txt"
@@ -262,7 +262,7 @@ def test_a_result_of_another_analysis_is_keyed_under_its_analysis(tmp_path: Path
     task = graph.tasks["stage:mask#v"]
     (place,) = task.result.places
     assert (plan.name(place), place.address) == ("mask", "mask#v")
-    assert place.bytes_path == "stage/results/v/mask.txt"
+    assert place.file_path == "stage/results/v/mask.txt"
     assert place.record_path == "stage/.astra/records/v/mask.json"
     assert task.workdir == "stage"
     assert task.command == "python mask.py deep results/v/mask.txt"

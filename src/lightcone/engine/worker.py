@@ -262,7 +262,7 @@ def execute(
         read.append(api.RecordedInput(source.entry, *digest))
 
     places = task.result.places
-    made = root / places[0].bytes_path
+    made = root / places[0].file_path
     # Never the parent directory: siblings share it, and under Dask they
     # are being written concurrently. What this result owns, at each of
     # its places, is its record and any file named after it
@@ -272,7 +272,7 @@ def execute(
     # that shares its id with a declaration, which is the only way one
     # result's name could begin another's.
     for place in places:
-        (root / place.bytes_path).parent.mkdir(parents=True, exist_ok=True)
+        (root / place.file_path).parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
         context.runtime,
         [path for name in task.reads.values() if (path := root / name).exists()],
@@ -283,7 +283,7 @@ def execute(
         # Validate device visibility and container support before removing outputs.
         for place in places:
             (root / place.record_path).unlink(missing_ok=True)
-            for stale in (root / place.bytes_path).parent.glob(f"{plan.name(place)}.*"):
+            for stale in (root / place.file_path).parent.glob(f"{plan.name(place)}.*"):
                 if stale.is_file() or stale.is_symlink():
                     stale.unlink()
         started = datetime.now(UTC)
@@ -316,7 +316,7 @@ def execute(
         return TaskResult(
             task.key,
             "failed",
-            reason=f"the recipe exited 0 but left {found} at {places[0].bytes_path}",
+            reason=f"the recipe exited 0 but left {found} at {places[0].file_path}",
             notes=outcome.notes,
         )
 
@@ -325,7 +325,7 @@ def execute(
         # Its bytes at each default place, and one record at each place
         # ASTRA gives the result: a result with two names is made once.
         for place in places[1:]:
-            shutil.copyfile(made, root / place.bytes_path)
+            shutil.copyfile(made, root / place.file_path)
         api.write_records(
             root,
             task.result,

@@ -50,7 +50,7 @@ def test_recipe_inherits_the_whole_mask_without_changing_the_worker_environment(
     monkeypatch.setattr(policy_module, "_gpu_device_paths", lambda: ())
     result = worker.execute(root, replace(task, resources={"gpus": requested}), {}, context)
     assert result.status == "ok", result.reason
-    made = root / task.result.places[0].bytes_path
+    made = root / task.result.places[0].file_path
     assert made.read_text() == ("2,0" if requested else "")
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "2,0"
 
@@ -62,7 +62,7 @@ def test_missing_worker_gpu_mask_preserves_existing_output_and_record(
 ) -> None:
     root, task, context = project
     place = task.result.places[0]
-    made, record = root / place.bytes_path, root / place.record_path
+    made, record = root / place.file_path, root / place.record_path
     made.write_text("previous output")
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text("previous record")
@@ -82,7 +82,7 @@ def test_unsupported_gpu_container_preserves_existing_output_and_record(
 ) -> None:
     root, task, context = project
     place = task.result.places[0]
-    made, record = root / place.bytes_path, root / place.record_path
+    made, record = root / place.file_path, root / place.record_path
     made.write_text("previous output")
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text("previous record")

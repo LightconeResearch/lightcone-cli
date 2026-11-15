@@ -124,7 +124,7 @@ def test_each_planned_result_is_one_task_at_the_place_astra_gives_it(project: Pa
     graph = plan.build(project)
 
     assert {
-        key: task.result.places[0].bytes_path for key, task in graph.tasks.items()
+        key: task.result.places[0].file_path for key, task in graph.tasks.items()
     } == PLACES
     assert graph.tasks["stage:cleaned#v1"].result.places[0].record_path == (
         "stage/.astra/records/v1/cleaned.json"
