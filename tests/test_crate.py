@@ -17,9 +17,8 @@ from typing import Any
 
 import pytest
 from astra import api
-from astra.api import Place
 
-from lightcone.engine import crate
+from lightcone.engine import assets, crate
 from lightcone.engine.dataset import LastWrite
 from lightcone.engine.plan import Graph, Key, Task
 
@@ -47,10 +46,9 @@ def project(tmp_path: Path) -> Path:
     return root
 
 
-def _place(name: str, universe: str = "", folder: str = "") -> Place:
+def _place(name: str, universe: str = "", folder: str = "") -> api.Place:
     """One result's place, laid out as ASTRA lays it out."""
-    return Place(
-        name,
+    return api.Place(
         f"{name}#{universe}" if universe else name,
         str(Path(folder, ".astra", "records", universe, f"{name}.json")),
         str(Path(folder, "results", universe, f"{name}.txt")),
@@ -61,33 +59,49 @@ def _task(
     name: str,
     universe: str = "",
     *,
-    inputs: dict[str, str] | None = None,
-    produced_by: dict[str, Key] | None = None,
+    reads: dict[str, str] | None = None,
+    made_by: dict[str, Key] | None = None,
     decisions: dict[str, str] | None = None,
-    workdir: str = "",
+    workdir: str = ".",
+    owner: str = "",
 ) -> Task:
-    place = _place(name, universe)
-    return Task(
-        place.address,
+    """A task as `plan.build` makes one: ASTRA's result, and what lc looks
+    up for it. *made_by* names the entries of *reads* another task
+    produces; the others read a declared input. *owner* is the key of the
+    analysis the result belongs to, where that is not the project's own."""
+    place = _place(name, universe, folder=owner)
+    reads, made_by = reads or {}, made_by or {}
+    result = api.Result(
+        f"{owner}:{place.address}" if owner else place.address,
+        f"outputs.{name}",
         (place,),
+        f"universes.{universe}" if universe else None,
+        tuple(
+            api.Source(entry, result=made_by[entry])
+            if entry in made_by
+            else api.Source(entry, input=f"inputs.{entry}")
+            for entry in reads
+        ),
         f"make {name}",
+    )
+    return Task(
+        result,
         workdir,
-        inputs or {},
-        produced_by or {},
-        {"method": "alpha"} if decisions is None else decisions,
+        reads,
+        {"decisions.method": "alpha"} if decisions is None else decisions,
     )
 
 
 def _missing(task: Task) -> api.Status:
     """What the checker finds of a result nobody made."""
-    place = task.places[0]
-    reason = api.Reason(
+    place = task.result.places[0]
+    broken = api.Diagnostic(
         "MISSING_RECORD",
         "error",
-        f"no record is at {place.record}",
-        api.Location(place.record, "", None, None),
+        f"no record is at {place.record_path}",
+        api.Location(place.record_path, "", None, None),
     )
-    return api.Status(place, "missing", "absent", False, (reason,), None)
+    return api.Status("missing", "absent", why=(broken,))
 
 
 def _made(
@@ -100,30 +114,33 @@ def _made(
 ) -> None:
     """Leave what one run of a task leaves — bytes and record — and, in
     the graph, what ASTRA's checker then finds of it."""
-    place = graph.tasks[key].places[0]
-    output = root / place.bytes
+    task = graph.tasks[key]
+    place = task.result.places[0]
+    output = root / place.bytes_path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(f"{place.address}\n")
-    digest = api.digest_file(output)
-    record = api.Record(
-        address=place.address,
-        content_hash=digest.content_hash,
-        size=digest.size,
-        commit=commit,
-        environment=_ENVIRONMENT,
-        runner=api.Runner("lightcone-cli", "0.4.2"),
+    content_hash, size = assets.digest_file(output)
+    run = api.Generation(
+        commit,
+        api.Environment(_ENVIRONMENT),
+        api.Runner("lightcone-cli", "0.4.2"),
+        tuple(
+            api.RecordedInput(entry, *assets.digest_file(root / path))
+            for entry, path in task.reads.items()
+        ),
         started="2026-08-19T10:00:00.000Z",
         finished=finished,
     )
-    api.write_record(root / place.record, record)
-    graph.found[key] = (api.Status(place, "unchanged", "present", True, (), record),)
+    api.write_records(root, task.result, content_hash, size, run)
+    record = api.ProvenanceRecord(place.address, content_hash, size, run)
+    graph.found[key] = api.Status("unchanged", "present", record)
 
 
 def _graph_of(*tasks: Task) -> Graph:
     """A graph of *tasks*, none of them made, titled as the spec titles it."""
     return Graph(
         {task.key: task for task in tasks},
-        {task.key: (_missing(task),) for task in tasks},
+        {task.key: _missing(task) for task in tasks},
         label="Demo analysis",
         description="A demo analysis.",
     )
@@ -132,12 +149,12 @@ def _graph_of(*tasks: Task) -> Graph:
 def _graph(universes: tuple[str, ...] = ("baseline",)) -> Graph:
     tasks: list[Task] = []
     for universe in universes:
-        first = _task("first", universe, inputs={"catalog": "data/catalog.csv"})
+        first = _task("first", universe, reads={"catalog": "data/catalog.csv"})
         second = _task(
             "second",
             universe,
-            inputs={"first": first.places[0].bytes},
-            produced_by={"first": first.key},
+            reads={"first": first.result.places[0].bytes_path},
+            made_by={"first": first.key},
         )
         tasks += [first, second]
     return _graph_of(*tasks)
@@ -323,8 +340,8 @@ def test_an_action_chains_its_inputs_and_its_environment(project: Path) -> None:
     assert "results/baseline/first.txt" in {ref["@id"] for ref in second["object"]}
     assert second["result"] == {"@id": "results/baseline/second.txt"}
     assert second["description"] == graph.tasks["second#baseline"].command
-    made = api.digest_file(project / "results/baseline/second.txt")
-    assert entities["results/baseline/second.txt"]["version"] == made.content_hash
+    content_hash, _ = assets.digest_file(project / "results/baseline/second.txt")
+    assert entities["results/baseline/second.txt"]["version"] == content_hash
 
 
 def test_the_record_is_in_the_crate_and_about_its_result(project: Path) -> None:
@@ -345,7 +362,7 @@ def test_a_result_without_a_valid_record_is_not_described_as_made(project: Path)
     whatever file sits at the record's place."""
     graph = _materialized(project, "first#baseline")
     (project / ".astra/records/baseline/first.json").write_text('{"address": "first#baseline"}\n')
-    graph.found["first#baseline"] = (_missing(graph.tasks["first#baseline"]),)
+    graph.found["first#baseline"] = _missing(graph.tasks["first#baseline"])
     entities = _entities(_render(project, graph))
 
     assert "results/baseline/first.txt" not in entities
@@ -371,13 +388,46 @@ def test_a_declared_analysis_that_runs_recipes_brings_its_spec(project: Path) ->
     what the deposit must carry."""
     (project / "stage").mkdir()
     (project / "stage" / "astra.yaml").write_text('spec_version: "0.1.0"\n')
-    graph = _graph_of(_task("stage.out", "baseline", workdir="stage"))
+    graph = _graph_of(
+        _task("first", "baseline"), _task("stage.out", "baseline", workdir="stage")
+    )
     _made(project, graph, "stage.out#baseline")
     entities = _entities(_render(project, graph))
 
     assert entities["stage/astra.yaml"]["encodingFormat"] == "application/yaml"
+    # The project's own spec is the workflow itself, and is there once.
+    assert "./astra.yaml" not in entities
     assert entities["results/baseline/stage.out.txt"]["name"] == "stage.out#baseline"
     assert entities["#control-baseline-stage.out"]["instrument"] == {"@id": "#step-stage.out"}
+
+
+def test_a_result_of_another_analysis_is_named_after_its_owner(project: Path) -> None:
+    """A result that belongs to a declared analysis is kept in that
+    analysis's folder, and its task carries the analysis's key before a
+    colon — which is what keeps its step, its tool and its actions apart
+    from those of the project's own result of the same name."""
+    (project / "stage").mkdir()
+    (project / "stage" / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    graph = _graph_of(
+        _task("out", "v1", decisions={}),
+        _task("out", "v1", decisions={}, workdir="stage", owner="stage"),
+    )
+    for key in graph.tasks:
+        _made(project, graph, key)
+    entities = _entities(_render(project, graph))
+
+    assert set(graph.tasks) == {"out#v1", "stage:out#v1"}
+    assert entities["stage/results/v1/out.txt"]["name"] == "out#v1"
+    assert entities["stage/results/v1/out.txt"]["subjectOf"] == {
+        "@id": "stage/.astra/records/v1/out.json"
+    }
+    assert {ref["@id"] for ref in entities["astra.yaml"]["step"]} == {
+        "#step-out",
+        "#step-stage:out",
+    }
+    assert entities["#control-v1-stage:out"]["instrument"] == {"@id": "#step-stage:out"}
+    names = {e["name"] for e in entities.values() if e["@type"] == "CreateAction"}
+    assert {"run of `out` in universe `v1`", "run of `stage:out` in universe `v1`"} <= names
 
 
 def test_the_person_is_the_saving_commits_author(project: Path) -> None:
@@ -397,11 +447,12 @@ def test_decision_values_point_back_at_their_parameter(project: Path) -> None:
     graph = _materialized(project, "first#baseline")
     entities = _entities(_render(project, graph))
 
-    value = entities["#value-baseline-first-method"]
-    assert value["value"] == "alpha"
-    assert value["exampleOfWork"] == {"@id": "#param-method"}
+    value = entities["#value-baseline-first-decisions.method"]
+    assert (value["name"], value["value"]) == ("decisions.method", "alpha")
+    assert value["exampleOfWork"] == {"@id": "#param-decisions.method"}
     workflow = entities["astra.yaml"]
-    assert {"@id": "#param-method"} in _as_list(workflow["input"])
+    assert {"@id": "#param-decisions.method"} in _as_list(workflow["input"])
+    assert entities["#param-decisions.method"]["name"] == "decisions.method"
 
 
 def test_a_never_materialized_project_still_describes_its_workflow(project: Path) -> None:

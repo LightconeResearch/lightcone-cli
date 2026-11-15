@@ -12,7 +12,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from astra.api import Place
 from playwright.sync_api import Browser, Error, expect, sync_playwright
 from test_serve import _gate, _record
 from test_serve import project as project
@@ -102,9 +101,9 @@ outputs:
     expect(page.get_by_text("second-value", exact=True).first).to_be_visible()
     expect(provenance).to_contain_text("No recorded run yet.")
     before = artifact.stat().st_mtime_ns
-    place = Place("metric", "metric#baseline", ".astra/records/baseline/metric.json", wanted)
-    (project / place.record).parent.mkdir(parents=True)
-    (project / place.record).write_text(json.dumps(_record(place.address).to_json()))
+    record = project / ".astra/records/baseline/metric.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps(_record("metric#baseline")))
     expect(provenance).to_contain_text("abc123")
     assert artifact.stat().st_mtime_ns == before
     spec.write_text(spec.read_text().replace("Viewer regression", "Updated analysis"))

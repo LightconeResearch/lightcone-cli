@@ -105,6 +105,25 @@ def env_version(root: Path) -> str:
 _IRI = "urn:lightcone:env:"
 
 
+def files(root: Path) -> tuple[str, ...]:
+    """Name the files :func:`env_version` reads, from the project root.
+
+    A record names its environment by these files as its commit has them,
+    so they are what has to be in that commit for the environment to be
+    recreated from it.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The lock, the interpreter pin, ``pyproject.toml`` — which holds
+        the image declaration and, without a ``uv.toml``, uv's settings —
+        and the ``uv.toml`` that replaces them where there is one.
+    """
+    config = ("uv.toml",) if (root / "uv.toml").is_file() else ()
+    return ("uv.lock", ".python-version", "pyproject.toml", *config)
+
+
 def environment(root: Path) -> str:
     """Name the project's environment as a record does.
 

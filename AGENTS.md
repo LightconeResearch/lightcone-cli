@@ -6,9 +6,9 @@ This file provides guidance to coding agents working in this repository.
 
 **lightcone-cli** ships `lc`, a *runner* for ASTRA 0.1 analyses (`astra.yaml`). The specification names three tools: a validator, a checker and a runner. `astra-tools` is the first two and `lc` is the third, and the split is enforced in code.
 
-`astra-tools` answers what the files say, from the files and git alone: whether the analysis is valid, what it means (its planned results, where each one's bytes and record go, what each reads, which options it is made with) and whether each result's record still holds. `lc` asks all of that with one call, `astra.api.check`, and never re-derives any of it.
+`astra-tools` answers what the files say, from the files and git alone: whether the analysis is valid, what it means (the resolved analysis: every analysis of the stack, each universe's selection, and the planned results with where each one's bytes and record go, what each reads and its command as it runs) and whether each result's record still holds. It answers in plain data. `lc` asks all of that with one call, `astra.api.check`, and never re-derives any of it.
 
-`lc` owns the run: which results to make now and in what order, the paths that fill a recipe's command, environments, sandboxing, storage, writing each result's record, and committing it. "Plan" means the run's plan and lives here (`engine/plan.py`); in astra-tools the same word is only the specification's, for the results an analysis asks for.
+`lc` owns the run: which results to make now and in what order, environments, sandboxing, storage, what each result's record says of its run, and committing it. It also answers for the specification's runner rules (see *The runner's rules*). "Plan" means the run's plan and lives here (`engine/plan.py`); in astra-tools the same word is only the specification's, for the results an analysis asks for.
 
 `lc` imports astra through `astra.api` alone, plus `astra.scaffold` for the empty spec and `astra.papers.cache` for the viewer. If something about what a spec means looks wrong, or `astra.api` lacks what a runner needs, the fix is a PR to astra-tools, not a second implementation or a reach into its internals here.
 
@@ -56,7 +56,7 @@ The `uv-floor` CI job reruns the uv-touching suites against uv 0.7.0. That versi
 A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml`, in a git repository with git-annex. uv is the only environment substrate. The current directory is the project root; nothing walks up.
 
 - **Convergence** (`project.py`, `lc init`): every item is created if missing and repaired if wrong; rerunning is always safe. Scaffolded file content lives as real files in `engine/templates/files/*.tmpl`.
-- **Graph** (`plan.py`): one task per planned result, keyed by its address (`fit#baseline`; `fit` for an output built once; `stage.fit#u1` for a driven analysis; `stage/fit#v1` for a result that belongs to another analysis). A result is exactly one file at the place ASTRA gives it, `results/<universe>/<name>.<format>`, and its record is at `.astra/records/<universe>/<name>.json`. `build` asks `astra.api.check` once and keeps what the checker found of each task beside it (`Graph.found`). ASTRA owns the placeholder grammar (`api.fill`); `lc` chooses the paths that fill it, relative to the folder the recipe runs in, which is its own analysis's.
+- **Graph** (`plan.py`): one task per planned result lc builds, keyed by ASTRA's id for it (`fit#baseline`; `fit` for an output built once; `stage.fit#u1` for a driven analysis; `stage:fit#v1` for a result that belongs to another analysis). A result is exactly one file at the place ASTRA gives it, `results/<universe>/<name>.<format>`, and its record is at `.astra/records/<universe>/<name>.json`. `build` asks `astra.api.check` once and keeps what the checker found of each task beside it (`Graph.found`, one status per result). A `Task` is ASTRA's own `Result` with what a run needs looked up once, since a reference in ASTRA's model is an id: the folder the recipe runs in, the file each entry reads, the options it is made with and what its recipe asks for. ASTRA renders the command and gives every path from the project root; lc computes neither.
 - **Identity** (`identity.py`): `env_version` (raw `uv.lock` bytes, `.python-version`, a closed list of uv install settings, the image declaration) is the environment's identity, and a record names it as the IRI `urn:lightcone:env:<env_version>`. What a result is *made from* (its declaration, the options selected, its inputs' content, the results it reads) is the specification's, compared by ASTRA's checker against the commit the record names. There is no definition hash here.
 - **Classification** (`assets.py`): one `classify()` yields `current`, `behind` or `stale`, shared by `lc status`, `materialize --check`, `materialize` and the viewer. `stale` is ASTRA's finding (no valid record, or something the result is made from changed) or a foreign write, and is remade. A changed environment is only `behind`: reported, and remade only with `--refresh`.
 - **Execution** (`materialize.py` drives, `worker.py` makes one result): the driver refuses a dirty tree, hands the graph to Dask, and **owns git alone**, committing each result as it arrives. Workers never raise and never touch git; a failed task returns a result saying so. Each commit carries a DataLad run record that names `python -m lightcone.engine.worker <task>`, so `datalad rerun` reproduces it.
@@ -66,6 +66,22 @@ A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml`, in
 - **Compute** (`compute/`): allocation is explicit. `lc compute launch` starts a local or Slurm Dask cluster from an offer in the catalog, and `lc run` / `lc materialize` take its name or ID as their first argument. Providers own the native lifecycle; the engine borrows a standard Dask client.
 - **Publication** (`crate.py`): `ro-crate-metadata.json` is a pure function of repository state (sorted iteration, no clock), converged by `materialize` like `uv.lock`. There is no export verb.
 - **Viewer** (`serve.py`, `app/`, `ui/`): one detached, read-only Jupyter server per project. The page resolves the spec in the browser with the released `@astra-spec/sdk` and `@astra-spec/ui`; output state comes from the engine's `classify()` and each run from its record, through `app/routes.py`.
+
+### The runner's rules
+
+The specification's table of rules has a runner layer, and `lc` is who answers for it. Each rule is kept in one place, and `tests/test_runner_rules.py` has a test named after each.
+
+| Rule | Where lc keeps it |
+|---|---|
+| `UNRECORDED_RESULT` | `worker.execute`: the recipe writes the first place, the worker copies the bytes to the others, and `astra.api.write_records` writes a record at each. |
+| `FALSE_RECORD` | `worker.execute`: the result's hash is of the file the recipe wrote, each input's of what it read, hashed before the recipe runs; the commit is the one the driver read at the start; the environment is checked either side of the recipe (`_gate`). |
+| `UNRECREATABLE_ENVIRONMENT` | The IRI is `urn:lightcone:env:<env_version>`, a function of files in the record's commit. `materialize` refuses a run while one of `identity.files` is not tracked: an ignored file leaves a tree clean. |
+| `UNCOMMITTED_CHANGES` | `materialize` refuses a dirty tree, and `_Checkout.moved` is asked as each made result arrives: one that arrives after HEAD moved, or after a file outside the folders the run writes in changed, is restored and reported failed, not committed. |
+| `WRONG_WORKING_DIRECTORY` | `worker.execute` runs the command in `Task.workdir`, the folder of its output's analysis. |
+| `REBUILT_FROM_COMMIT` | `plan.build`: a result that belongs to an analysis declared with a `commit` is no task. |
+| `NOT_AT_COMMIT`, `STALE_INPUT` | Kept by not doing what they govern: `plan.build` refuses a project that drives an analysis from a commit, or reads a result or an input from one. |
+| `UNDECLARED_READ` | The exec boundary: a file outside the project that no input declares is out of a recipe's reach. Inside the project the tree is readable whole, since no mechanism subtracts, so there it is the author's to keep. |
+| `CODE_OUTSIDE_ANALYSIS` | ASTRA finds it, as only the command's template tells a path it names from one a placeholder gives; lc reports it as a warning with every run and `--check`. |
 
 ### The subprocess seam
 
@@ -98,8 +114,9 @@ These came out of review and apply to every change.
 - Tests mirror `src/`. Pure suites (`test_identity`, `test_assets`, `test_plan`, `test_image`, `test_crate`, `test_sandbox_policy`, `test_sandbox_wrap`, `test_sandbox_denial`, `test_sandbox_oci`) spawn nothing and run on any OS.
 - `test_dataset`, `test_worker` and `test_materialize` run real git, git-annex and uv on purpose. Whether bytes land in the annex and whether the tree ends clean are questions a stub cannot answer.
 - `materialize.cluster_for_run` is the monkeypatch point for graph tests that should not launch a real cluster.
-- `test_plan.py` tests what lc adds (task keys, paths from the project root, filled commands, edges, the refusals), not what a spec means. `test_composition.py` runs the specification's own shapes end to end: pins, an imported universe, `derived_from`, a switch, a driven analysis. Every fixture spec must pass `astra validate`.
+- `test_plan.py` tests what lc adds (which results are tasks, what each task looks up, edges, the refusals), not what a spec means. `test_composition.py` runs the specification's own shapes end to end: pins, an imported universe, `derived_from`, a switch, a driven analysis. Every fixture spec must pass `astra validate`.
 - `test_assets.py` drives `classify()` with the statuses ASTRA's checker returns, built by hand; what is pinned is what lc makes of them.
+- `test_runner_rules.py` has one test per rule of the specification's runner layer, named after its code, on a real project. It reads the rules from the installed astra-spec, so a rule a later release adds fails there until it is answered.
 - Identity tests check sensitivity both ways: what must move the hash and what must not.
 - `test_sandbox_enforcement.py` runs the real `exec_policy` against the real kernel mechanism, with one suite for both Landlock and Seatbelt. **Mutation-check every new denial test**: run the same command through `Unavailable()` and confirm it succeeds, otherwise the test proves nothing.
 - `test_cli.py` covers the CLI surface only. Rich wraps at terminal width, so assert on short fragments.
@@ -143,24 +160,24 @@ Each of these was learned from a real failure or a measurement, and most are not
 - `stale` means the artifact contradicts the project; `behind` means only circumstances moved. `stale` wins when both apply. `behind` does not propagate downstream.
 - `Verdict.calls_for_a_remake(refresh=)` is the only place a state becomes an action. Do not re-spell it at a call site.
 - The driver and a task differ by one input value to `classify()`, never by logic: `read`, the bytes of each result this one reads. A task gives what its upstreams actually produced; the driver gives what their records say, or `None` ("as recorded") while one of them may still be remade, in which case only the task can decide. A foreign write enters the same way, as a fact computed by whoever has git.
-- Whether a result still reads the bytes its record gives is ASTRA's rule, `Status.unchanged_given`, asked of the findings the driver already has. This is what lets a byte-identical rebuild stop a cascade without a second check.
+- ASTRA's checker says what a result breaks in itself (`Status.why`) and, separately, which results it reads were not unchanged when it looked (`Status.stale_inputs`). lc reads the first and not the second: by the time `classify()` is asked, a run may have remade those results, so it compares the bytes they have now with the bytes the record says were read. This is what lets a byte-identical rebuild stop a cascade without a second check. Only an error in `why` stales; `ABSENT_RESULT` is a warning, and bytes missing from a clone remake nothing.
 - A skip returns the recorded digest, never a recomputed one, so bytes-free clones classify correctly.
 - `--refresh` widens a run by exactly one state. There is no flag that suppresses remaking a stale output.
 - `lc status` always exits 0 and tolerates a dirty tree; `materialize --check` is the gate. `up_to_date` ignores `behind` and is false for a failed run.
 - A result's name is ids joined by dots (`stage.fit`) and a format may hold dots too (`tar.gz`), so a file's name alone does not say where one ends: `assets.record_places` offers every split, and the one whose record exists is the answer.
-- An analysis declared with a `commit` is refused, as is a result that belongs to an analysis in a repository of its own: lc builds from the working tree and commits in the project's repository only.
+- lc builds from the working tree and commits in the project's repository only. A result that belongs to an analysis declared with a `commit` is no task. A result that reads from such an analysis, or belongs to one the project drives, has no command in ASTRA's model, and the project is refused; so is a result that belongs to an analysis in a repository of its own.
 
 ### Execution
 
 - ASTRA's checker, HEAD, the container runtime and each result's last writer are read once per run by the driver and handed down. HEAD moves as the driver commits, so a per-task read would be nondeterministic. A record's `commit` is therefore the commit the run started at.
-- A task asks ASTRA nothing but its pure rule over the findings it was handed. It never calls `astra.api.check` or git: compute nodes need neither, and a check per task would cost a full pass over the analysis each time.
+- A task asks ASTRA nothing. It applies `classify()` to the findings it was handed and never calls `astra.api.check` or git: compute nodes need neither, and a check per task would cost a full pass over the analysis each time. The one astra call in a task is `write_records`.
 - A result's digest is computed in the worker before anything is staged, by hashing the file the recipe wrote. It must not come from the annex, where nothing is recorded yet. What a task read of another task is the digest that task reported, never a rehash.
 - A result with two names is made once: the recipe writes the first place, the worker copies the bytes to the others and writes one record at each.
 - A dependent can start while its upstream is still being annexed. That is safe (*measured*: git-annex hard-links, then renames). Do not move the save into the task.
 - The worker resets only what the result's name names at each of its places (`<name>.*` and the record), never the directory, since results share it and run concurrently. ASTRA refuses an output that shares its id with a declaration, which is the only way one name could begin another. A payload that is not a regular file fails the task.
 - `materialize` converges the environment right after the dirty check and before the graph. `uv run --locked --no-sync` does not notice a `.venv` that drifted from the lock (*measured*).
 - The run fetches declared in-tree inputs itself with `git annex get`. Read-only verbs never transfer anything. Nobody is ever told to run an annex command by hand.
-- A run leaves the tree as clean as it found it: `ok` saves, `failed` or `blocked` restores. Interrupted tasks are the exception; their files stay because a recipe may still be writing on the cluster.
+- A run leaves the tree as clean as it found it: `ok` saves, `failed` or `blocked` restores. A result made in a checkout that was edited or committed to while the run was in flight is among the failed: its record would name a commit that no longer says what its recipe ran on. Results committed before the edit stand. Interrupted tasks are the exception; their files stay because a recipe may still be writing on the cluster.
 - The run record pins the engine with `uv run --no-project --with <requirement>`: a release by version, a dev build by source commit (`materialize._engine_requirement`). The worker entry point syncs the project environment itself. Recorded paths are declared, never resolved, or they would name annex objects.
 - Concurrency is the allocation's. There is no `--jobs`.
 - Recipes run through `bash -c`, in their own analysis's folder, which for a driven analysis is not the project root.
@@ -241,7 +258,7 @@ Do not reintroduce these without a new reason.
 - **Launching Slurm workers through `uv run --with`.** It re-resolves Dask away from the driver's and needs an index on compute nodes.
 - **Catalog `connections`, `lc compute --config`, and a separate local settings block.** Offers name their provider, and local offers are ordinary offers.
 - **Migrations.** ASTRA 0.0.x specs and their `universes/*.yaml` are not read, and outputs from older engine layouts are invisible; the remedy is `git rm -r results/` and a re-materialize.
-- **Asking ASTRA's checker from a task.** It needs git and the whole repository on every compute node, and pays a full check per task downstream of a rebuild. The driver asks once; a task applies ASTRA's rule to what it was handed.
+- **Asking ASTRA's checker from a task.** It needs git and the whole repository on every compute node, and pays a full check per task downstream of a rebuild. The driver asks once; a task applies lc's rule to what it was handed.
 - **A second file beside the record.** The record is all lc writes beside a result. Its schema is closed, so what it cannot hold (what the sandbox enforced, the image id, the uv version) is not kept, by decision; a slot for runner attestation is a change to the specification.
 - **A definition hash.** What a result is made from is the specification's to say and its checker's to compare.
 - **Registering an environment plug-in with astra.** The checker reports the IRI and the runner from the record; saying what an environment holds is the runner's job.

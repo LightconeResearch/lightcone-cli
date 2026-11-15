@@ -1,9 +1,9 @@
 """Tests for `lightcone.engine.plan` — the run's plan, read from ASTRA.
 
 What the spec *means* is ASTRA's and is tested there. What is pinned here
-is what lc adds: that each planned result becomes one task holding
-everything a worker needs, with its command filled by lc and every path
-in it measured from the project root — wherever that sits in its
+is what lc adds: that each planned result lc builds becomes one task —
+ASTRA's own account of it, with what a worker needs looked up beside it,
+every path measured from the project root wherever that sits in its
 repository; that one question to ASTRA gets the tasks and how each stands;
 and that what this engine cannot execute, or a target that matches
 nothing, is an error rather than a guess.
@@ -132,9 +132,10 @@ def _project(repo: Path, spec: str = _SPEC, *, below: str = "") -> Path:
 # ---- what a task carries ---------------------------------------------------
 
 
-def test_one_task_per_planned_result_keyed_by_its_address(tmp_path: Path) -> None:
+def test_one_task_per_planned_result_keyed_by_its_id(tmp_path: Path) -> None:
     """Built once, per universe, and the stage's output built in the
-    project's universes because they drive it."""
+    project's universes because they drive it. The key is ASTRA's id for
+    the result, never a second naming of lc's own."""
     graph = plan.build(_project(tmp_path))
     assert sorted(graph.tasks) == [
         "fit#alternative",
@@ -145,56 +146,78 @@ def test_one_task_per_planned_result_keyed_by_its_address(tmp_path: Path) -> Non
         "stage.mask#baseline",
         "summary",
     ]
-    assert all(key == task.key for key, task in graph.tasks.items())
+    assert all(key == task.key == task.result.id for key, task in graph.tasks.items())
 
 
 def test_a_result_built_per_universe_has_its_place_under_the_universe(tmp_path: Path) -> None:
     task = plan.build(_project(tmp_path)).tasks["fit#baseline"]
-    (place,) = task.places
-    assert (place.name, place.address) == ("fit", "fit#baseline")
-    assert place.bytes == "results/baseline/fit.json"
-    assert place.record == ".astra/records/baseline/fit.json"
+    (place,) = task.result.places
+    assert (plan.name(place), place.address) == ("fit", "fit#baseline")
+    assert place.bytes_path == "results/baseline/fit.json"
+    assert place.record_path == ".astra/records/baseline/fit.json"
 
 
 def test_a_result_built_once_has_no_universe_directory(tmp_path: Path) -> None:
     task = plan.build(_project(tmp_path)).tasks["summary"]
-    (place,) = task.places
-    assert (place.name, place.address) == ("summary", "summary")
-    assert place.bytes == "results/summary.csv"
-    assert place.record == ".astra/records/summary.json"
+    (place,) = task.result.places
+    assert (plan.name(place), place.address) == ("summary", "summary")
+    assert place.bytes_path == "results/summary.csv"
+    assert place.record_path == ".astra/records/summary.json"
     assert task.decisions == {}
 
 
-def test_the_command_arrives_filled(tmp_path: Path) -> None:
-    """A worker is handed a shell command, never a template to fill. The
-    grammar is ASTRA's; the paths are lc's, spelled from where the recipe
-    runs."""
+def test_the_command_arrives_as_it_runs(tmp_path: Path) -> None:
+    """A worker is handed a shell command, never a template to fill:
+    ASTRA's, taken as given, its paths spelled from where the recipe runs
+    — the project's own folder, for the project's own output."""
     task = plan.build(_project(tmp_path)).tasks["fit#alternative"]
-    assert task.workdir == ""
-    assert task.command == (
+    assert task.workdir == "."
+    assert task.command == task.result.command == (
         "python src/fit.py results/summary.csv results/alternative/stage.mask.txt "
         "-m nested results/alternative/fit.json"
     )
-    assert task.decisions == {"method": "nested"}
 
 
-def test_inputs_keep_their_entries_and_name_files_from_the_root(tmp_path: Path) -> None:
+def test_the_options_a_result_is_made_with_are_looked_up_by_ref(tmp_path: Path) -> None:
+    """ASTRA's model names a decision once, by ref, and says what a
+    universe selects for it; a task holds the two joined, for the
+    decisions its own output lists and no other."""
+    tasks = plan.build(_project(tmp_path)).tasks
+    assert tasks["fit#alternative"].decisions == {"decisions.method": "nested"}
+    assert tasks["fit#baseline"].decisions == {"decisions.method": "mcmc"}
+    assert tasks["stage.mask#alternative"].decisions == {"stage.decisions.depth": "shallow"}
+    assert tasks["report#baseline"].decisions == {}
+
+
+def test_reads_keep_their_entries_and_name_files_from_the_root(tmp_path: Path) -> None:
+    """Each entry as written and in order: a declared input's own file, or
+    the bytes of the result the entry reads."""
     task = plan.build(_project(tmp_path)).tasks["fit#baseline"]
-    assert task.inputs == {
+    assert task.reads == {
         "summary": "results/summary.csv",
         "catalog": "data/catalog.csv",
         "stage.mask": "results/baseline/stage.mask.txt",
     }
-    assert list(task.inputs) == ["summary", "catalog", "stage.mask"]
+    assert list(task.reads) == ["summary", "catalog", "stage.mask"]
+    assert [source.entry for source in task.result.inputs] == list(task.reads)
 
 
-def test_only_inputs_another_task_makes_become_edges(tmp_path: Path) -> None:
+def test_only_entries_another_task_makes_become_edges(tmp_path: Path) -> None:
     graph = plan.build(_project(tmp_path))
     fit = graph.tasks["fit#baseline"]
-    assert fit.produced_by == {"summary": "summary", "stage.mask": "stage.mask#baseline"}
+    assert _made_by(fit) == {"summary": "summary", "stage.mask": "stage.mask#baseline"}
     assert fit.depends_on == ("summary", "stage.mask#baseline")
-    assert graph.tasks["summary"].produced_by == {}
+    assert _made_by(graph.tasks["summary"]) == {}
     assert graph.tasks["summary"].depends_on == ()
+
+
+def _made_by(task: plan.Task) -> dict[str, str]:
+    """Each entry of *task* that reads a result, and that result's task."""
+    return {
+        source.entry: source.result
+        for source in task.result.inputs
+        if source.result is not None
+    }
 
 
 def test_reading_one_task_twice_is_one_dependency(tmp_path: Path) -> None:
@@ -202,7 +225,7 @@ def test_reading_one_task_twice_is_one_dependency(tmp_path: Path) -> None:
         "{inputs.fit}", "{inputs}"
     )
     task = plan.build(_project(tmp_path, spec)).tasks["report#baseline"]
-    assert task.produced_by == {"fit": "fit#baseline", "fit#baseline": "fit#baseline"}
+    assert _made_by(task) == {"fit": "fit#baseline", "fit#baseline": "fit#baseline"}
     assert task.depends_on == ("fit#baseline",)
 
 
@@ -221,38 +244,43 @@ def test_a_driven_analysis_result_belongs_to_the_project_and_runs_in_its_own_fol
     project's `results/`; the recipe is the stage's, so it runs there and
     its paths are spelled from there."""
     task = plan.build(_project(tmp_path)).tasks["stage.mask#baseline"]
-    (place,) = task.places
-    assert place.name == "stage.mask"
-    assert place.bytes == "results/baseline/stage.mask.txt"
-    assert place.record == ".astra/records/baseline/stage.mask.json"
+    (place,) = task.result.places
+    assert plan.name(place) == "stage.mask"
+    assert place.bytes_path == "results/baseline/stage.mask.txt"
+    assert place.record_path == ".astra/records/baseline/stage.mask.json"
     assert task.workdir == "stage"
     assert task.command == "python mask.py deep ../results/baseline/stage.mask.txt"
-    assert task.decisions == {"depth": "deep"}
+    assert task.decisions == {"stage.decisions.depth": "deep"}
 
 
-def test_a_result_of_another_analysis_is_keyed_under_its_folder(tmp_path: Path) -> None:
+def test_a_result_of_another_analysis_is_keyed_under_its_analysis(tmp_path: Path) -> None:
     """Read from one of the stage's own universes, the result stays the
-    stage's — so its address alone would not say whose it is."""
+    stage's — so its address alone would not say whose it is, and its key
+    leads with the stage's own."""
     graph = plan.build(_project(tmp_path, _PINNED))
-    task = graph.tasks["stage/mask#v"]
-    (place,) = task.places
-    assert place.address == "mask#v"
-    assert place.bytes == "stage/results/v/mask.txt"
-    assert place.record == "stage/.astra/records/v/mask.json"
+    assert "stage/mask#v" not in graph.tasks
+    task = graph.tasks["stage:mask#v"]
+    (place,) = task.result.places
+    assert (plan.name(place), place.address) == ("mask", "mask#v")
+    assert place.bytes_path == "stage/results/v/mask.txt"
+    assert place.record_path == "stage/.astra/records/v/mask.json"
     assert task.workdir == "stage"
     assert task.command == "python mask.py deep results/v/mask.txt"
+    assert task.decisions == {"stage.decisions.depth": "deep"}
 
     fit = graph.tasks["fit#baseline"]
-    assert fit.inputs["stage.mask#v"] == "stage/results/v/mask.txt"
-    assert fit.produced_by["stage.mask#v"] == "stage/mask#v"
+    assert fit.reads["stage.mask#v"] == "stage/results/v/mask.txt"
+    assert _made_by(fit)["stage.mask#v"] == "stage:mask#v"
+    assert fit.depends_on == ("summary", "stage:mask#v")
 
 
 @pytest.mark.parametrize("spec", [_SPEC, _PINNED])
 def test_a_project_below_its_repository_top_plans_the_same(tmp_path: Path, spec: str) -> None:
-    """ASTRA measures from the top of the repository; everything lc does
-    with a path starts at the project root. What the checker found and
-    what ASTRA notes are kept in ASTRA's own words, which name a folder
-    from the top — so of those, only what they say is compared."""
+    """Everything lc does with a path starts at the project root, and
+    ASTRA gives every path of a task from there. What the checker found
+    and what ASTRA notes are kept in ASTRA's own words, which place a
+    diagnostic from the top of the repository — so of those, only what
+    they say is compared."""
     at_top = plan.build(_project(tmp_path / "top", spec))
     below = plan.build(_project(tmp_path / "nested", spec, below="papers/one"))
     assert below.tasks == at_top.tasks
@@ -260,10 +288,8 @@ def test_a_project_below_its_repository_top_plans_the_same(tmp_path: Path, spec:
     assert len(below.notes) == len(at_top.notes)
 
 
-def _standing(graph: plan.Graph) -> dict[str, list[str]]:
-    return {
-        key: [status.record_status for status in found] for key, found in graph.found.items()
-    }
+def _standing(graph: plan.Graph) -> dict[str, str]:
+    return {key: found.state for key, found in graph.found.items()}
 
 
 def test_recipe_resources_are_carried_as_declared(tmp_path: Path) -> None:
@@ -292,17 +318,42 @@ def test_a_command_reaching_outside_its_analysis_is_noted_not_refused(tmp_path: 
     assert plan.build(_project(tmp_path / "clean")).notes == ()
 
 
+def test_an_output_nothing_plans_is_noted(tmp_path: Path) -> None:
+    """A run would silently never make it, which is worth one line: the
+    stage declares a second output the project neither reads nor cites."""
+    root = _project(tmp_path)
+    with (root / "stage" / "astra.yaml").open("a") as stage:
+        stage.write(
+            "  spare:\n    type: data\n    format: txt\n"
+            "    recipe:\n      command: python spare.py {output}\n"
+        )
+    graph = plan.build(root)
+    assert not [key for key in graph.tasks if "spare" in key]
+    (note,) = graph.notes
+    assert "`spare` has no planned result" in note
+
+
+def test_how_an_analysis_is_written_is_not_repeated_at_every_run(tmp_path: Path) -> None:
+    """ASTRA also notes a pin that names the stage's universe only because
+    the project has none of that id. That is how this analysis is written,
+    not something a run lives with."""
+    root = _project(tmp_path, _PINNED)
+    assert "FALLBACK_PIN" in [note.code for note in api.resolve(root).notes]
+    assert plan.build(root).notes == ()
+
+
 # ---- what ASTRA's checker found, kept beside the tasks ---------------------
 
 
 def test_every_task_has_what_the_checker_found_of_it(tmp_path: Path) -> None:
-    """One status per place, in the tasks' order: the state a run starts
-    from, read once and handed to whoever classifies."""
+    """One status per task, in the tasks' order: the state a run starts
+    from, read once and handed to whoever classifies. Before any run that
+    is ASTRA's `missing`, with the rule broken said in its own words."""
     graph = plan.build(_project(tmp_path))
     assert list(graph.found) == list(graph.tasks)
-    for key, task in graph.tasks.items():
-        assert len(graph.found[key]) == len(task.places)
-        assert [status.record_status for status in graph.found[key]] == ["missing"]
+    for found in graph.found.values():
+        assert (found.state, found.record) == ("missing", None)
+        assert [broken.code for broken in found.why] == ["MISSING_RECORD"]
 
 
 def test_the_graph_is_read_with_one_question_to_astra(
@@ -382,7 +433,16 @@ def test_a_bare_name_means_every_universe(tmp_path: Path) -> None:
 
 def test_a_key_means_exactly_one(tmp_path: Path) -> None:
     graph = plan.build(_project(tmp_path, _PINNED))
-    assert graph.resolve(["fit#baseline", "stage/mask#v"]) == ["fit#baseline", "stage/mask#v"]
+    assert graph.resolve(["fit#baseline", "stage:mask#v"]) == ["fit#baseline", "stage:mask#v"]
+
+
+def test_a_bare_name_is_a_result_s_own_whoever_it_belongs_to(tmp_path: Path) -> None:
+    """The stage's result is named `mask` where it is kept, so that is the
+    name that finds it; the entry the project reads it by is not a name."""
+    graph = plan.build(_project(tmp_path, _PINNED))
+    assert graph.resolve(["mask"]) == ["stage:mask#v"]
+    with pytest.raises(ProjectError, match="no output matches `stage.mask`"):
+        graph.resolve(["stage.mask"])
 
 
 def test_an_unknown_target_is_an_error_not_an_empty_run(tmp_path: Path) -> None:
@@ -437,12 +497,45 @@ def test_an_analysis_declared_with_a_commit_is_refused(
     assert fragment in str(raised.value)
 
 
+def test_a_result_from_a_commit_that_nothing_here_reads_is_no_task(tmp_path: Path) -> None:
+    """It is never built again, only read through its record at that
+    commit — so where no recipe of the working tree reads it, there is
+    nothing to refuse and nothing to make: here the project only cites
+    it as evidence."""
+    cited = (
+        _SPEC.replace(", stage.depth: deep", "")
+        .replace(", stage.depth: shallow", "")
+        .replace("inputs: [summary, catalog, stage.mask]", "inputs: [summary, catalog]")
+        .replace(" {inputs.stage.mask}", "")
+        + """
+findings:
+  masked:
+    claim: The mask holds.
+    evidence:
+      - artifact: stage.mask#v
+"""
+    )
+    root = _project(tmp_path, cited)
+    _git(root, "commit", "-q", "-m", "stage")
+    pinned = f"stage: {{path: stage, commit: {_git(root, 'rev-parse', 'HEAD')}}}"
+    (root / "astra.yaml").write_text(
+        textwrap.dedent(cited).replace("stage: {path: stage}", pinned)
+    )
+
+    planned = [result.id for result in api.resolve(root).results]
+    graph = plan.build(root)
+
+    assert "stage:mask#v" in planned
+    assert sorted(graph.tasks) == sorted(set(planned) - {"stage:mask#v"})
+    assert list(graph.found) == list(graph.tasks)
+
+
 def test_a_result_owned_by_a_repository_of_its_own_is_refused(tmp_path: Path) -> None:
     """lc commits what it makes, and only in the project's repository."""
     root = _project(tmp_path, _PINNED)
     (root / "stage" / ".git").mkdir()
     with pytest.raises(ProjectError, match="repository of its own") as raised:
         plan.build(root)
-    assert "stage/mask#v" in str(raised.value)
+    assert "`stage:mask#v` belongs to the analysis in stage" in str(raised.value)
 
 

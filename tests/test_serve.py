@@ -20,11 +20,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
 import pytest
-from astra.api import Record, RecordedInput, Runner
 from astra.papers.cache import PaperCache
 
 from lightcone.engine import assets
@@ -36,18 +36,23 @@ _BUNDLE = engine.BUNDLE
 
 SPEC = 'spec_version: "0.1.0"\nlabel: demo\n'
 
-def _record(address: str) -> Record:
-    return Record(
-        address=address,
-        content_hash="sha256:x",
-        size=2,
-        commit="abc123",
-        environment="urn:lightcone:env:sha256:e",
-        runner=Runner("lightcone-cli", "0.5.0"),
-        inputs=(RecordedInput("catalog", "sha256:c", 4),),
-        started="2026-10-31T08:59:00Z",
-        finished="2026-10-31T09:00:00Z",
-    )
+def _record(address: str) -> dict[str, Any]:
+    """A record as its file holds it: ASTRA's own JSON, which the server
+    reads as written."""
+    return {
+        "spec_version": "0.1.0",
+        "address": address,
+        "content_hash": "sha256:x",
+        "size": 2,
+        "generated_by": {
+            "commit": "abc123",
+            "environment": {"iri": "urn:lightcone:env:sha256:e"},
+            "runner": {"id": "lightcone-cli", "version": "0.5.0"},
+            "inputs": [{"entry": "catalog", "content_hash": "sha256:c", "size": 4}],
+            "started": "2026-10-31T08:59:00Z",
+            "finished": "2026-10-31T09:00:00Z",
+        },
+    }
 
 
 RUN = {
@@ -93,7 +98,7 @@ def _recorded(project: Path, path: str, address: str) -> None:
         if place.endswith(f"/{address.split('#')[0]}.json")
     )
     (project / record).parent.mkdir(parents=True, exist_ok=True)
-    (project / record).write_text(json.dumps(_record(address).to_json()))
+    (project / record).write_text(json.dumps(_record(address)))
 
 
 def _request(
@@ -252,12 +257,34 @@ def test_a_run_is_found_wherever_astra_places_the_result(
     assert json.loads(body)["run"] == RUN
 
 
-def test_a_record_that_does_not_parse_is_no_run(served: tuple[str, str], project: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    ["{}", "not json", "[]", '{"generated_by": {"commit": "abc123"}}', '{"generated_by": 1}'],
+    ids=["empty", "unparsable", "a list", "half a run", "no run"],
+)
+def test_a_record_that_does_not_parse_is_no_run(
+    served: tuple[str, str], project: Path, text: str
+) -> None:
+    """The file is read as plain JSON in ASTRA's shape, and one that is
+    not that shape says nothing — never a traceback, never half a run."""
     base, token = served
     _recorded(project, "results/best_fit.json", "best_fit")
-    (project / ".astra" / "records" / "best_fit.json").write_text("{}")
+    (project / ".astra" / "records" / "best_fit.json").write_text(text)
     _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
     assert json.loads(body) == {"run": None}
+
+
+def test_a_record_may_leave_out_what_a_record_may(served: tuple[str, str], project: Path) -> None:
+    """A record's times and its `inputs` are optional in ASTRA's schema,
+    so their absence is still a run."""
+    base, token = served
+    _recorded(project, "results/best_fit.json", "best_fit")
+    record = _record("best_fit")
+    for field in ("inputs", "started", "finished"):
+        del record["generated_by"][field]
+    (project / ".astra" / "records" / "best_fit.json").write_text(json.dumps(record))
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
+    assert json.loads(body)["run"] == {**RUN, "finishedAt": "", "inputVersions": {}}
 
 
 def test_an_outputs_state_is_the_engines(

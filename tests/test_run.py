@@ -26,8 +26,6 @@ spec_version: "0.1.0"
 inputs:
   local:
     path: data/local.csv
-  absent:
-    path: data/absent.csv
 outputs:
   best_fit:
     type: metric
@@ -61,9 +59,31 @@ def project(tmp_path: Path) -> Path:
     (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
     (root / "uv.lock").write_text("version = 1\n")
     (root / ".venv").mkdir()
-    # ASTRA reads an analysis in its repository; nothing has to be committed.
+    # ASTRA reads an analysis in its repository, and an input is a file
+    # git tracks there; nothing has to be committed.
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    _git(root, "add", "--all")
     return root
+
+
+def _git(root: Path, *argv: str) -> str:
+    done = subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=t@example.com", *argv],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return done.stdout.strip()
+
+
+def _declare_stage(project: Path, declaration: str = "path: stage") -> None:
+    """Give the project a declared analysis with an input of its own."""
+    (project / "stage" / "data").mkdir(parents=True, exist_ok=True)
+    (project / "stage" / "data" / "stage.csv").write_text("x\n")
+    (project / "stage" / "astra.yaml").write_text(STAGE)
+    (project / "astra.yaml").write_text(SPEC + f"analyses:\n  stage: {{{declaration}}}\n")
+    _git(project, "add", "--all")
 
 
 # ---- the project check ----------------------------------------------------
@@ -157,14 +177,25 @@ def test_declared_file_inputs_become_read_paths(project: Path) -> None:
 def test_an_input_of_a_declared_analysis_is_a_read_path_too(project: Path) -> None:
     """A denial the researcher cannot act on is worse than the access it
     withheld: the file *is* declared, just not at the top of the tree."""
-    (project / "stage" / "data").mkdir(parents=True)
-    (project / "stage" / "data" / "stage.csv").write_text("x\n")
-    (project / "stage" / "astra.yaml").write_text(STAGE)
-    (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage:\n    path: stage\n")
+    _declare_stage(project)
     assert engine_run.input_paths(project) == [
         (project / "data" / "local.csv").resolve(),
         (project / "stage" / "data" / "stage.csv").resolve(),
     ]
+
+
+def test_an_input_of_an_analysis_declared_at_a_commit_is_no_file_of_the_tree(
+    project: Path,
+) -> None:
+    """That analysis is read in the commit, not here: the file beside it
+    in the working tree is not what it declares, and a probe is granted
+    the tree it runs in."""
+    _declare_stage(project)
+    _git(project, "commit", "-q", "-m", "stage")
+    _declare_stage(project, f"path: stage, commit: {_git(project, 'rev-parse', 'HEAD')}")
+
+    assert (project / "stage" / "data" / "stage.csv").exists()
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
 def test_reading_the_declared_inputs_fetches_nothing(
@@ -175,22 +206,30 @@ def test_reading_the_declared_inputs_fetches_nothing(
     from astra import api
 
     asked: list[bool] = []
-    bind = api.bind
+    resolve = api.resolve
 
-    def offline_only(path: Path, *, offline: bool = False) -> api.Bound:
+    def offline_only(path: Path, *, offline: bool = False) -> api.ResolvedAnalysis:
         asked.append(offline)
-        return bind(path, offline=offline)
+        return resolve(path, offline=offline)
 
-    monkeypatch.setattr(api, "bind", offline_only)
+    monkeypatch.setattr(api, "resolve", offline_only)
 
     assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
     assert asked == [True]
 
 
-def test_a_declared_input_that_is_not_there_is_left_out(project: Path) -> None:
-    """The read set names files; a declaration whose file is absent has
-    nothing to grant."""
-    assert not any("absent" in str(p) for p in engine_run.input_paths(project))
+def test_a_declared_input_whose_content_is_not_here_is_left_out(project: Path) -> None:
+    """The read set names files, and a declared input this clone has not
+    fetched is none: git-annex keeps a link in its place, which ASTRA
+    reads as the input and a recipe could not open."""
+    key = "SHA256E-s6--" + "5" * 64 + ".csv"
+    (project / "data" / "absent.csv").symlink_to(f"../.git/annex/objects/Jx/3M/{key}/{key}")
+    (project / "astra.yaml").write_text(
+        SPEC.replace("outputs:", "  absent:\n    path: data/absent.csv\noutputs:")
+    )
+    _git(project, "add", "--all")
+
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
 def test_a_missing_spec_declares_no_inputs(project: Path) -> None:
@@ -213,13 +252,23 @@ def test_a_spec_with_no_inputs_is_fine(project: Path) -> None:
     assert engine_run.input_paths(project) == []
 
 
-def test_an_unreadable_declared_analysis_keeps_the_readable_inputs(project: Path) -> None:
-    """A probe exists to debug a project, and a spec whose declared
-    analysis is broken is exactly when someone reaches for one."""
+def test_an_analysis_astra_finds_invalid_declares_no_inputs(project: Path) -> None:
+    """Only a valid analysis resolves, so one that breaks a rule declares
+    nothing a probe could be granted — and a probe is how someone debugs
+    one, so it still runs: here the declared analysis does not parse."""
     (project / "stage").mkdir()
     (project / "stage" / "astra.yaml").write_text("inputs: [\n")
     (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage:\n    path: stage\n")
-    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
+    _git(project, "add", "--all")
+    assert engine_run.input_paths(project) == []
+
+
+def test_an_input_git_does_not_track_makes_the_analysis_invalid(project: Path) -> None:
+    """The same rule from the other side: an input is a file of the
+    repository, so a declared file nobody added is no input yet."""
+    _git(project, "rm", "-q", "--cached", "data/local.csv")
+    assert (project / "data" / "local.csv").exists()
+    assert engine_run.input_paths(project) == []
 
 
 # ---- the uv hop -----------------------------------------------------------

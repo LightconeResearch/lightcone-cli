@@ -45,7 +45,7 @@ from lightcone.engine.plan import Graph, Key
 from lightcone.engine.project import SPEC_FILENAME
 
 if TYPE_CHECKING:
-    from astra.api import Record
+    from astra.api import ProvenanceRecord
 
 #: The vocabulary the run-level facts come from. Without it in the
 #: ``@context``, terms like ``containerImage`` and ``sha256`` are
@@ -125,9 +125,9 @@ def render(
 
 
 def _split(key: Key) -> tuple[str, str]:
-    """A task's result name — after its analysis's folder, for a result
-    that belongs to another analysis — and its universe, empty for a
-    result built once."""
+    """A task's result name — after its analysis's key and a colon, for a
+    result that belongs to another analysis — and its universe, empty for
+    a result built once."""
     name, _, universe = key.partition("#")
     return name, universe
 
@@ -169,14 +169,13 @@ class _Builder:
         self.keys = dict(keys)
         self.crate = ROCrate(version=_RO_CRATE_VERSION)
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
-        #: Every materialized task, sorted, with its record at the first
-        #: of its places — the one its recipe wrote; the others hold copies.
-        #: As ASTRA's checker read it, so a record that is not the
-        #: result's own publishes nothing.
-        self.made: list[tuple[Key, Record]] = [
+        #: Every materialized task, sorted, with its record as ASTRA's
+        #: checker read it, so a record that is not the result's own
+        #: publishes nothing.
+        self.made: list[tuple[Key, ProvenanceRecord]] = [
             (key, record)
             for key in sorted(graph.tasks)
-            if (record := graph.found[key][0].record) is not None
+            if (record := graph.found[key].record) is not None
         ]
         self.made_keys = {key for key, _ in self.made}
         self.persons: dict[str, str] = {}  # email/name → @id
@@ -324,7 +323,7 @@ class _Builder:
             {
                 posixpath.join(task.workdir, SPEC_FILENAME)
                 for task in self.graph.tasks.values()
-                if task.workdir
+                if task.workdir != "."
             }
         )
         for name in (*_ENVIRONMENT, *specs):
@@ -380,10 +379,10 @@ class _Builder:
         """One result's crate id — the place ASTRA gives its bytes, never
         a second spelling of the results layout. No trailing slash: a
         result is one file, so the entity is a ``File``."""
-        return self.graph.tasks[key].places[0].bytes
+        return self.graph.tasks[key].result.places[0].bytes_path
 
-    def _dataset(self, key: Key, record: Record) -> None:
-        place = self.graph.tasks[key].places[0]
+    def _dataset(self, key: Key, record: ProvenanceRecord) -> None:
+        place = self.graph.tasks[key].result.places[0]
         # A `File`, not a `Dataset` with parts: a result is one file, so
         # there is one annex key to look up by name and one checksum to
         # publish — the same digest its record gives.
@@ -391,15 +390,16 @@ class _Builder:
         entity["name"] = record.address
         entity["description"] = f"output {_titled(key)}, materialized"
         entity["version"] = record.content_hash
-        described = self._file(place.record)
+        described = self._file(place.record_path)
         described["about"] = {"@id": entity.id}
         entity["subjectOf"] = {"@id": described.id}
 
     # ----- the runs -----
 
-    def _action(self, key: Key, record: Record) -> str:
-        place = self.graph.tasks[key].places[0]
-        write = self.writer(place.bytes, place.record)
+    def _action(self, key: Key, record: ProvenanceRecord) -> str:
+        place = self.graph.tasks[key].result.places[0]
+        write = self.writer(place.bytes_path, place.record_path)
+        made = record.generated_by
         self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {
             "@type": "CreateAction",
@@ -413,10 +413,10 @@ class _Builder:
             "actionStatus": "http://schema.org/CompletedActionStatus",
             "object": self._objects(key),
         }
-        if record.started:
-            properties["startTime"] = _offset(record.started)
-        if record.finished:
-            properties["endTime"] = _offset(record.finished)
+        if made.started:
+            properties["startTime"] = _offset(made.started)
+        if made.finished:
+            properties["endTime"] = _offset(made.finished)
         if self.agents[key]:
             properties["agent"] = {"@id": self.agents[key]}
         action = ContextEntity(self.crate, self._uri(f"action/{key}"), properties)
@@ -427,13 +427,12 @@ class _Builder:
     def _objects(self, key: Key) -> list[dict[str, str]]:
         task = self.graph.tasks[key]
         refs = [{"@id": name} for name in _ENVIRONMENT if (self.root / name).is_file()]
-        for name in sorted(task.inputs):
-            upstream = task.produced_by.get(name)
-            if upstream is not None:
-                if upstream in self.made_keys:
-                    refs.append({"@id": self._dataset_id(upstream)})
+        for source in sorted(task.result.inputs, key=lambda source: source.entry):
+            if source.result is not None:
+                if source.result in self.made_keys:
+                    refs.append({"@id": self._dataset_id(source.result)})
                 continue
-            refs.append({"@id": self._input(task.inputs[name])})
+            refs.append({"@id": self._input(task.reads[source.entry])})
         # The options the task's decisions select as the spec now stands:
         # a record holds none, and one that names another selection is
         # stale, so these are what a current result ran under.
@@ -485,9 +484,9 @@ class _Builder:
         """One ``OrganizeAction`` per run — results whose records name one
         commit were made by one ``lc materialize``, the driver's one HEAD
         read."""
-        runs: dict[str, list[tuple[Key, Record]]] = {}
+        runs: dict[str, list[tuple[Key, ProvenanceRecord]]] = {}
         for key, record in self.made:
-            runs.setdefault(record.commit, []).append((key, record))
+            runs.setdefault(record.generated_by.commit, []).append((key, record))
         for sha in sorted(runs):
             group = runs[sha]
             # The engine *that run* recorded, never the one installed
@@ -496,8 +495,13 @@ class _Builder:
             # the crate at each other forever — and an lc upgrade is
             # recorded as moving nothing. One run has one engine by
             # construction; every record of the group agrees.
-            engine = self._engine(group[0][1].runner.version)
-            times = sorted(t for _, r in group for t in (r.started, r.finished) if t)
+            engine = self._engine(group[0][1].generated_by.runner.version)
+            times = sorted(
+                moment
+                for _, record in group
+                for moment in (record.generated_by.started, record.generated_by.finished)
+                if moment
+            )
             run_action = ContextEntity(
                 self.crate,
                 self._uri(f"run/{sha}"),
@@ -581,8 +585,8 @@ class _Builder:
         # The newest recorded instant, never the clock: the document must
         # be a pure function of repository state, or every render is a
         # fresh diff and convergence commits forever.
-        stamps = sorted(r.finished for _, r in self.made if r.finished)
-        root["datePublished"] = stamps[-1] if stamps else (self.spec_write.date or "1970-01-01")
+        stamps = [made for _, r in self.made if (made := r.generated_by.finished)]
+        root["datePublished"] = max(stamps) if stamps else (self.spec_write.date or "1970-01-01")
         root["conformsTo"] = [{"@id": profile_id} for profile_id, _, _ in _PROFILES]
         for profile_id, name, version in _PROFILES:
             self.crate.add(

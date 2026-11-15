@@ -99,7 +99,7 @@ PLACES = {
     "diagnostic#u1": "results/u1/diagnostic.txt",
     "stage.cleaned#u2": "results/u2/stage.cleaned.csv",
     "fit#u2": "results/u2/fit.txt",
-    "stage/cleaned#v1": "stage/results/v1/cleaned.csv",
+    "stage:cleaned#v1": "stage/results/v1/cleaned.csv",
     "comparison": "results/comparison.txt",
 }
 
@@ -123,11 +123,15 @@ def test_each_planned_result_is_one_task_at_the_place_astra_gives_it(project: Pa
     switch, which has no result of its own, is no task."""
     graph = plan.build(project)
 
-    assert {key: task.places[0].bytes for key, task in graph.tasks.items()} == PLACES
-    assert graph.tasks["stage/cleaned#v1"].places[0].record == (
+    assert {
+        key: task.result.places[0].bytes_path for key, task in graph.tasks.items()
+    } == PLACES
+    assert graph.tasks["stage:cleaned#v1"].result.places[0].record_path == (
         "stage/.astra/records/v1/cleaned.json"
     )
-    assert graph.tasks["comparison"].places[0].record == ".astra/records/comparison.json"
+    assert graph.tasks["comparison"].result.places[0].record_path == (
+        ".astra/records/comparison.json"
+    )
 
 
 def test_a_pin_and_an_import_are_dependencies_like_any_other(project: Path) -> None:
@@ -136,12 +140,13 @@ def test_a_pin_and_an_import_are_dependencies_like_any_other(project: Path) -> N
     waits on all three, each under the entry exactly as written."""
     task = plan.build(project).tasks["comparison"]
 
-    assert task.produced_by == {
+    assert {source.entry: source.result for source in task.result.inputs} == {
         "fit#u1": "fit#u1",
         "fit#u2": "fit#u2",
-        "stage.cleaned#stage_v1": "stage/cleaned#v1",
+        "stage.cleaned#stage_v1": "stage:cleaned#v1",
     }
-    assert task.inputs["stage.cleaned#stage_v1"] == "stage/results/v1/cleaned.csv"
+    assert task.depends_on == ("fit#u1", "fit#u2", "stage:cleaned#v1")
+    assert task.reads["stage.cleaned#stage_v1"] == "stage/results/v1/cleaned.csv"
 
 
 def test_a_derived_universe_runs_under_its_effective_selection(project: Path) -> None:
@@ -149,8 +154,11 @@ def test_a_derived_universe_runs_under_its_effective_selection(project: Path) ->
     reading a switch that takes no case there is not built in it."""
     tasks = plan.build(project).tasks
 
-    assert tasks["fit#u2"].decisions == {"method": "a", "stage.cut": "tight"}
-    assert tasks["diagnostic#u1"].decisions == {"extra": "on"}
+    assert tasks["fit#u2"].decisions == {
+        "decisions.method": "a",
+        "stage.decisions.cut": "tight",
+    }
+    assert tasks["diagnostic#u1"].decisions == {"decisions.extra": "on"}
     assert "diagnostic#u2" not in tasks
 
 
@@ -159,8 +167,10 @@ def test_reading_through_a_switch_reads_the_case_it_takes(project: Path) -> None
     and the record name — and the file is the taken case's result."""
     task = plan.build(project).tasks["diagnostic#u1"]
 
-    assert task.inputs == {"fit_of_b": "results/u1/fit.txt"}
-    assert task.produced_by == {"fit_of_b": "fit#u1"}
+    assert task.reads == {"fit_of_b": "results/u1/fit.txt"}
+    assert [(source.entry, source.result) for source in task.result.inputs] == [
+        ("fit_of_b", "fit#u1")
+    ]
     assert task.command == "cp results/u1/fit.txt results/u1/diagnostic.txt && echo on >> " + (
         "results/u1/diagnostic.txt"
     )
@@ -171,7 +181,7 @@ def test_a_declared_analysis_s_recipe_runs_in_its_own_folder(built: Path) -> Non
     analysis the output is declared in — while a driven result's bytes go
     to the driver's `results/`, under the driver's selection."""
     driven = (built / PLACES["stage.cleaned#u1"]).read_text().split()
-    own = (built / PLACES["stage/cleaned#v1"]).read_text().split()
+    own = (built / PLACES["stage:cleaned#v1"]).read_text().split()
 
     assert driven[-2:] == ["tight", "stage"]
     assert own[-2:] == ["loose", "stage"]
@@ -208,7 +218,7 @@ def test_an_input_of_the_declared_analysis_stales_what_reads_it(built: Path) -> 
     report = materialize.check(built, [])
 
     assert sorted(report.planned) == sorted(PLACES)
-    assert "content of `raw`" in report.planned["stage/cleaned#v1"]
+    assert "content of `raw`" in report.planned["stage:cleaned#v1"]
 
 
 def test_a_selection_edit_stales_only_the_universe_it_touches(
@@ -236,7 +246,7 @@ def test_a_target_is_a_task_or_a_name_in_every_universe(project: Path) -> None:
     graph = plan.build(project)
 
     assert graph.resolve(["fit"]) == ["fit#u1", "fit#u2"]
-    assert graph.resolve(["stage/cleaned#v1"]) == ["stage/cleaned#v1"]
+    assert graph.resolve(["stage:cleaned#v1"]) == ["stage:cleaned#v1"]
     assert list(graph.closure(["fit#u2"]).tasks) == ["stage.cleaned#u2", "fit#u2"]
 
 

@@ -73,6 +73,11 @@ class TaskResult:
     notes: tuple[str, ...] = ()
 
     @property
+    def digest(self) -> assets.Digest:
+        """The hash and size of the result's bytes, as one value."""
+        return self.content_hash, self.size
+
+    @property
     def usable(self) -> bool:
         """Whether a dependent may proceed on this result.
 
@@ -112,7 +117,7 @@ class RunContext:
 def materialize(
     root: Path,
     task: Task,
-    found: tuple[Status, ...],
+    found: Status,
     context: RunContext,
     refresh: bool,
     foreign: dataset.LastWrite | None,
@@ -129,9 +134,9 @@ def materialize(
     Args:
         root: The project root.
         task: The result to make.
-        found: What ASTRA's checker found of the result before the run,
-            one status per place. Read by the driver, where git is; a
-            worker asks nothing of ASTRA but its rule over them.
+        found: What ASTRA's checker found of the result before the run.
+            Read by the driver, where git is; a worker asks nothing of
+            ASTRA.
         context: The run's driver-resolved facts.
         refresh: Whether to remake a result that is merely behind.
         foreign: The commit that last wrote the result's files in place
@@ -155,15 +160,13 @@ def materialize(
 def _materialize(
     root: Path,
     task: Task,
-    found: tuple[Status, ...],
+    found: Status,
     context: RunContext,
     refresh: bool,
     foreign: dataset.LastWrite | None,
     upstream: tuple[TaskResult, ...],
     output: Callable[[str, bytes], None] | None,
 ) -> TaskResult:
-    from astra.api import Digest
-
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
         return TaskResult(
@@ -176,8 +179,9 @@ def _materialize(
         found=found,
         environment=context.environment,
         read={
-            entry: Digest(reported[key].content_hash, reported[key].size)
-            for entry, key in task.produced_by.items()
+            source.entry: reported[source.result].digest
+            for source in task.result.inputs
+            if source.result is not None
         },
         foreign=foreign,
     )
@@ -188,7 +192,7 @@ def _materialize(
     # never a recomputed one: on a clone that has fetched no annex content
     # the files are pointers, and rehashing them would quietly report a
     # different output.
-    record = found[0].record
+    record = found.record
     assert record is not None and verdict.status != "stale"  # the branch above
     return TaskResult(
         task.key,
@@ -241,22 +245,24 @@ def execute(
     # What the recipe is about to read, hashed before it runs: an input
     # this clone does not hold is a refusal that should cost no compute.
     read = []
-    for entry, name in task.inputs.items():
-        if (key := task.produced_by.get(entry)) is not None:
+    for source in task.result.inputs:
+        if source.result is not None:
             # What the upstream task reported, never a rehash: one left
             # alone on a clone without its content is a pointer here.
-            read.append(api.RecordedInput(entry, upstream[key].content_hash, upstream[key].size))
+            digest = upstream[source.result].digest
         else:
+            path = root / task.reads[source.entry]
             try:
-                assets.require_fetched(root / name)
-                hashed = api.digest_file(root / name)
+                assets.require_fetched(path)
+                digest = assets.digest_file(path)
             except (OSError, ProjectError) as e:
                 return TaskResult(
-                    task.key, "failed", reason=f"the input `{entry}` cannot be read: {e}"
+                    task.key, "failed", reason=f"the input `{source.entry}` cannot be read: {e}"
                 )
-            read.append(api.RecordedInput(entry, hashed.content_hash, hashed.size))
+        read.append(api.RecordedInput(source.entry, *digest))
 
-    made = root / task.places[0].bytes
+    places = task.result.places
+    made = root / places[0].bytes_path
     # Never the parent directory: siblings share it, and under Dask they
     # are being written concurrently. What this result owns, at each of
     # its places, is its record and any file named after it
@@ -265,19 +271,19 @@ def execute(
     # behind. `<name>.` cannot reach a sibling: ASTRA refuses an output
     # that shares its id with a declaration, which is the only way one
     # result's name could begin another's.
-    for place in task.places:
-        (root / place.bytes).parent.mkdir(parents=True, exist_ok=True)
+    for place in places:
+        (root / place.bytes_path).parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
         context.runtime,
-        [path for name in task.inputs.values() if (path := root / name).exists()],
+        [path for name in task.reads.values() if (path := root / name).exists()],
         write_dir=made.parent,
         use_gpus=resources.gpus > 0,
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing outputs.
-        for place in task.places:
-            (root / place.record).unlink(missing_ok=True)
-            for stale in (root / place.bytes).parent.glob(f"{place.name}.*"):
+        for place in places:
+            (root / place.record_path).unlink(missing_ok=True)
+            for stale in (root / place.bytes_path).parent.glob(f"{plan.name(place)}.*"):
                 if stale.is_file() or stale.is_symlink():
                     stale.unlink()
         started = datetime.now(UTC)
@@ -310,41 +316,43 @@ def execute(
         return TaskResult(
             task.key,
             "failed",
-            reason=f"the recipe exited 0 but left {found} at {task.places[0].bytes}",
+            reason=f"the recipe exited 0 but left {found} at {places[0].bytes_path}",
             notes=outcome.notes,
         )
 
     try:
-        digest = api.digest_file(made)
-        # One record at each place ASTRA gives the result, and its bytes at
-        # each default place: a result with two names is made once.
-        for place in task.places:
-            if place is not task.places[0]:
-                shutil.copyfile(made, root / place.bytes)
-            api.write_record(
-                root / place.record,
-                api.Record(
-                    address=place.address,
-                    content_hash=digest.content_hash,
-                    size=digest.size,
-                    commit=context.commit,
-                    environment=context.environment,
-                    runner=api.Runner("lightcone-cli", lc_version()),
-                    inputs=tuple(read),
-                    started=api.timestamp(started),
-                    finished=api.timestamp(finished),
-                ),
-            )
-    except (OSError, ProjectError) as e:
+        content_hash, size = assets.digest_file(made)
+        # Its bytes at each default place, and one record at each place
+        # ASTRA gives the result: a result with two names is made once.
+        for place in places[1:]:
+            shutil.copyfile(made, root / place.bytes_path)
+        api.write_records(
+            root,
+            task.result,
+            content_hash,
+            size,
+            api.Generation(
+                commit=context.commit,
+                environment=api.Environment(context.environment),
+                runner=api.Runner("lightcone-cli", lc_version()),
+                inputs=tuple(read),
+                started=_instant(started),
+                finished=_instant(finished),
+            ),
+        )
+    except (OSError, ValueError, ProjectError) as e:
         return TaskResult(
             task.key,
             "failed",
             reason=f"the recipe finished but its output could not be recorded: {e}",
             notes=outcome.notes,
         )
-    return TaskResult(
-        task.key, "ok", content_hash=digest.content_hash, size=digest.size, notes=outcome.notes
-    )
+    return TaskResult(task.key, "ok", content_hash=content_hash, size=size, notes=outcome.notes)
+
+
+def _instant(moment: datetime) -> str:
+    """A moment as a record gives one: in UTC, to the millisecond."""
+    return f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
 
 
 def _gate(root: Path, environment: str) -> str:
@@ -460,7 +468,7 @@ def _from_disk(graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
     """
     upstream = {}
     for key in task.depends_on:
-        if (record := graph.found[key][0].record) is None:
+        if (record := graph.found[key].record) is None:
             raise ProjectError(
                 f"`{key}`, which `{task.key}` reads, has no valid record. "
                 "Run `lc materialize <cluster>` instead."

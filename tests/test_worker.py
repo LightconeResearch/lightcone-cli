@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 from astra import api
 
-from lightcone.engine import container, dataset, identity, plan, sandbox, worker
+from lightcone.engine import assets, container, dataset, identity, plan, sandbox, worker
 from lightcone.engine.sandbox import Unavailable
 from lightcone.engine.worker import TaskResult
 
@@ -117,8 +117,8 @@ def _make(root: Path, key: str, *upstream: TaskResult, refresh: bool = False) ->
     )
 
 
-def _digest(data: bytes) -> api.Digest:
-    return api.Digest(f"sha256:{hashlib.sha256(data).hexdigest()}", len(data))
+def _digest(data: bytes) -> assets.Digest:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}", len(data)
 
 
 def _record(root: Path, path: str) -> dict[str, Any]:
@@ -148,7 +148,8 @@ def test_a_recipe_runs_and_its_output_is_recorded(root: Path) -> None:
 
     assert result.status == "ok"
     assert (root / _FIRST).read_text() == "one\n"
-    assert (result.content_hash, result.size) == (_digest(b"one\n").content_hash, 4)
+    assert result.digest == _digest(b"one\n")
+    assert result.size == 4
 
 
 def test_the_record_says_what_the_run_was(root: Path) -> None:
@@ -167,8 +168,8 @@ def test_the_record_says_what_the_run_was(root: Path) -> None:
     # the project's lock, this field is the record of which engine ran.
     assert run["runner"] == {"id": "lightcone-cli", "version": worker.lc_version()}
     assert run["started"] <= run["finished"]
-    assert "inputs" not in run
-    assert plan.build(root).found["first#baseline"][0].record_status == "unchanged"
+    assert run["inputs"] == []
+    assert plan.build(root).found["first#baseline"].state == "unchanged"
 
 
 def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., Path]) -> None:
@@ -184,9 +185,9 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
     assert (root / "results/fit.txt").read_text() == "measured\n"
     record = _record(root, ".astra/records/fit.json")
     assert record["address"] == "fit"
-    read = _digest(b"measured\n")
+    content_hash, size = _digest(b"measured\n")
     assert record["generated_by"]["inputs"] == [
-        {"entry": "catalog", "content_hash": read.content_hash, "size": read.size}
+        {"entry": "catalog", "content_hash": content_hash, "size": size}
     ]
 
 
@@ -348,7 +349,7 @@ def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
     second = _make(root, "second#baseline", first)
 
     assert second.status == "ok"
-    assert first.content_hash != _digest((root / _FIRST).read_bytes()).content_hash
+    assert first.digest != _digest((root / _FIRST).read_bytes())
     assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
 
 
@@ -360,36 +361,27 @@ def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
 # bytes its upstreams gave — with no second question to ASTRA, and no git.
 
 
-def _stale_through_first(root: Path, read: api.Digest) -> tuple[api.Status, ...]:
+def _stale_through_first(root: Path, read: assets.Digest) -> api.Status:
     """What the checker finds of `second` while `first` is stale: a record
-    of its own, which says it read *read*, and one finding — about what
-    it reads."""
-    place = api.Place(
-        "second", "second#baseline", _SECOND_RECORD, "results/baseline/second.txt"
-    )
-    record = api.Record(
-        place.address,
+    of its own, which says it read *read*, nothing wrong with the result
+    itself, and the one entry that reads what is not unchanged."""
+    record = api.ProvenanceRecord(
+        "second#baseline",
         "sha256:" + "5" * 64,
         7,
-        dataset.head(root)[0],
-        identity.environment(root),
-        api.Runner("lightcone-cli", "1.0"),
-        (api.RecordedInput("first", read.content_hash, read.size),),
+        api.Generation(
+            dataset.head(root)[0],
+            api.Environment(identity.environment(root)),
+            api.Runner("lightcone-cli", "1.0"),
+            (api.RecordedInput("first", *read),),
+        ),
     )
-    reason = api.Reason(
-        "STALE_RESULT",
-        "error",
-        "`first#baseline`, which it reads, is stale",
-        api.Location(place.record, "", None, None),
-        change="result",
-        entry="first",
-    )
-    return (api.Status(place, "stale", "present", True, (reason,), record),)
+    return api.Status("stale", "present", record, stale_inputs=("first",))
 
 
-def _landed(read: api.Digest) -> TaskResult:
+def _landed(read: assets.Digest) -> TaskResult:
     """`first`, remade, with the bytes it came out as."""
-    return TaskResult("first#baseline", "ok", read.content_hash, read.size)
+    return TaskResult("first#baseline", "ok", *read)
 
 
 def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root: Path) -> None:
@@ -430,29 +422,29 @@ def test_a_remake_that_gives_other_bytes_remakes_its_dependent(root: Path) -> No
     )
 
 
-def test_a_task_asks_astra_nothing_but_its_rule(
+def test_a_task_asks_astra_nothing_about_the_project(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A worker may be on a node with no git, and a second check would
     read a tree other tasks are writing. What it needs of ASTRA came with
-    the task: the findings, and the rule over them."""
+    the task: the findings, which lc's own rule decides from. All it asks
+    of ASTRA is to write the record of what it made."""
     graph = plan.build(root)
     first = worker.materialize(
         root, graph.tasks["first#baseline"], graph.found["first#baseline"], _context(root),
         False, None,
     )
-    read = api.Digest(first.content_hash, first.size)
     context = _context(root)
 
     def refuse(*args: object, **kwargs: object) -> None:
         raise AssertionError("a task asked ASTRA about the project")
 
-    for question in ("check", "resolve", "validate", "bind", "history"):
+    for question in ("check", "resolve", "validate"):
         monkeypatch.setattr(api, question, refuse)
 
     left = worker.materialize(
-        root, graph.tasks["second#baseline"], _stale_through_first(root, read), context,
-        False, None, first,
+        root, graph.tasks["second#baseline"], _stale_through_first(root, first.digest),
+        context, False, None, first,
     )
     made = worker.materialize(
         root, graph.tasks["second#baseline"], graph.found["second#baseline"], context,
@@ -494,7 +486,9 @@ def test_a_remake_with_other_bytes_remakes_its_dependents(
     assert (root / "results/summary.txt").read_text().strip() == "9"
     (root / "data/catalog.txt").write_text("measured again\n")
     graph, context = plan.build(root), _context(root)
-    assert [reason.change for reason in graph.found["summary"][0].reasons] == ["result"]
+    found = graph.found["summary"]
+    assert (found.state, found.stale_inputs) == ("stale", ("fit",))
+    assert not [broken for broken in found.why if broken.level == "error"]
 
     remade = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
     again = worker.materialize(
@@ -577,17 +571,23 @@ def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:
     assert not _recorded(root)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [OSError("no space left on device"), ValueError("a record ASTRA would call invalid")],
+    ids=["unwritable", "refused"],
+)
 def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """Recording is fallible too, and a raise here reaches Dask, which
+    """Recording is fallible too — the disk, or ASTRA refusing a record
+    its checker would call invalid — and a raise here reaches Dask, which
     re-raises in the driver and takes down every other task in flight —
     where reporting one failure and letting the rest finish is the whole
     point of owning the loop."""
     def refuse(*args: object, **kwargs: object) -> None:
-        raise OSError("no space left on device")
+        raise error
 
-    monkeypatch.setattr(api, "write_record", refuse)
+    monkeypatch.setattr(api, "write_records", refuse)
 
     result = _make(root, "first#baseline")
 

@@ -4,7 +4,10 @@ The driver's three jobs, and the order matters.
 
 **It refuses to start on a dirty tree.** Every materialization is
 committed together with the code that produced it, so a run that began
-with uncommitted changes could not honestly say which code that was.
+with uncommitted changes could not honestly say which code that was. And
+it keeps asking: a result whose recipe finished in a checkout somebody
+edited or committed to meanwhile is not recorded as made from the run's
+commit.
 
 **It hands the work to Dask and gets out of the way.** Tasks that may run
 receive upstream futures or already-current results as arguments, so the
@@ -49,7 +52,7 @@ from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Digest, Record
+    from astra.api import ProvenanceRecord
 
     from lightcone.engine.compute.output import Forwarder
 
@@ -164,8 +167,8 @@ class _Classified:
     #: What the result is. Where something upstream may be remade, what
     #: it is in itself: only the task, once that has landed, can say more.
     verdict: assets.Verdict
-    #: The record at the result's first place, where it has one of its own.
-    record: Record | None
+    #: The result's record, where it has one of its own.
+    record: ProvenanceRecord | None
     #: The commit that last wrote the result's files, if not its own run.
     foreign: dataset.LastWrite | None
     #: A task upstream of this one that may run, or empty.
@@ -198,16 +201,16 @@ def _classify(
         One entry per task, in the graph's order.
     """
 
-    def recorded(key: Key) -> Digest:
-        record = graph.found[key][0].record
+    def recorded(key: Key) -> assets.Digest:
+        record = graph.found[key].record
         assert record is not None  # a result left alone has a record of its own
-        return record.digest
+        return record.content_hash, record.size
 
     may_run: set[Key] = set()
     classified = []
     for key, task in graph.tasks.items():
         found = graph.found[key]
-        record = found[0].record
+        record = found.record
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives.
         foreign = None if record is None else _foreign_write(root, task)
@@ -222,7 +225,11 @@ def _classify(
                 read=(
                     None
                     if upstream
-                    else {entry: recorded(dep) for entry, dep in task.produced_by.items()}
+                    else {
+                        source.entry: recorded(source.result)
+                        for source in task.result.inputs
+                        if source.result is not None
+                    }
                 ),
                 foreign=foreign,
             ),
@@ -363,16 +370,17 @@ def status(root: Path) -> StatusReport:
     graph, environment, _ = _graph(root, [], report)
     result.environment = environment
     for found in _classify(root, graph, environment, refresh=False):
-        if found.record and found.record.finished:
-            stamps.append(found.record.finished)
+        run = found.record.generated_by if found.record else None
+        if run and run.finished:
+            stamps.append(run.finished)
         result.outputs.append(
             OutputStatus(
                 output=found.task.key,
                 status=found.verdict.status,
                 why=found.verdict.why,
-                git_sha=found.record.commit if found.record else "",
+                git_sha=run.commit if run else "",
                 data_version=found.record.content_hash if found.record else "",
-                environment=found.record.environment if found.record else "",
+                environment=run.environment.iri if run else "",
                 foreign_write=found.foreign.sha if found.foreign else "",
             )
         )
@@ -434,7 +442,9 @@ def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
 
 def _files(task: Task) -> list[str]:
     """The bytes and the record at each of *task*'s places."""
-    return [path for place in task.places for path in (place.bytes, place.record)]
+    return [
+        path for place in task.result.places for path in (place.bytes_path, place.record_path)
+    ]
 
 
 def _sandbox_line(mode: str) -> str:
@@ -492,6 +502,16 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
+    # A clean tree does not say the environment is in the commit: an
+    # ignored file is clean. A record names its environment by the files
+    # of its commit, so each has to be there for lc to recreate it.
+    if missing := dataset.untracked(root, identity.files(root)):
+        raise ProjectError(
+            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
+            "could not recreate the environment its recipe ran in "
+            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
+            "whatever .gitignore rule keeps them out."
+        )
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
@@ -525,6 +545,10 @@ def materialize(
         # later records with a commit this run created.
         commit, _ = dataset.head(root)
         context = worker.RunContext(environment=environment, commit=commit, runtime=runtime)
+        written = {
+            posixpath.dirname(path) + "/" for task in graph.tasks.values() for path in _files(task)
+        }
+        checkout = _Checkout(root, commit, tuple(written))
         pending: dict[Key, Any] = {}
         handles = []
         # Results left alone are values, not Dask tasks: they need no allocation
@@ -541,7 +565,7 @@ def materialize(
                     reason=verdict.why,
                 )
                 pending[task.key] = result
-                _consume(root, task, result, dsid, runtime, report)
+                _consume(checkout, task, result, dsid, runtime, report)
                 continue
             # What the checker found goes with the task: downstream of a
             # remake, whether the result still stands is known only once
@@ -568,28 +592,66 @@ def materialize(
         for result in scheduler.completed(handles):
             outstanding -= 1
             try:
-                _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
+                _consume(checkout, graph.tasks[result.key], result, dsid, runtime, report)
             except Exception as exc:
                 if not outstanding:
                     raise
                 raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
-        # The tree was clean at the start-of-run refusal and save/restore
-        # keeps results clean, so anything dirty *now* was edited while
-        # the graph ran — and every record names the starting commit,
-        # which no longer describes that code. A warning, never a record
-        # field: the driver does not rewrite files the worker owns.
-        if edited := dataset.status(root):
-            names = ", ".join(sorted(path for _, path in edited))
-            report.warnings.append(
-                f"edited while the run was in flight: {names} — the records "
-                "name the starting commit, which no longer describes this code"
-            )
         _converge_crate(root, report, full, dsid)
         return report
 
 
+@dataclass
+class _Checkout:
+    """The checkout a run's recipes run in, and whether it is still the run's.
+
+    Every record a run writes names the commit the run started from, and
+    that is only true of a recipe that ran in that commit's checkout,
+    changed by nothing but what runs write: records and results. The
+    start-of-run refusal establishes it; this is what notices it ending.
+    Asked as each made result arrives, before it is committed, because a
+    result recorded against code that was edited under it is a false
+    record however the edit ends up — and git is the driver's alone, so
+    this is the one place that can ask.
+    """
+
+    root: Path
+    #: Where the run last left HEAD: the commit it started from, then each
+    #: commit it made.
+    head: str
+    #: The folders the run's tasks write their results and records in: a
+    #: change there is the run's own.
+    written: tuple[str, ...]
+
+    def moved(self) -> str:
+        """Say why a result made now cannot be recorded, or nothing.
+
+        Returns:
+            Empty while HEAD is where the run left it and the only
+            changes are in the folders its tasks write in.
+        """
+        if dataset.head(self.root)[0] != self.head:
+            return (
+                "a commit was made in the project while the run was in flight, so the "
+                "commit the run started from no longer says what its recipes ran on "
+                "(UNCOMMITTED_CHANGES)"
+            )
+        edited = sorted(
+            path
+            for _, path in dataset.status(self.root, untracked_files=True)
+            if not path.startswith(self.written)
+        )
+        if edited:
+            return (
+                f"edited while the run was in flight: {', '.join(edited)} — the commit "
+                "the run started from no longer says what its recipes ran on "
+                "(UNCOMMITTED_CHANGES)"
+            )
+        return ""
+
+
 def _consume(
-    root: Path,
+    checkout: _Checkout,
     task: Task,
     result: worker.TaskResult,
     dsid: str,
@@ -597,15 +659,18 @@ def _consume(
     report: MaterializeReport,
 ) -> None:
     """Record one finished task, and commit or undo what it left on disk."""
-    name = task.key
+    root, name = checkout.root, task.key
     if result.notes:
         # Named on a line of their own rather than prefixed onto each: a
         # prefix would land in the middle of a multi-line remedy and make
         # it uncopyable, which is the whole reason these travel separately.
         report.notes.extend([f"{name}:", *result.notes])
 
+    if result.status == "ok" and (moved := checkout.moved()):
+        result = replace(result, status="failed", reason=f"made, but not recorded: {moved}")
     if result.status == "ok":
         dataset.save(root, _owned(task), run_record(root, task, dsid, runtime))
+        checkout.head = dataset.head(root)[0]
         report.made.append(name)
         return
 
@@ -746,10 +811,10 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
     """
     declared = sorted(
         {
-            path
+            task.reads[source.entry]
             for task in graph.tasks.values()
-            for entry, path in task.inputs.items()
-            if entry not in task.produced_by
+            for source in task.result.inputs
+            if source.input is not None
         }
     )
     if not declared:
@@ -815,7 +880,9 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
     # disk is exactly what the *previous* spec planned, so the edit that
     # orphans a record is the same edit that drops it from the graph.
     # Enumerated from git, which answers for the tree as committed.
-    expected = {place.record for task in full.tasks.values() for place in task.places}
+    expected = {
+        place.record_path for task in full.tasks.values() for place in task.result.places
+    }
     for record in sorted(set(dataset.tracked_records(root)) - expected):
         report.warnings.append(
             f"{record} is the record of a result the analysis no longer plans, "
@@ -895,7 +962,7 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         ),
         "dsid": dsid,
         "exit": 0,
-        "inputs": sorted(set(task.inputs.values())),
+        "inputs": sorted(set(task.reads.values())),
         "outputs": _files(task),
         "pwd": ".",
     }
@@ -1023,8 +1090,9 @@ def _owned(task: Task) -> list[str]:
     in flight — ``git clean`` on it would delete a running task's bytes.
     """
     owned = []
-    for place in task.places:
-        owned += [f":(glob){posixpath.dirname(place.bytes)}/{place.name}.*", place.record]
+    for place in task.result.places:
+        folder = posixpath.dirname(place.bytes_path)
+        owned += [f":(glob){folder}/{plan.name(place)}.*", place.record_path]
     return owned
 
 

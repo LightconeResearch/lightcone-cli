@@ -8,14 +8,17 @@ annex, so it is readable on a clone that has fetched no content at all.
 
 The rule that classifies a result — ``current``, ``behind`` or ``stale`` —
 lives here. Whether a record still describes the analysis is ASTRA's
-checker's to say, and its findings are taken as they are; lc adds the two
-things only a runner knows: the environment a result ran under, and
+checker's to say, and its findings are taken as they are; lc adds the
+three things only a runner knows: the bytes the results it reads have
+once a run has remade them, the environment a result ran under, and
 whether its files were last written by its own run.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import hashlib
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -23,11 +26,13 @@ from typing import TYPE_CHECKING, Literal
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Digest
     from astra.api import Status as Checked
 
     # A type only: history is git's, and this module runs no git.
     from lightcone.engine.dataset import LastWrite
+
+#: The hash and size of a file's bytes, as a record gives them.
+Digest = tuple[str, int]
 
 #: The marker every annexed path carries, in both of the shapes an annexed
 #: file takes on disk — the pointer file's first bytes, and the locked
@@ -106,6 +111,27 @@ def require_fetched(path: Path) -> None:
         )
 
 
+def digest_file(path: Path) -> Digest:
+    """Hash a file the way a record names content.
+
+    What a record says of bytes is the runner's to find out, so the
+    hashing is here and not ASTRA's: ``sha256:<hex>`` and the size.
+
+    Args:
+        path: A file holding the content itself; ask
+            :func:`require_fetched` first where it could be annexed.
+
+    Returns:
+        The digest.
+
+    Raises:
+        OSError: If the file cannot be read.
+    """
+    with path.open("rb") as stream:
+        hashed = hashlib.file_digest(stream, "sha256").hexdigest()
+        return f"sha256:{hashed}", os.fstat(stream.fileno()).st_size
+
+
 def is_pointer(path: Path) -> bool:
     """Test whether a regular file holds an annex pointer, not content.
 
@@ -181,7 +207,7 @@ class Verdict:
 
 def classify(
     *,
-    found: Sequence[Checked],
+    found: Checked,
     environment: str,
     read: Mapping[str, Digest] | None = None,
     foreign: LastWrite | None = None,
@@ -193,19 +219,21 @@ def classify(
     diverge in anything else — history included: whether the result's
     files were last written by its own run is git's to answer, so it
     arrives here as a value computed by whoever has git (the driver), and
-    the rule stays pure. So does ASTRA's part: what its checker found
-    travels with the task, and the one question left once upstream tasks
-    have landed — does this result still read the bytes its record gives
-    — is ASTRA's own rule over those findings, asked without git.
+    the rule stays pure.
+
+    ASTRA's checker says what is wrong with a result in itself, and
+    separately which of the results it reads were not unchanged when it
+    looked. The second is not taken from the checker: by the time this is
+    asked, a run may have remade those results, so it is decided here from
+    the bytes they have *now* against the bytes the record says were read.
+    That is what lets a byte-identical rebuild stop a cascade.
 
     Args:
-        found: What ASTRA's checker found at each of the result's places,
-            before the run.
+        found: What ASTRA's checker found of the result before the run.
         environment: The IRI of the project's environment as it now is.
         read: The bytes of each result this one reads, by entry of its
             output's ``inputs``, as they now stand: a task's answer once
-            its upstreams have landed, and what makes a byte-identical
-            rebuild stop a cascade. ``None`` asks what the result is in
+            its upstreams have landed. ``None`` asks what the result is in
             itself, taking each result it reads to come out as recorded —
             the question while one of them may still be remade.
         foreign: The commit that last wrote the result's files, when it
@@ -218,26 +246,18 @@ def classify(
         ``stale``, ``behind`` or ``current``, with the reason for the
         first two.
     """
-    why: list[str] = []
-    for status in found:
-        recorded = (
-            {item.entry: item.digest for item in status.record.inputs} if status.record else {}
-        )
-        given = recorded if read is None else read
-        if status.unchanged_given(given):
-            continue
-        # A finding about a result this one reads is settled by the bytes
-        # that result has now, so it is worded from them, not from before.
-        why += [
-            reason.message
-            for reason in status.reasons
-            if reason.code != "ABSENT_RESULT"
-            and not (reason.change == "result" and reason.entry in given)
-        ]
+    record = found.record
+    # A broken rule is an error; bytes absent from this clone are a
+    # warning, and no reason to remake anything.
+    why = [broken.message for broken in found.why if broken.level == "error"]
+    if record is not None and read is not None:
+        recorded = {
+            item.entry: (item.content_hash, item.size) for item in record.generated_by.inputs
+        }
         why += [
             f"`{entry}` was remade with other bytes than this result read"
-            for entry, digest in given.items()
-            if status.record is not None and recorded.get(entry) != digest
+            for entry, digest in read.items()
+            if recorded.get(entry) != digest
         ]
     if why:
         return Verdict("stale", "; ".join(dict.fromkeys(why)))
@@ -249,6 +269,7 @@ def classify(
             f"describes these bytes — the next run remakes it; inspect first with "
             f"`git show {foreign.sha[:7]}`",
         )
-    if any(status.record is None or status.record.environment != environment for status in found):
+    assert record is not None  # a result with no record of its own breaks a rule
+    if record.generated_by.environment.iri != environment:
         return Verdict("behind", "made under an earlier environment")
     return Verdict("current")

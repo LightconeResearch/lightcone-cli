@@ -14,13 +14,12 @@ one it finishes with.
 
 from __future__ import annotations
 
-import posixpath
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from lightcone.engine import container, plan, sandbox
+from lightcone.engine import container, sandbox
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
     ProjectError,
@@ -104,32 +103,35 @@ def input_paths(project: Path) -> list[Path]:
     Every analysis of the stack read in the working tree, not just the
     project's own: a declared analysis has inputs of its own, and a probe
     denied one is a denial the researcher cannot act on — the file is
-    declared, just not at the top of the tree. Bound rather than
-    validated, because a probe exists to debug a project, and a spec that
-    breaks a rule is exactly when someone runs one.
+    declared, just not at the top of the tree. An analysis ASTRA cannot
+    resolve declares nothing a probe could be granted, and a probe is how
+    someone debugs one, so that is no refusal here.
 
     Args:
         project: The project root.
 
     Returns:
         The resolved paths that exist; none where there is no analysis
-        ASTRA can read.
+        ASTRA can resolve.
     """
     from astra import api
 
     try:
         # Offline: a probe reads the project, and never a remote for it.
-        stack = api.bind(project, offline=True).stack
-    except (api.NoAnalysisError, api.GitError, api.CacheError, OSError):
+        analysis = api.resolve(project, offline=True)
+    except (
+        api.NoAnalysisError,
+        api.InvalidAnalysisError,
+        api.GitError,
+        api.CacheError,
+        OSError,
+    ):
         return []
-    if stack is None:
-        return []
-    above = posixpath.dirname(stack.analyses[stack.root].file)
-    found: list[Path] = []
-    for member, analysis in stack.determined():
-        if member.identity.commit is None:
-            folder = project / plan.relative(member.identity.folder, above)
-            for declared in analysis.inputs.values():
-                if (path := folder / declared.path).exists():
-                    found.append(path.resolve())
+    found = [
+        path.resolve()
+        for each in analysis.analyses
+        if each.commit is None
+        for declared in each.inputs
+        if (path := project / declared.path).exists()
+    ]
     return list(dict.fromkeys(found))

@@ -19,7 +19,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from astra.api import Record
 from astra.papers.cache import CachedPaper, PaperCache
 from jupyter_core.utils import ensure_async
 from jupyter_server.base.handlers import APIHandler
@@ -94,17 +93,21 @@ class RunHandler(APIHandler):
         for record_path in assets.record_places(model["path"]):
             if (text := read(record_path)) is None:
                 continue
+            # A record is plain JSON in ASTRA's own shape, read as written:
+            # whether it still holds is the checker's to say, not this page's.
             try:
-                record = Record.from_json(json.loads(text))
-            except (ValueError, KeyError, TypeError):
+                made = json.loads(text)["generated_by"]
+                run = {
+                    "finishedAt": made.get("finished", ""),
+                    "gitRevision": made["commit"],
+                    "environment": made["environment"]["iri"],
+                    "cliVersion": made["runner"]["version"],
+                    "inputVersions": {
+                        item["entry"]: item["content_hash"] for item in made.get("inputs", [])
+                    },
+                }
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue
-            run = {
-                "finishedAt": record.finished or "",
-                "gitRevision": record.commit,
-                "environment": record.environment,
-                "cliVersion": record.runner.version,
-                "inputVersions": {item.entry: item.content_hash for item in record.inputs},
-            }
             break
         self.set_header("Cache-Control", "private, no-store")
         self.finish({"run": run})

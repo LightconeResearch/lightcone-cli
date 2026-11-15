@@ -1,17 +1,19 @@
 """The run's plan: every result there is to make, and what making it needs.
 
 What an analysis *means* is ASTRA's to say, and one question gets all of
-it: ``astra.api.check`` validates the stack, resolves its planned results
-— one per output built once, one per universe for an output built per
-universe, each with where its bytes and its record go, what it reads and
-the options its decisions select — and says how each one's record stands.
-None of that is re-derived here.
+it: ``astra.api.check`` validates the stack, resolves it — its planned
+results, each with where its bytes and its record go, what it reads and
+its command as it runs — and says how each result's record stands. None
+of that is re-derived here, and every path it gives is already measured
+from the project root.
 
-What to *do* about it is lc's. This module turns each planned result into
-a task: its command filled with the paths this engine runs recipes with,
-everything measured from the project root, and plain data that crosses to
-a worker. It refuses what this engine cannot execute. Which tasks a run
-actually makes is decided from what the checker found, kept beside them.
+What to *do* about it is lc's. This module turns each planned result lc
+builds into a task: ASTRA's own account of it, with the few facts a run
+needs looked up once — the folder its recipe runs in, the file each entry
+reads, the options it is made with, what its recipe asks for — so that
+one task crosses to a worker by itself. It refuses what this engine
+cannot execute. Which tasks a run actually makes is decided from what the
+checker found, kept beside them.
 
 Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and that order is kept; at execution time ordering is
@@ -30,43 +32,60 @@ from typing import TYPE_CHECKING, Any
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Diagnostic, Place, Result, Status
+    from astra.api import Analysis, Diagnostic, Place, Result, Source, Status
 
-#: A task's identity within a run: its result's address, after the folder
-#: of the analysis the result belongs to when that is not the project's own
-#: (``fit#baseline``, ``stage/fit#v1``).
+#: A task's identity within a run: its result's id, as ASTRA gives it —
+#: its address, after the key of the analysis the result belongs to and a
+#: colon when that is not the project's own (``fit#baseline``,
+#: ``stage:fit#v1``).
 Key = str
+
+#: Of what ASTRA notes for an author, the two a run would silently live
+#: with: an output nothing plans, and a command that runs code from
+#: outside its analysis. A pin that falls back and an output a switch
+#: leaves unbuilt are how an analysis is written, not something to repeat
+#: at every run.
+_NOTED = ("UNPLANNED_OUTPUT", "CODE_OUTSIDE_ANALYSIS")
 
 
 @dataclass(frozen=True)
 class Task:
     """One planned result: everything needed to make it."""
 
-    key: Key
-    #: Where the result's record and bytes go, from the project root, one
-    #: per name ASTRA gives it. The recipe writes the first; the others
-    #: receive copies.
-    places: tuple[Place, ...]
-    #: The recipe with its placeholders filled — a shell command, its paths
-    #: relative to ``workdir``.
-    command: str
+    #: ASTRA's account of the result: its id, where its record and bytes
+    #: go, one place per name it has, what each entry of its output's
+    #: ``inputs`` reads, and its command. The recipe writes the first
+    #: place; the others receive copies.
+    result: Result
     #: The folder the recipe runs in, from the project root: its output's
     #: analysis's.
     workdir: str
     #: Each entry of the output's ``inputs``, as written and in order → the
     #: file it reads, from the project root.
-    inputs: dict[str, str]
-    #: The entries of ``inputs`` another task produces, and which one.
-    produced_by: dict[str, Key]
-    #: Each entry of the output's ``decisions`` → the option selected.
-    decisions: dict[str, str]
+    reads: dict[str, str]
+    #: Each decision the result is made with, by ASTRA's ref → the option
+    #: its universe selects.
+    decisions: dict[str, str] = field(default_factory=dict)
     #: ASTRA's declaration; executor support is checked only when executing.
     resources: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def key(self) -> Key:
+        """The task's identity: its result's id."""
+        return self.result.id
+
+    @property
+    def command(self) -> str:
+        """The recipe as it runs — a shell command, its paths relative to
+        ``workdir``."""
+        assert self.result.command is not None  # `build` refuses a result with none
+        return self.result.command
+
+    @property
     def depends_on(self) -> tuple[Key, ...]:
         """The tasks that must be made first, deduplicated, in order."""
-        return tuple(dict.fromkeys(self.produced_by.values()))
+        read = (source.result for source in self.result.inputs)
+        return tuple(dict.fromkeys(key for key in read if key is not None))
 
 
 @dataclass(frozen=True)
@@ -75,11 +94,10 @@ class Graph:
 
     tasks: dict[Key, Task]
     #: What ASTRA's checker found of each task's result when the graph was
-    #: read, one status per place. The state a run starts from.
-    found: dict[Key, tuple[Status, ...]]
+    #: read. The state a run starts from.
+    found: dict[Key, Status]
     #: What ASTRA notes about the analysis that a run would silently live
-    #: with: an output nothing plans, a command reaching outside its
-    #: analysis.
+    #: with.
     notes: tuple[str, ...] = ()
     #: The analysis's ``label`` and ``description``, as its file writes
     #: them: what a publication of its results is titled with.
@@ -133,13 +151,19 @@ class Graph:
             matched = [
                 key
                 for key, task in self.tasks.items()
-                if target == key or any(target == place.name for place in task.places)
+                if target == key or any(target == name(place) for place in task.result.places)
             ]
             if not matched:
                 known = ", ".join(self.tasks) or "none"
                 raise ProjectError(f"no output matches `{target}`. Available: {known}")
             keys.extend(matched)
         return keys
+
+
+def name(place: Place) -> str:
+    """A result's name at one of its places: its address without the
+    universe. What its files there are named after."""
+    return place.address.partition("#")[0]
 
 
 # =============================================================================
@@ -149,6 +173,13 @@ class Graph:
 
 def build(root: Path) -> Graph:
     """Read a project's analysis into a graph of tasks.
+
+    A result that belongs to an analysis declared with a ``commit`` is no
+    task: it is never built again, only read through its record
+    (``REBUILT_FROM_COMMIT``). Reading one, and driving an analysis on a
+    commit's files (``NOT_AT_COMMIT``), are what lc does not do at all,
+    so a project that needs either is refused whole rather than run in
+    part.
 
     Args:
         root: The project root.
@@ -165,114 +196,76 @@ def build(root: Path) -> Graph:
 
     with asking_astra(root):
         report = api.check(root)
-    if report.resolved is None:
-        raise ProjectError(invalid(root, report.errors))
-    # ASTRA measures every path from the top of the repository; everything
-    # lc does is measured from the project root, which may be below it.
-    above = posixpath.dirname(report.root)
+    analysis = report.analysis
+    # A reference is an id in ASTRA's model: what it names is looked up.
+    outputs = {each.ref: (found, each) for found in analysis.analyses for each in found.outputs}
+    inputs = {each.ref: (found, each) for found in analysis.analyses for each in found.inputs}
+    universes = {
+        each.ref: (found, each) for found in analysis.analyses for each in found.universes
+    }
+    owners = {
+        result.id: universes[result.universe][0] if result.universe else outputs[result.output][0]
+        for result in analysis.results
+    }
+    made_at = {result.id: result.places[0].bytes_path for result in analysis.results}
 
-    def key_of(result: Result) -> Key:
-        return posixpath.join(relative(result.owner.folder, above), result.places[0].address)
+    def read_in(source: Source) -> Analysis:
+        """The analysis that holds what an entry reads: an input's own, or
+        the one the result it reads belongs to."""
+        if source.input is not None:
+            return inputs[source.input][0]
+        assert source.result is not None  # an entry reads one or the other
+        return owners[source.result]
 
-    keys = {checked.result.key: key_of(checked.result) for checked in report.results}
     tasks: dict[Key, Task] = {}
-    found: dict[Key, tuple[Status, ...]] = {}
-    for checked in report.results:
-        result = checked.result
-        if result.from_commit:
+    for result in analysis.results:
+        owner = owners[result.id]
+        if owner.commit is not None:
             continue
-        key = keys[result.key]
-        from_commit = [read.entry for read in result.inputs if read.commit is not None]
-        if result.run_at is not None or from_commit:
-            what = f"reads `{from_commit[0]}` from" if from_commit else "belongs to"
+        runs_in, output = outputs[result.output]
+        if result.command is None:
+            read = [source.entry for source in result.inputs if read_in(source).commit]
+            what = f"reads `{read[0]}` from" if read else "belongs to"
             raise ProjectError(
-                f"`{key}` {what} an analysis declared with a `commit`, which lc does not "
-                "build from. Declare that analysis by `path` alone to build it from the "
+                f"`{result.id}` {what} an analysis declared with a `commit`, which lc does "
+                "not build from. Declare that analysis by `path` alone to build it from the "
                 "working tree."
             )
-        owner = relative(result.owner.folder, above)
-        if any((root / parent / ".git").exists() for parent in _folders(owner)):
+        if any((root / parent / ".git").exists() for parent in _folders(owner.folder)):
             raise ProjectError(
-                f"`{key}` belongs to the analysis in {owner}, which is a "
+                f"`{result.id}` belongs to the analysis in {owner.folder}, which is a "
                 "repository of its own — lc commits results in the project's repository "
                 "only. Run lc from that analysis instead."
             )
-        workdir = relative(result.workdir, above)
-        inputs = {read.entry: relative(read.path, above) for read in result.inputs}
-        places = tuple(
-            api.Place(
-                place.name,
-                place.address,
-                relative(place.record, above),
-                relative(place.bytes, above),
-            )
-            for place in result.places
-        )
-        decisions = {k: v for k, v in result.decisions.items() if v is not None}
-        tasks[key] = Task(
-            key=key,
-            places=places,
-            # ASTRA owns the placeholder grammar; which paths fill it is the
-            # runner's choice, and lc's is the one a recipe author reads in
-            # their own folder: relative to where the recipe runs.
-            command=api.fill(
-                result.command,
-                inputs={
-                    entry: posixpath.relpath(path, workdir or ".")
-                    for entry, path in inputs.items()
-                },
-                decisions=decisions,
-                output=posixpath.relpath(places[0].bytes, workdir or "."),
-            ),
-            workdir=workdir,
-            inputs=inputs,
-            produced_by={
-                read.entry: keys[read.result] for read in result.inputs if read.result is not None
+        selection = universes[result.universe][1].selection if result.universe else {}
+        tasks[result.id] = Task(
+            result=result,
+            workdir=runs_in.folder,
+            reads={
+                source.entry: inputs[source.input][1].path
+                if source.input is not None
+                else made_at[source.result or ""]
+                for source in result.inputs
             },
-            decisions=decisions,
+            decisions={ref: selection[ref] for ref in output.decisions},
             resources=(
-                {k: v for k, v in asdict(result.resources).items() if v is not None}
-                if result.resources
+                {k: v for k, v in asdict(output.resources).items() if v is not None}
+                if output.resources
                 else {}
             ),
         )
-        found[key] = checked.statuses
-    written = report.resolved.analysis
     return Graph(
         tasks=tasks,
-        found=found,
-        # Of what ASTRA notes for an author, the two a run would silently
-        # live with. A pin that falls back and an output a switch leaves
-        # unbuilt are how an analysis is written, not something to repeat
-        # at every run.
-        notes=tuple(
-            note.message
-            for note in report.resolved.notes
-            if note.built and note.kind in ("unplanned", "outside_folder")
-        ),
-        label=written.label or "",
-        description=written.description or "",
+        found={key: report.statuses[key] for key in tasks},
+        notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
+        label=analysis.analyses[0].label or "",
+        description=analysis.analyses[0].description or "",
     )
-
-
-def relative(path: str, above: str) -> str:
-    """Measure a path ASTRA gives from the project root.
-
-    Args:
-        path: A path from the top of the repository; empty for the top.
-        above: The project root's own path from that top; empty when the
-            project is the repository.
-
-    Returns:
-        The same file's path from the project root; empty for the root.
-    """
-    found = posixpath.relpath(path or ".", above or ".")
-    return "" if found == "." else found
 
 
 def _folders(folder: str) -> Iterator[str]:
     """*folder* and each folder above it, below the project root."""
-    while folder and not folder.startswith(".."):
+    while folder not in ("", ".") and not folder.startswith(".."):
         yield folder
         folder = posixpath.dirname(folder)
 
@@ -289,8 +282,8 @@ def asking_astra(root: Path) -> Iterator[None]:
         root: The project root, for naming a missing analysis.
 
     Raises:
-        ProjectError: If there is no analysis, or git or ASTRA's cache
-            cannot be used.
+        ProjectError: If there is no analysis, ASTRA finds it invalid, or
+            git or ASTRA's cache cannot be used.
     """
     from astra import api
 
@@ -298,6 +291,8 @@ def asking_astra(root: Path) -> Iterator[None]:
         raise ProjectError(f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize.")
     try:
         yield
+    except api.InvalidAnalysisError as e:
+        raise ProjectError(invalid(root, e.report.diagnostics)) from e
     except (api.NoAnalysisError, api.GitError, api.CacheError, OSError) as e:
         raise ProjectError(str(e)) from e
 

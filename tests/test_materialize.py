@@ -659,13 +659,14 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-def test_an_edit_while_the_graph_runs_is_reported(
+def test_an_edit_while_the_graph_runs_leaves_what_was_made_unrecorded(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The dirty check runs at start of run and records are written
-    per-output later, so an edit in between leaves records whose commit
-    no longer describes the code that ran. The run ends with one status
-    call and says so."""
+    """The dirty check runs at start of run and each result is recorded
+    later, so an edit in between means the commit a record would name no
+    longer says what the recipe ran on. Nothing arriving after it is
+    committed: each result is undone and reported failed, naming the edit,
+    which stays exactly where the user left it."""
 
     class Editing(_Inline):
         def completed(self, handles: list[object]) -> Iterator[object]:
@@ -673,21 +674,34 @@ def test_an_edit_while_the_graph_runs_is_reported(
             yield from handles
 
     _cluster(monkeypatch, Editing())
+    before = _commits(root)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
-    assert any("notes.md" in w and "in flight" in w for w in report.warnings)
+    assert not report.ok
+    assert (report.made, report.failed) == ([], ["first#baseline", "second#baseline"])
+    for name in report.failed:
+        assert any(
+            w.startswith(f"{name}: made, but not recorded")
+            and "notes.md" in w
+            and "in flight" in w
+            and "UNCOMMITTED_CHANGES" in w
+            for w in report.warnings
+        )
+    assert _commits(root) == before
+    assert dataset.status(root) == [("??", "notes.md")]
+    assert not (root / "results/baseline/first.txt").exists()
+    assert not (root / ".astra/records/baseline/first.json").exists()
 
 
 def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`dataset.save` stages scoped and commits scoped — a partial
-    commit — so work the user staged while the graph ran ends the run
-    exactly where they left it: staged, warned about, and in none of
-    lc's commits (the per-output saves and the trailing crate commit
-    alike)."""
+    """Work the user staged while the graph ran ends the run exactly
+    where they left it: staged, named in the refusal to record what was
+    made after it, and in none of lc's commits — `dataset.save` stages
+    scoped and commits scoped, so the trailing crate commit, which a
+    licensed project still gets, leaves it alone too."""
     _declare_license(root)
 
     class Staging(_Inline):
@@ -700,16 +714,20 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
+    assert report.failed == ["first#baseline", "second#baseline"]
     assert any("notes.py" in w and "in flight" in w for w in report.warnings)
     staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
     assert staged == ["notes.py"]
     ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
+    assert "ro-crate-metadata.json" in ever_committed
     assert "notes.py" not in ever_committed
 
 
-def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
+def test_a_clean_run_records_everything_it_made(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok
+    assert report.made == ["first#baseline", "second#baseline"]
     assert not any("in flight" in w for w in report.warnings)
 
 
