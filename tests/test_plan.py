@@ -362,16 +362,16 @@ def test_the_graph_is_read_with_one_question_to_astra(
     """Validity, the results and how each stands are one answer: asking
     twice binds the stack twice, and could see two different trees."""
     asked: list[Path] = []
-    check = api.check
+    status = api.status
 
-    def counted(path: Path) -> api.CheckReport:
+    def counted(path: Path) -> api.StatusReport:
         asked.append(path)
-        return check(path)
+        return status(path)
 
     def refused(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the graph is read through `check` alone")
+        raise AssertionError("the graph is read through `status` alone")
 
-    monkeypatch.setattr(api, "check", counted)
+    monkeypatch.setattr(api, "status", counted)
     monkeypatch.setattr(api, "resolve", refused)
     monkeypatch.setattr(api, "validate", refused)
     root = _project(tmp_path)

@@ -1,7 +1,7 @@
 """The run's plan: every result there is to make, and what making it needs.
 
 What an analysis *means* is ASTRA's to say, and one question gets all of
-it: ``astra.api.check`` validates the stack, resolves it — its planned
+it: ``astra.api.status`` validates the stack, resolves it — its planned
 results, each with where its bytes and its record go, what it reads and
 its command as it runs — and says how each result's record stands. None
 of that is re-derived here, and every path it gives is already measured
@@ -195,7 +195,7 @@ def build(root: Path) -> Graph:
     from astra import api
 
     with asking_astra(root):
-        report = api.check(root)
+        report = api.status(root)
     analysis = report.analysis
     # A reference is an id in ASTRA's model: what it names is looked up.
     outputs = {each.ref: (found, each) for found in analysis.analyses for each in found.outputs}

@@ -439,7 +439,7 @@ def test_a_task_asks_astra_nothing_about_the_project(
     def refuse(*args: object, **kwargs: object) -> None:
         raise AssertionError("a task asked ASTRA about the project")
 
-    for question in ("check", "resolve", "validate"):
+    for question in ("status", "resolve", "validate"):
         monkeypatch.setattr(api, question, refuse)
 
     left = worker.materialize(

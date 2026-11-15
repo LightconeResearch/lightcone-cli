@@ -208,7 +208,7 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         # so it is imported here, where a spec is really written.
         from astra import api
 
-        api.create_boilerplate(directory)
+        api.init_analysis(directory)
 
     c.item("astra.yaml", (directory / SPEC_FILENAME).exists(), spec)
     _converge_uv_project(c, directory)

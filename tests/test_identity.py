@@ -195,7 +195,7 @@ def test_the_iri_is_one_a_record_may_hold(root: Path) -> None:
 
 
 def test_what_an_environment_holds_is_not_registered_with_astra() -> None:
-    """lc minted the name, so lc is who says what it holds: `astra check`
+    """lc minted the name, so lc is who says what it holds: `astra status`
     is handed no plug-in to answer for it."""
     import tomllib
 

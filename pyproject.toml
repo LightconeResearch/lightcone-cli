@@ -60,7 +60,7 @@ dev = [
 # dependency only for its specifier: 0.1 is a release candidate, which a
 # resolver takes for a package it is asked for by such a version.
 [tool.uv.sources]
-astra-tools = { git = "https://github.com/astra-project/astra-tools", rev = "44de433e09f9ca1794179a837db8650de7fc33ce" }
+astra-tools = { git = "https://github.com/astra-project/astra-tools", rev = "a24c4bda9f9ec12616a338b6ac62d8dc626456af" }
 
 [project.urls]
 Repository = "https://github.com/LightconeResearch/lightcone-cli"

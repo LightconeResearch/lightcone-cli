@@ -438,13 +438,13 @@ def test_a_run_asks_astra_once_however_far_a_remake_cascades(
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _edit_first_recipe(root, "echo changed")
     asked: list[Path] = []
-    check = api.check
+    status = api.status
 
-    def counted(path: Path) -> api.CheckReport:
+    def counted(path: Path) -> api.StatusReport:
         asked.append(path)
-        return check(path)
+        return status(path)
 
-    monkeypatch.setattr(api, "check", counted)
+    monkeypatch.setattr(api, "status", counted)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
