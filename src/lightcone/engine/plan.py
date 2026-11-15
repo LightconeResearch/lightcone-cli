@@ -1,11 +1,12 @@
 """The run's plan: every result there is to make, and what making it needs.
 
-What an analysis *means* is ASTRA's to say, and one question gets all of
-it: ``astra.api.status`` validates the stack, resolves it — its planned
-results, each with where its bytes and its record go, what it reads and
-its command as it runs — and says how each result's record stands. None
-of that is re-derived here, and every path it gives is already measured
-from the project root.
+What an analysis *means* is ASTRA's to say, in two answers:
+``astra.api.resolve`` gives the analysis — its results, each with where
+its bytes and its record go, what it reads and its command as it runs —
+and ``astra.api.status`` says how each result's record stands. Each names
+the commit it was read at, and the two must agree. None of that is
+re-derived here, and every path is already measured from the project
+root.
 
 What to *do* about it is lc's. This module turns each planned result lc
 builds into a task: ASTRA's own account of it, with the few facts a run
@@ -195,8 +196,14 @@ def build(root: Path) -> Graph:
     from astra import api
 
     with asking_astra(root):
+        analysis = api.resolve(root)
         report = api.status(root)
-    analysis = report.analysis
+    if report.head != analysis.head:
+        # The statuses are of another commit's results than the ones resolved.
+        raise ProjectError(
+            f"The repository moved from {analysis.head} to {report.head} while lc was "
+            "reading the analysis. Run again."
+        )
     # A reference is an id in ASTRA's model: what it names is looked up.
     outputs = {each.ref: (found, each) for found in analysis.analyses for each in found.outputs}
     inputs = {each.ref: (found, each) for found in analysis.analyses for each in found.inputs}

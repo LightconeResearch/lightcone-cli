@@ -356,28 +356,46 @@ def test_every_task_has_what_the_checker_found_of_it(tmp_path: Path) -> None:
         assert [broken.code for broken in found.why] == ["MISSING_RECORD"]
 
 
-def test_the_graph_is_read_with_one_question_to_astra(
+def test_the_graph_asks_astra_for_the_analysis_and_its_status_once_each(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Validity, the results and how each stands are one answer: asking
-    twice binds the stack twice, and could see two different trees."""
-    asked: list[Path] = []
-    status = api.status
+    """What the results are and how each stands are two answers, each asked
+    once: validity comes with either, so nothing asks for it."""
+    asked: list[str] = []
+    resolve, status = api.resolve, api.status
 
-    def counted(path: Path) -> api.StatusReport:
-        asked.append(path)
+    def resolved(path: Path) -> api.ResolvedAnalysis:
+        asked.append("resolve")
+        return resolve(path)
+
+    def checked(path: Path) -> api.StatusReport:
+        asked.append("status")
         return status(path)
 
     def refused(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the graph is read through `status` alone")
+        raise AssertionError("the graph is read through `resolve` and `status` alone")
 
-    monkeypatch.setattr(api, "status", counted)
-    monkeypatch.setattr(api, "resolve", refused)
+    monkeypatch.setattr(api, "resolve", resolved)
+    monkeypatch.setattr(api, "status", checked)
     monkeypatch.setattr(api, "validate", refused)
     root = _project(tmp_path)
 
     assert plan.build(root).tasks
-    assert asked == [root]
+    assert asked == ["resolve", "status"]
+
+
+def test_statuses_read_at_another_commit_than_the_analysis_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer names the commit it was read at: where a commit landed
+    between the two, the statuses are not of the results resolved."""
+    from dataclasses import replace
+
+    status = api.status
+    monkeypatch.setattr(api, "status", lambda path: replace(status(path), head="0" * 40))
+
+    with pytest.raises(ProjectError, match="moved from .* while lc was reading"):
+        plan.build(_project(tmp_path))
 
 
 def test_the_analysis_names_itself_in_its_own_words(tmp_path: Path) -> None:
