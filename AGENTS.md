@@ -10,7 +10,7 @@ This file provides guidance to coding agents working in this repository.
 
 `lc` owns the run: which results to make now and in what order, environments, sandboxing, storage, what each result's record says of its run, and committing it. It also answers for the specification's runner rules (see *The runner's rules*). "Plan" means the run's plan and lives here (`engine/plan.py`); in astra-tools the same word is only the specification's, for the results an analysis asks for.
 
-`lc` imports astra through `astra.api` alone, plus `astra.scaffold` for the empty spec and `astra.papers.cache` for the viewer. If something about what a spec means looks wrong, or `astra.api` lacks what a runner needs, the fix is a PR to astra-tools, not a second implementation or a reach into its internals here.
+`lc` imports astra through `astra.api` alone: the questions it asks of an analysis, the empty spec `lc init` scaffolds, the records it writes and the cited papers the viewer shows. If something about what a spec means looks wrong, or `astra.api` lacks what a runner needs, the fix is a PR to astra-tools, not a second implementation or a reach into its internals here.
 
 User documentation lives in a separate repository (LightconeResearch/docs), not here.
 
@@ -127,7 +127,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 
 ### CLI and convergence
 
-- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. The one module-scope astra import is `astra.scaffold` in `project.py`, which is stdlib-only; `astra.api` loads the whole library and must stay lazy.
+- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. `astra.api` loads the whole library, so the engine imports it inside the functions that use it, `project.converge` included; only the viewer's server, which the CLI never imports, has it at module scope.
 - `converge(write=False)` is check mode: the same decision path with side effects off. Everything routes through `_Converger.item` / `.file` / `.blocked`. A *warning* never affects `converged`; a *blocked* item does.
 - Convergence only appends to files the user owns. `.gitignore` and `.gitattributes` converge entry by entry, never by a marker. **A new managed `.gitattributes` line goes at the end of the template**, because the file is last-match-wins and the disorder check judges against template order.
 - Only what git can carry is converged (no empty directories), so a fresh clone needs nothing but `.venv` and `git annex init`.
@@ -241,6 +241,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 - Serve state lives in `~/.lightcone/serve/<host>/`, mode 0700, never in the project: it holds the token, and login nodes share `$HOME`.
 - `lc view` returns immediately, is idempotent per project, never opens a browser, and the server stops itself after 30 idle minutes.
 - Python never resolves the spec for the page. The browser does, with the released astra packages only.
+- The page gets a cited paper from astra's paper cache only under the DOI it asks for, exactly as astra keeps it and at no version (`astra.api.paper`). Any other it reads from arXiv, or links to its DOI.
 - File reads are confined beneath their root (`app/files.py`) with `O_NOFOLLOW` at each step. Links into `.git/annex/objects` are allowed; external symlinks are refused.
 - The bundle URL is versioned by a hash of the bundle's bytes, because Jupyter serves static files as immutable. `jupyter-live-content` is pinned below 0.2 because the page speaks its unpublished protocol.
 

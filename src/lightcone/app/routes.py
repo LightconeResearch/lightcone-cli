@@ -6,6 +6,8 @@ every result's state, classified by the engine exactly as ``lc status``
 does, so the page holds no copy of that rule; and the cited papers in
 astra's paper cache, which lies outside the
 project (``astra paper add`` fills it, and quotes are verified against it).
+A paper is found under the DOI the page asks for, exactly as astra keeps
+it and at no version; any other the page reads from arXiv, or links to.
 The paper routes are adapted from jupyterlab-lightcone's ``routes.py``
 (BSD-3-Clause, Lightcone Research), without its fetch route: nothing here
 writes the cache. Every route needs the token, like the rest of the server.
@@ -18,8 +20,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from astra.papers.cache import CachedPaper, PaperCache
+from astra import api
 from jupyter_core.utils import ensure_async
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
@@ -29,39 +32,47 @@ from lightcone.app.files import ProjectFileHandler, open_fd
 from lightcone.engine import assets, materialize
 from lightcone.engine.project import ProjectError, current_project
 
-_PAPERS = PaperCache().cache_dir
-
-
-def _cached() -> dict[str, CachedPaper]:
-    """Every cached paper by DOI as the SDK normalizes it, unversioned first."""
-    papers: dict[str, CachedPaper] = {}
-    for paper in PaperCache().list_papers():
-        doi = paper.metadata.doi.strip().lower()
-        if doi not in papers or paper.metadata.version is None:
-            papers[doi] = paper
-    return papers
-
 
 class PapersHandler(APIHandler):
     """Title, authors and PDF of the cited DOIs the cache holds."""
 
     @web.authenticated
     async def get(self) -> None:
-        """Answer the repeated ``doi`` arguments from one scan of the cache."""
-        cached = await asyncio.to_thread(_cached)
+        """Answer the repeated ``doi`` arguments, each by astra's own lookup."""
         papers: dict[str, dict[str, str]] = {}
         for doi in self.get_arguments("doi"):
-            if (paper := cached.get(doi)) is None:
+            paper = await asyncio.to_thread(api.paper, doi)
+            if paper is None:
                 continue
-            pdf = paper.pdf_path.relative_to(_PAPERS).as_posix()
             metadata = {
-                "title": paper.metadata.title,
-                "authors": ", ".join(paper.metadata.authors or []),
-                "pdfUrl": url_path_join(self.base_url, "lightcone/papers", pdf),
+                "title": paper.title,
+                "authors": ", ".join(paper.authors),
+                "pdfUrl": url_path_join(self.base_url, "lightcone/papers", quote(doi, safe="/")),
             }
             papers[doi] = {key: value for key, value in metadata.items() if value}
         self.set_header("Cache-Control", "private, no-store")
         self.finish({"papers": papers})
+
+
+class PaperFileHandler(ProjectFileHandler):
+    """A cached paper's PDF, by its DOI: ranges for pdf.js, 304s on reopening."""
+
+    # Checked here as well as in Jupyter's handler, so that the cache is not
+    # even looked in for a request without the token.
+    @web.authenticated
+    async def get(  # type: ignore[override]  # the signature of Jupyter's own get
+        self, path: str, **kwargs: Any
+    ) -> None:
+        """Serve the PDF of the paper whose DOI the path is."""
+        paper = await asyncio.to_thread(api.paper, path)
+        if paper is None:
+            raise web.HTTPError(404)
+        # Confined to the paper's own folder, which is known only now.
+        pdf = Path(paper.pdf_path)
+        self.root = str(pdf.parent)
+        served = super().get(pdf.name, **kwargs)
+        assert served is not None  # none only for a request without the token
+        await served
 
 
 class RunHandler(APIHandler):
@@ -136,6 +147,5 @@ HANDLERS = [
     ("/lightcone/api/papers", PapersHandler),
     ("/lightcone/api/run", RunHandler),
     ("/lightcone/api/status", StatusHandler),
-    # Jupyter's own file handler: ranges for pdf.js, 304s on reopening.
-    ("/lightcone/papers/(.*)", ProjectFileHandler, {"path": str(_PAPERS)}),
+    ("/lightcone/papers/(.*)", PaperFileHandler, {"path": ""}),
 ]
