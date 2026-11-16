@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 from conftest import CLUSTER_ID, _cluster, _Inline, _Meanwhile
 
-from lightcone.engine import dataset, identity, plan, sandbox
+from lightcone.engine import dataset, identity, plan, sandbox, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import Unavailable
@@ -201,6 +201,29 @@ def test_unrecreatable_environment(root: Path, inline: None) -> None:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert not (root / "results/baseline").exists()
+
+
+def test_a_rerun_answers_for_its_environment_too(
+    root: Path,
+    inline: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rerun entry point writes a record as a run does, naming the
+    commit it is on, so it is refused where a run would be."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    made = _record(root, ".astra/records/baseline/fit.json")
+    with (root / ".gitignore").open("a") as ignore:
+        ignore.write("uv.lock\n")
+    dataset._git(["rm", "--cached", "--quiet", "uv.lock"], cwd=root)
+    dataset._git(["commit", "--quiet", "-am", "ignore the lock"], cwd=root)
+    assert dataset.status(root) == []
+    monkeypatch.chdir(root)
+
+    assert worker.main(["fit#baseline"]) == 2
+
+    assert "UNRECREATABLE_ENVIRONMENT" in capsys.readouterr().err
+    assert _record(root, ".astra/records/baseline/fit.json") == made
 
 
 def test_the_environment_a_record_names_is_in_its_commit(root: Path, inline: None) -> None:

@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -590,6 +591,61 @@ def test_a_recipe_that_changes_what_it_reads_is_not_recorded(root: Path) -> None
     assert result.status == "failed"
     assert "changed what it only reads: first" in result.reason
     assert not (root / _SECOND_RECORD).exists()
+
+
+def _hashed_by(asked: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Note in *asked* the name of each file the worker hashes."""
+    digest_file = assets.digest_file
+
+    def counted(path: Path) -> assets.Digest:
+        asked.append(path.name)
+        return digest_file(path)
+
+    monkeypatch.setattr(assets, "digest_file", counted)
+
+
+def test_a_task_takes_the_digest_the_driver_took_of_the_file_it_reads(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared input more than one task reads is hashed once, by the
+    driver, and a task that finds that very file does not read it again."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    catalog = root / "data/catalog.txt"
+    context = replace(
+        _context(root),
+        hashed={"data/catalog.txt": (assets.stamp(catalog), assets.digest_file(catalog))},
+    )
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
+
+    assert result.status == "ok", result.reason
+    assert "catalog.txt" not in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
+
+
+def test_a_digest_taken_of_another_file_is_not_the_tasks(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other way: a digest stands for the file it was computed from,
+    by inode, size and time. Handed one for any other, the task hashes
+    what it reads itself, so its record names what the recipe read."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    another = (0, 0, 0), ("sha256:" + "0" * 64, 0)
+    context = replace(_context(root), hashed={"data/catalog.txt": another})
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
+
+    assert result.status == "ok", result.reason
+    assert "catalog.txt" in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
 
 
 def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:

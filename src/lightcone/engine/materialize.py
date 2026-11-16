@@ -36,8 +36,9 @@ import json
 import posixpath
 import re
 import shlex
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -509,16 +510,7 @@ def materialize(
         changes = dataset.status(root)
     if changes:
         raise ProjectError(_dirty(root, changes))
-    # A clean tree does not say the environment is in the commit: an
-    # ignored file is clean. A record names its environment by the files
-    # of its commit, so each has to be there for lc to recreate it.
-    if missing := dataset.untracked(root, identity.files(root)):
-        raise ProjectError(
-            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
-            "could not recreate the environment its recipe ran in "
-            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
-            "whatever .gitignore rule keeps them out."
-        )
+    worker.require_recreatable(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
@@ -615,9 +607,28 @@ def materialize(
             # does not come through here; its entry point converges too.)
             runtime = replace(runtime, root=tree.root, env_dir=project.env_dir(tree.root))
             report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+            # A declared input more than one task reads is hashed here,
+            # once: each task would otherwise read all of it to name it in
+            # its record, and a multiverse reads one catalog in every
+            # universe. One this checkout cannot give is left for the
+            # task that reads it to report.
+            readers = Counter(
+                task.reads[source.entry]
+                for task in running
+                for source in task.result.inputs
+                if source.result is None
+            )
+            hashed: dict[str, tuple[tuple[int, int, int], assets.Digest]] = {}
+            for path in sorted(path for path, count in readers.items() if count > 1):
+                with suppress(OSError, ProjectError):
+                    assets.require_fetched(tree.root / path)
+                    hashed[path] = (
+                        assets.stamp(tree.root / path),
+                        assets.digest_file(tree.root / path),
+                    )
             # Every record of the run names the commit its checkout is at.
             context = worker.RunContext(
-                environment=environment, commit=tree.commit, runtime=runtime
+                environment=environment, commit=tree.commit, runtime=runtime, hashed=hashed
             )
             written = sorted(
                 {posixpath.dirname(path) for task in graph.tasks.values() for path in task.files}
@@ -874,9 +885,15 @@ def _require_storable(root: Path, graph: Graph) -> None:
     places = [place for task in graph.tasks.values() for place in task.result.places]
     files = [place.file_path for place in places]
     records = [place.record_path for place in places]
-    ignored = project._run(
-        ["git", "check-ignore", "--no-index", "--", *files, *records], cwd=root
-    ).stdout.split()
+    # NUL-separated both ways, as `check-attr` is below: git otherwise
+    # quotes a path holding an accent, and a space would end one. For
+    # `check-ignore` that means paths on stdin, the only way it takes `-z`.
+    asked = project._run(
+        ["git", "check-ignore", "-z", "--no-index", "--stdin"],
+        cwd=root,
+        stdin="".join(f"{path}\0" for path in (*files, *records)),
+    )
+    ignored = [path for path in asked.stdout.split("\0") if path]
     listed = dataset._git(
         ["check-attr", "-z", "annex.largefiles", "--", *files, *records], cwd=root
     ).split("\0")
@@ -960,7 +977,11 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
-    if dataset.status(root):
+    # Read while no other run is landing a result, which would look like
+    # an edit.
+    with checkout.landing(root):
+        edited = dataset.status(root)
+    if edited:
         # The crate is a function of what is committed, and it is read
         # off the working tree: one being edited would publish the edit.
         report.warnings.append(

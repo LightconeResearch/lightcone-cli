@@ -12,6 +12,7 @@ the seam is only worth having if the real thing still fits through it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -25,7 +26,7 @@ from typing import Any
 import pytest
 from conftest import CLUSTER_ID, _cluster, _Inline, _Meanwhile
 
-from lightcone.engine import assets, dataset, identity
+from lightcone.engine import assets, checkout, dataset, identity, plan
 from lightcone.engine import materialize as engine
 from lightcone.engine.plan import Task
 from lightcone.engine.project import ProjectError, child_env
@@ -446,6 +447,57 @@ def test_a_run_asks_astra_once_however_far_a_remake_cascades(
     assert asked == [root]
 
 
+_SHARED = """
+spec_version: "0.1.0"
+
+inputs:
+  catalog: {path: data/catalog.txt}
+  mask: {path: data/mask.txt}
+
+outputs:
+  left:
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} > {output}
+
+  right:
+    type: metric
+    format: txt
+    inputs: [catalog, mask]
+    recipe:
+      command: cat {inputs.catalog} {inputs.mask} > {output}
+"""
+
+
+def test_an_input_more_than_one_task_reads_is_hashed_once(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each task that reads a declared input would otherwise read all of
+    it again to name it in its record, and a multiverse reads one catalog
+    in every universe. An input one task reads is that task's to hash."""
+    root = analysis(_SHARED, {"data/catalog.txt": "stars\n", "data/mask.txt": "sky\n"})
+    hashed: list[str] = []
+    digest_file = assets.digest_file
+
+    def counted(path: Path) -> assets.Digest:
+        hashed.append(path.name)
+        return digest_file(path)
+
+    monkeypatch.setattr(assets, "digest_file", counted)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (hashed.count("catalog.txt"), hashed.count("mask.txt")) == (1, 1)
+    for name in ("left", "right"):
+        read = json.loads((root / f".astra/records/{name}.json").read_text())["generated_by"]
+        catalog = next(item for item in read["inputs"] if item["entry"] == "catalog")
+        assert catalog["content_hash"] == "sha256:" + hashlib.sha256(b"stars\n").hexdigest()
+        assert catalog["size"] == 6
+
+
 def test_a_changed_input_remakes_what_reads_it(
     analysis: Callable[..., Path], inline: None
 ) -> None:
@@ -824,6 +876,32 @@ def test_the_crate_waits_for_a_tree_that_is_the_commit(
     assert not (root / "ro-crate-metadata.json").exists()
 
 
+def test_the_crate_reads_the_tree_while_no_other_run_is_landing(
+    root: Path, inline: None
+) -> None:
+    """Another run's result, half landed, would read as an edit, and the
+    crate would be left for the next run though the tree is a commit's."""
+    _declare_license(root)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    report = engine.MaterializeReport()
+    converge = threading.Thread(
+        target=engine._converge_crate,
+        args=(root, report, plan.build(root), dataset.dataset_id(root)),
+    )
+    half_landed = root / "results/baseline/third.txt"
+
+    with checkout.landing(root):
+        half_landed.write_text("another run's\n")
+        converge.start()
+        converge.join(timeout=0.5)
+        assert converge.is_alive()
+        half_landed.unlink()
+    converge.join(timeout=60)
+
+    assert not converge.is_alive()
+    assert not any("uncommitted changes" in w for w in report.warnings)
+
+
 def test_a_result_made_while_the_project_is_on_another_branch_waits_for_it(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1123,6 +1201,47 @@ def test_a_result_git_ignores_is_refused(root: Path, inline: None) -> None:
 
     with pytest.raises(ProjectError, match="results/baseline/second.txt is git-ignored"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
+def test_an_ignored_result_is_named_as_it_is_on_disk(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A space or an accent in the folder of an analysis: git quotes such
+    a path unless asked not to, and a refusal has to name the file."""
+    stage = """
+    spec_version: "0.1.0"
+    decisions:
+      depth:
+        options: {deep: {}, shallow: {}}
+    universes:
+      v: {decisions: {depth: deep}}
+    outputs:
+      mask:
+        type: data
+        format: txt
+        decisions: [depth]
+        recipe:
+          command: echo {decisions.depth} > {output}
+    """
+    spec = """
+    spec_version: "0.1.0"
+    analyses:
+      stage: {path: "étape une"}
+    outputs:
+      report:
+        type: report
+        format: txt
+        inputs: ["stage.mask#v"]
+        recipe:
+          command: cat "{inputs}" > {output}
+    """
+    root = analysis(spec, files={"étape une/astra.yaml": stage})
+    _rules(root, ".gitignore", lambda text: text + "étape une/results/\n")
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert "étape une/results/v/mask.txt is git-ignored" in str(raised.value)
 
 
 def test_a_universe_may_be_called_results(analysis: Callable[..., Path], inline: None) -> None:
