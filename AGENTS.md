@@ -199,6 +199,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 - A derived read root may never be `$HOME` or above (`_stdlib_root`).
 - Tool paths resolve through `policy.utility()` only. A hardcoded `/usr/bin/env` is a denial on the first exec of every run on hosts that keep it elsewhere.
 - The env overlay is applied inside the wrap by the seam (`boundary.env_argv`), never merged into the subprocess environment: the `uv run` hop outside the boundary must keep the real `XDG_*`, or uv loses its cache.
+- The overlay sets `PYTHONDONTWRITEBYTECODE`, never `PYTHONPYCACHEPREFIX`: with a cache prefix Python reads bytecode only from there, so the environment's own, compiled when it was synced, is ignored and every run compiles everything it imports (*measured*: three times the import time of a scientific stack).
 - `Unavailable` is a real backend that attests `fs: open`. There are no sandbox flags.
 - `denial.trailer()` fires on every nonzero sandboxed exit, because `denial.explain()` may find nothing. Remedies must be things that work today.
 - The shim exits 97 on any setup failure and never runs the command unsandboxed. Its policy arrives as JSON on argv, which keeps `wrap` pure.
