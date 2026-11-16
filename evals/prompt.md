@@ -5,17 +5,19 @@ Build the analysis specified in `astra.yaml` for universe `baseline`.
 This project is driven by two CLIs — use them rather than improvising:
 
 - `astra` is the spec layer. `astra info` summarizes `astra.yaml`;
-  `astra validate astra.yaml` checks it against the schema. If an `astra`
+  `astra validate` checks it against the specification's rules. If an `astra`
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
 - `lc` (lightcone-cli) is the execution layer:
     - `lc materialize <cluster_id>` makes every output the spec declares, running each
       recipe in dependency order and committing each result to git as it
-      lands, together with a provenance manifest. It refuses to start on
-      a dirty tree: commit your own edits first, with plain `git add` and
+      lands, together with its provenance record. It builds the commit
+      you are on, in a checkout of its own, and refuses to start on a
+      dirty tree: commit your own edits first, with plain `git add` and
       `git commit` — the project's git-annex filter handles large files
-      transparently, so never run a git-annex command yourself.
-    - `lc materialize <cluster_id> <output_id>` (or `<universe>/<output_id>`) narrows
+      transparently, so never run a git-annex command yourself. Once a
+      run has started you may edit and commit again: it is not affected.
+    - `lc materialize <cluster_id> <output_id>` (or `<output_id>#<universe>`) narrows
       a run to one output and whatever it depends on. Re-running is
       idempotent: only what is stale gets remade — an output the spec now
       defines differently, or one whose declared inputs changed.
@@ -30,11 +32,11 @@ This project is driven by two CLIs — use them rather than improvising:
       `uv run`: `lc run <cluster_id> -- python scripts/fit.py --output /tmp/x`, never a
       single quoted shell string; for shell syntax use
       `lc run <cluster_id> -- bash -c '...'`.
-    - Outputs land in `results/baseline/<output_id>.<format>`, each with a
-      `.<output_id>.manifest.json` manifest beside it, written and
-      committed by the engine. Never write into `results/` yourself: a
-      hand-placed file has no run record, and the engine detects the
-      foreign write and remakes the output.
+    - Outputs land in `results/baseline/<output_id>.<format>`, each with
+      its record at `.astra/records/baseline/<output_id>.json`, written
+      and committed by the engine. Never write into `results/` or
+      `.astra/` yourself: a hand-placed file has no run record, and the
+      engine detects the foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
 
@@ -80,7 +82,7 @@ placeholders before invoking it:
   else: an output is one file. The engine creates the directory; a recipe
   that writes a directory there, or writes some other name, fails.
 - `{inputs.<id>}` — the named input's resolved path: an analysis-level
-  `Input`'s `source` (e.g. a file under `data/`), or, for an upstream
+  input's `path` (e.g. a file under `data/`), or, for an upstream
   output, that output's own file — so your script opens it directly.
 - `{inputs}` — space-separated paths of all declared inputs, in
   declaration order.
@@ -97,9 +99,10 @@ is how the engine orders the build.
 
 ## Environment
 
-Recipes run in the project's own locked environment (`pyproject.toml` +
-`uv.lock` + `.venv`), sandboxed: the project tree is read-only apart from
-the directory each recipe's output lands in, and only declared tools are
+Recipes run in a checkout of the commit, in an environment lc builds
+there from the committed `pyproject.toml` + `uv.lock`, sandboxed: that
+tree is read-only apart from the directory each recipe's output lands
+in, your working tree is out of reach, and only declared tools are
 executable.
 
 - The project is managed by uv and starts with **no dependencies**.
@@ -118,21 +121,16 @@ executable.
 
 `astra.yaml` is the single source of truth: inputs, outputs, recipes, and
 methodological decisions all live there — read it first. The seed spec is
-deliberately incomplete: outputs declare no `format:`, recipe commands do
-not yet pass their inputs, decisions, or output path, and outputs may be
-missing entries in their `inputs:` / `decisions:` contracts. Completing the spec is part of
-the task. For each output:
+complete: each output declares its `format:`, its `inputs:` and
+`decisions:`, and the `command` that makes it. What it leaves to you is
+everything the commands name. For each output:
 
-1. Declare the output's `format:` — the file extension its artifact is
-   written with, without the leading dot (`png`, `csv`, `json`, …). lc
-   names the file from it and refuses a spec that omits it.
-2. Complete the recipe `command` so it references `{output}` and the
-   `{inputs.<id>}` / `{decisions.<id>}` the computation needs, and
-   declare everything it references in that output's `inputs:` /
-   `decisions:` lists.
-3. Write the script at the path the command names, parameterizing every
-   decision via argparse — never hardcode option values.
-4. Commit your edits, then run `lc materialize <cluster_id>` (or
+1. Write the script at the path its command names, taking its arguments
+   in the order the command passes them and parameterizing every decision
+   via argparse — never hardcode option values. It writes exactly the
+   file `{output}` names.
+2. Declare what the script imports (`uv add`).
+3. Commit your edits, then run `lc materialize <cluster_id>` (or
    `lc materialize <cluster_id> <output_id>`) to build through the engine.
 
 Build iteratively from upstream outputs to downstream. `lc status` shows

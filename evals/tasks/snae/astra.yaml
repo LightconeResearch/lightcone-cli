@@ -1,8 +1,8 @@
-# ASTRA Analysis Specification
-# Documentation: https://github.com/LightconeResearch/ASTRA
+# ASTRA analysis specification, v0.1
+# Documentation: https://github.com/astra-project/astra-spec
 
-version: "0.0.14"
-name: "snae"
+spec_version: "0.1.0"
+label: "snae"
 description: |
   Fit the Union2.1 Type Ia supernova distance modulus vs redshift data
   to a flat LCDM cosmological model with two free parameters (H0, Omega_L)
@@ -10,38 +10,15 @@ description: |
   cosmological parameters as a building block for a larger analysis.
 
 inputs:
-  - id: union21
-    type: data
-    source: data/SCPUnion2.1_mu_vs_z.txt
+  union21:
+    path: data/SCPUnion2.1_mu_vs_z.txt
     description: "Union2.1 SN Ia compilation: 580 supernovae with redshift, distance modulus, and uncertainties"
-
-outputs:
-  - id: best_fit
-    type: metric
-    description: "Best-fit H0 and Omega_L from chi-squared minimization, with reduced chi-squared"
-    recipe:
-      command: python scripts/fit.py
-
-  - id: hubble_diagram
-    type: figure
-    description: "Hubble diagram: distance modulus vs redshift with best-fit model overlay"
-    inputs: [best_fit]
-    recipe:
-      command: python scripts/plot_hubble.py
-
-  - id: residuals
-    type: figure
-    description: "Residuals plot: data minus best-fit model vs redshift"
-    inputs: [best_fit]
-    recipe:
-      command: python scripts/plot_residuals.py
 
 decisions:
   optimizer:
     label: "Optimizer"
     tags: [inference]
     rationale: "Nelder-Mead is robust and derivative-free; L-BFGS-B supports bounds natively"
-    default: nelder_mead
     options:
       nelder_mead:
         label: "Nelder-Mead"
@@ -54,7 +31,6 @@ decisions:
     label: "Error Treatment"
     tags: [data]
     rationale: "Union2.1 provides both statistical-only and systematics-included uncertainties; choice directly affects fit quality"
-    default: stat_and_sys
     options:
       stat_only:
         label: "Statistical errors only"
@@ -67,7 +43,6 @@ decisions:
     label: "Low-Redshift Cut"
     tags: [data]
     rationale: "SNe at z < 0.01 are dominated by peculiar velocity scatter rather than cosmological signal; standard practice varies on whether to exclude them"
-    default: z_min_001
     options:
       none:
         label: "No cut"
@@ -75,3 +50,37 @@ decisions:
       z_min_001:
         label: "z > 0.01"
         description: "Exclude supernovae with z < 0.01 to mitigate peculiar velocity contamination"
+
+outputs:
+  best_fit:
+    type: metric
+    format: json
+    description: "Best-fit H0 and Omega_L from chi-squared minimization, with reduced chi-squared"
+    inputs: [union21]
+    decisions: [optimizer, error_model, redshift_cut]
+    recipe:
+      command: python scripts/fit.py {inputs.union21} {decisions.optimizer} {decisions.error_model} {decisions.redshift_cut} {output}
+
+  hubble_diagram:
+    type: figure
+    format: png
+    description: "Hubble diagram: distance modulus vs redshift with best-fit model overlay"
+    inputs: [union21, best_fit]
+    recipe:
+      command: python scripts/plot_hubble.py {inputs.union21} {inputs.best_fit} {output}
+
+  residuals:
+    type: figure
+    format: png
+    description: "Residuals plot: data minus best-fit model vs redshift"
+    inputs: [union21, best_fit]
+    recipe:
+      command: python scripts/plot_residuals.py {inputs.union21} {inputs.best_fit} {output}
+
+universes:
+  baseline:
+    description: "Default configuration using standard practices"
+    decisions:
+      optimizer: nelder_mead
+      error_model: stat_and_sys
+      redshift_cut: z_min_001
