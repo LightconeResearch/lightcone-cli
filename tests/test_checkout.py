@@ -52,7 +52,7 @@ def root(analysis: Callable[..., Path]) -> Path:
 
 
 def _take(root: Path) -> checkout.Checkout:
-    return checkout.take(root, dataset.head(root)[0], CLUSTER_ID)
+    return checkout.take(root, dataset.head(root), CLUSTER_ID)
 
 
 def _stored(root: Path, path: str) -> Path:
@@ -371,7 +371,7 @@ def test_a_project_below_the_top_of_its_repository(
     dataset._git(["add", "-A", "."], cwd=outer)
     dataset._git(["commit", "-q", "-m", "move the project below the top"], cwd=outer)
 
-    tree = checkout.take(root, dataset.head(root)[0], CLUSTER_ID)
+    tree = checkout.take(root, dataset.head(root), CLUSTER_ID)
     checkout.fill(tree, ["data/catalog.txt"])
 
     top = root / ".lightcone/checkouts/0"

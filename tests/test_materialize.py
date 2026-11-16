@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import CLUSTER_ID, _Inline
+from conftest import CLUSTER_ID, _cluster, _Inline, _Meanwhile
 
 from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
@@ -81,16 +81,6 @@ def _record(root: Path, name: str) -> dict[str, Any]:
 
 def _commits(root: Path) -> int:
     return len(dataset._git(["log", "--oneline"], cwd=root).splitlines())
-
-
-def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
-    """Point the run at a custom scheduler — the one monkeypatch point."""
-
-    @contextmanager
-    def fake(cluster_id: str) -> Iterator[_Inline]:
-        yield scheduler
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
 
 
 # ---- a run, end to end -----------------------------------------------------
@@ -310,7 +300,7 @@ def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
 def test_status_names_the_commit_each_output_came_from(root: Path, inline: None) -> None:
     """The verb's whole reason to exist: an output that is behind is not
     wrong, and this is where the code that produced it can be read back."""
-    ran_against = dataset.head(root)[0]
+    ran_against = dataset.head(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     report = engine.status(root)
@@ -340,7 +330,7 @@ def test_status_names_the_environment_each_output_ran_in(root: Path, inline: Non
 def test_status_reports_behind_after_the_environment_moves(
     root: Path, inline: None
 ) -> None:
-    made_at, made_in = dataset.head(root)[0], identity.environment(root)
+    made_at, made_in = dataset.head(root), identity.environment(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
@@ -726,29 +716,13 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-class _Meanwhile(_Inline):
-    """Do something in the project once the run has its checkout, before
-    its first recipe starts."""
-
-    def __init__(self, meanwhile: Callable[[], None]) -> None:
-        self.meanwhile: Callable[[], None] | None = meanwhile
-
-    def submit(
-        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
-    ) -> object:
-        if self.meanwhile is not None:
-            self.meanwhile()
-            self.meanwhile = None
-        return fn(*args)
-
-
 def test_an_edit_while_the_graph_runs_is_no_part_of_the_run(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Recipes run in the run's own checkout of the commit, so what is
     edited in the project meanwhile changes nothing they see and nothing
     a record says — and stays exactly where the researcher left it."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
 
     def edit() -> None:
         spec = root / "astra.yaml"
@@ -770,7 +744,7 @@ def test_a_commit_while_the_graph_runs_is_built_on(
 ) -> None:
     """Results land on top of whatever the researcher committed meanwhile,
     each record naming the commit its recipe ran on."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
 
     def commit() -> None:
         (root / "notes.md").write_text("committed while the graph ran\n")
@@ -1001,7 +975,7 @@ def test_a_checkout_is_kept_and_taken_again(root: Path, inline: None) -> None:
     assert report.ok
     held = root / ".lightcone/checkouts"
     assert sorted(p.name for p in held.iterdir()) == ["0", "pyproject.toml", "uv.toml"]
-    assert dataset._git(["rev-parse", "HEAD"], cwd=held / "0").strip() != dataset.head(root)[0]
+    assert dataset._git(["rev-parse", "HEAD"], cwd=held / "0").strip() != dataset.head(root)
     assert not dataset.status(root)
 
 
@@ -1258,7 +1232,7 @@ def test_every_record_of_one_run_names_the_commit_it_started_from(
     """The driver commits each output as it lands, so HEAD moves during the
     run — and reading it per task would stamp later records with a commit
     this same run created, nondeterministically."""
-    started_at = dataset.head(root)[0]
+    started_at = dataset.head(root)
 
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 

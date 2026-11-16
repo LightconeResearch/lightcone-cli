@@ -281,9 +281,7 @@ def execute(
     # (`Task.owns`) is its record and any file named after it, so a spec
     # that re-declares the output in another format leaves no stale
     # payload behind.
-    folders = {
-        (root / path).parent for place in places for path in (place.file_path, place.record_path)
-    }
+    folders = {(root / path).parent for path in task.files}
     for place in places:
         (root / place.file_path).parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
@@ -296,9 +294,11 @@ def execute(
         # Validate device visibility and container support before removing outputs.
         for folder in folders:
             for stale in folder.iterdir() if folder.is_dir() else ():
-                if not stale.is_dir() or stale.is_symlink():
-                    if task.owns(stale.relative_to(root).as_posix()):
-                        stale.unlink()
+                # The name first: it costs no stat of a sibling's file.
+                if task.owns(stale.relative_to(root).as_posix()) and (
+                    not stale.is_dir() or stale.is_symlink()
+                ):
+                    stale.unlink()
         started = datetime.now(UTC)
         cwd = root / task.workdir
         outcome = sandbox.run(
@@ -491,7 +491,7 @@ def main(argv: list[str]) -> int:
             _from_disk(root, graph, task),
             RunContext(
                 environment=identity.environment(root),
-                commit=dataset.head(root)[0],
+                commit=dataset.head(root),
                 runtime=runtime,
             ),
         )

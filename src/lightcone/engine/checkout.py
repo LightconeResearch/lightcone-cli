@@ -130,7 +130,8 @@ def take(project: Path, commit: str, allocation: str) -> Checkout:
     # Asked before the lock is taken: a native scheduler may take seconds
     # to answer, and choosing is what every other run waits on.
     marks = {held: _read(held) for held in base.glob("*.run")}
-    over = {held for held, named in marks.items() if compute.ended(named)}
+    ended = {named: compute.ended(named) for named in set(marks.values())}
+    over = {held for held, named in marks.items() if ended[named]}
     with _exclusive(base / "choosing", _CHOOSING_ABANDONED):
         # A slot whose allocation has ended holds nothing that can still
         # be written: freed, with the copies its run left of what it made.
@@ -143,10 +144,11 @@ def take(project: Path, commit: str, allocation: str) -> Checkout:
         marker.write_text(allocation)
     top = base / str(slot)
     try:
-        if not _reset(top, commit):
+        if not _reset(top, commit) or dataset.status(top, config=_PLAIN):
             # Never made, or no longer a worktree git can bring to the
-            # commit. Made again: all a slot holds is derived from the
-            # repository.
+            # commit: a stray file inside a submodule is one thing no
+            # reset removes. Made again: all a slot holds is derived from
+            # the repository.
             shutil.rmtree(top, ignore_errors=True)
             dataset._git(["worktree", "prune"], cwd=project)
             # Forced twice: git's own override for a worktree a killed
@@ -168,7 +170,7 @@ def take(project: Path, commit: str, allocation: str) -> Checkout:
         return Checkout(
             project=project,
             top=top,
-            root=top / prefix if prefix else top,
+            root=top / prefix,
             commit=commit,
             branch=dataset.branch(project),
             marker=marker,
@@ -192,7 +194,7 @@ def give_back(checkout: Checkout) -> None:
 
 
 def _reset(top: Path, commit: str) -> bool:
-    """Bring a kept worktree to exactly *commit*'s files, ignored ones aside.
+    """Bring a kept worktree to *commit*'s files, ignored ones aside.
 
     ``clean`` is forced twice because git otherwise leaves an untracked
     repository in place — what a submodule the commit no longer has is —
@@ -200,9 +202,8 @@ def _reset(top: Path, commit: str) -> bool:
     undo an edit below it.
 
     Returns:
-        Whether it is now the commit's checkout. False for a folder that
-        is no worktree, and for one git could not bring there: a stray
-        file inside a submodule, which nothing here removes.
+        Whether git took it there. False for a folder that is no
+        worktree, and for one a step failed in.
     """
     if not (top / ".git").is_file():
         return False
@@ -210,9 +211,7 @@ def _reset(top: Path, commit: str) -> bool:
     if not all(dataset._git_ok([*_PLAIN, *argv], cwd=top) for argv in steps):
         return False
     update = ["submodule", "update", "-q", "--init", "--recursive", "--force"]
-    if (top / ".gitmodules").is_file() and not dataset._git_ok([*_PLAIN, *update], cwd=top):
-        return False
-    return not dataset.status(top, config=_PLAIN)
+    return not (top / ".gitmodules").is_file() or dataset._git_ok([*_PLAIN, *update], cwd=top)
 
 
 def _base(project: Path) -> Path:
@@ -440,10 +439,7 @@ def land(checkout: Checkout, task: Task, message: str) -> str:
                 "the run built"
             )
 
-        places = task.result.places
-        folders = {
-            posixpath.dirname(path) for p in places for path in (p.file_path, p.record_path)
-        }
+        folders = {posixpath.dirname(path) for path in task.files}
         landed = []
         try:
             for folder in sorted(folders):

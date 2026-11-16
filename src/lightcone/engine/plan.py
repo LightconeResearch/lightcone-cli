@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Analysis, Diagnostic, Place, Result, Source, Status
+    from astra.api import Analysis, Place, Result, Source, Status
 
 #: A task's identity within a run: its result's id, as ASTRA gives it —
 #: its address, after the key of the analysis the result belongs to and a
@@ -87,6 +87,14 @@ class Task:
         """The tasks that must be made first, deduplicated, in order."""
         read = (source.result for source in self.result.inputs)
         return tuple(dict.fromkeys(key for key in read if key is not None))
+
+    @property
+    def files(self) -> list[str]:
+        """The bytes and the record at each of the result's places, from
+        the project root."""
+        return [
+            path for place in self.result.places for path in (place.file_path, place.record_path)
+        ]
 
     def owns(self, path: str) -> bool:
         """Whether *path* is one of this result's own files.
@@ -348,28 +356,16 @@ def asking_astra(root: Path) -> Iterator[None]:
     try:
         yield
     except api.InvalidAnalysisError as e:
-        raise ProjectError(invalid(root, e.report.diagnostics)) from e
+        # In ASTRA's own words: one line per broken rule, placed in its file.
+        listed = "\n".join(
+            f"  {d.location.file}:{d.location.line or 0}:{d.location.column or 0} "
+            f"{d.code} {d.message}"
+            for d in e.report.diagnostics
+            if d.level == "error"
+        )
+        raise ProjectError(
+            f"{root / SPEC_FILENAME} does not validate, so there is nothing to materialize "
+            f"from it:\n{listed}"
+        ) from e
     except (api.NoAnalysisError, api.GitError, api.CacheError, OSError) as e:
         raise ProjectError(str(e)) from e
-
-
-def invalid(root: Path, diagnostics: tuple[Diagnostic, ...]) -> str:
-    """Word the refusal of an analysis ASTRA rejects, in ASTRA's own words.
-
-    Args:
-        root: The project root.
-        diagnostics: What ASTRA reported; the errors are listed.
-
-    Returns:
-        The message, one line per broken rule, each placed in its file.
-    """
-    listed = "\n".join(
-        f"  {d.location.file}:{d.location.line or 0}:{d.location.column or 0} "
-        f"{d.code} {d.message}"
-        for d in diagnostics
-        if d.level == "error"
-    )
-    return (
-        f"{root / SPEC_FILENAME} does not validate, so there is nothing to materialize "
-        f"from it:\n{listed}"
-    )

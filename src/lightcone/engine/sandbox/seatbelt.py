@@ -137,8 +137,7 @@ class SeatbeltBackend:
             policy: The policy being wrapped.
 
         Returns:
-            The record written with every output, derived from the flags
-            actually applied.
+            What was enforced, derived from the flags actually applied.
         """
         return Attestation(
             mechanism="seatbelt",
@@ -207,7 +206,7 @@ def generate_profile(policy: Policy) -> str:
                 "EXEC",
                 len(policy.execute),
             ),
-            ";; network: not controlled by lc, on any platform (recorded as `allowed`)",
+            ";; network: not controlled by lc, on any platform",
             # Separate forms: `network*` and `system-socket` are distinct
             # operation families, and one malformed form voids the whole
             # profile rather than just its own line.

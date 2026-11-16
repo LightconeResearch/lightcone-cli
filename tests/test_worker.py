@@ -103,7 +103,7 @@ def _context(root: Path, environment: str | None = None) -> worker.RunContext:
     """
     return worker.RunContext(
         environment=environment if environment is not None else identity.environment(root),
-        commit=dataset.head(root)[0],
+        commit=dataset.head(root),
         runtime=container.runtime_for_run(root, build=False),
     )
 
@@ -162,7 +162,7 @@ def test_the_record_says_what_the_run_was(root: Path) -> None:
     run = record["generated_by"]
     assert record["address"] == "first#baseline"
     assert (record["content_hash"], record["size"]) == (result.content_hash, result.size)
-    assert run["commit"] == dataset.head(root)[0]
+    assert run["commit"] == dataset.head(root)
     assert run["environment"] == {"iri": identity.environment(root)}
     # The engine's version is attestation, not identity: with lc outside
     # the project's lock, this field is the record of which engine ran.
@@ -370,7 +370,7 @@ def _stale_through_first(root: Path, read: assets.Digest) -> api.Status:
         "sha256:" + "5" * 64,
         7,
         api.Generation(
-            dataset.head(root)[0],
+            dataset.head(root),
             api.Environment(identity.environment(root)),
             api.Runner("lightcone-cli", "1.0"),
             (api.RecordedInput("first", *read),),

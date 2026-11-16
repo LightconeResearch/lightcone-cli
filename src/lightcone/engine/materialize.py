@@ -301,7 +301,7 @@ class StatusReport:
     """Every result the analysis plans, in dependency order."""
 
     outputs: list[OutputStatus] = field(default_factory=list)
-    #: The lock scan's prose, and inputs this clone has not fetched.
+    #: The lock scan's prose, and what ASTRA notes for the author.
     warnings: list[str] = field(default_factory=list)
     #: The three header facts nothing else surfaces: which world this
     #: project executes in, where its image stands, and what would
@@ -440,17 +440,10 @@ def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
     record is also what carries the history across a re-declared format,
     where the payload's own path is new and would read as clean.
     """
-    write = dataset.last_writer(root, *_files(task))
+    write = dataset.last_writer(root, *task.files)
     if not write or write.subject == datalad_run_subject(task.key):
         return None
     return write
-
-
-def _files(task: Task) -> list[str]:
-    """The bytes and the record at each of *task*'s places."""
-    return [
-        path for place in task.result.places for path in (place.file_path, place.record_path)
-    ]
 
 
 def _sandbox_line(mode: str) -> str:
@@ -469,7 +462,7 @@ def _sandbox_line(mode: str) -> str:
     found = sandbox.detect().capability
     if found.kind == "none":
         detail = f" — {found.detail}" if found.detail else ""
-        return f"none{detail}; runs record `fs: open`"
+        return f"none{detail} (fs: open, network: allowed)"
     return f"{found.kind} (fs: declared, network: allowed)"
 
 
@@ -560,7 +553,7 @@ def materialize(
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
-        if dataset.head(root)[0] != graph.head:
+        if dataset.head(root) != graph.head:
             # The image was built and committed. That commit is the one
             # the run builds, so its plan is the one to follow.
             graph, environment, full = _graph(root, targets, MaterializeReport())
@@ -574,7 +567,7 @@ def materialize(
         with checkout.landing(root):
             moved = (
                 dataset.status(root, also=graph.beside)
-                or dataset.head(root)[0] != graph.head
+                or dataset.head(root) != graph.head
             )
         if moved:
             raise ProjectError(
@@ -585,7 +578,7 @@ def materialize(
         handles: list[Any] = []
         reported = 0
         try:
-            running = {found.task.key for found in classified if found.may_run(refresh=refresh)}
+            running = [found.task for found in classified if found.may_run(refresh=refresh)]
             # Every file a task that may run reads, bar a result certain
             # to be remade. One that may run only because something it
             # reads may is left alone when that comes out as recorded,
@@ -599,15 +592,13 @@ def materialize(
                 tree,
                 sorted(
                     {
-                        graph.tasks[key].reads[source.entry]
-                        for key in running
-                        for source in graph.tasks[key].result.inputs
+                        task.reads[source.entry]
+                        for task in running
+                        for source in task.result.inputs
                         if source.result not in certain
                     }
                 ),
-                replaceable={
-                    place.file_path for key in running for place in graph.tasks[key].result.places
-                },
+                replaceable={place.file_path for task in running for place in task.result.places},
             )
             if unfetched:
                 # A *warning*, never a refusal: independent tasks still
@@ -629,14 +620,14 @@ def materialize(
                 environment=environment, commit=tree.commit, runtime=runtime
             )
             written = sorted(
-                {posixpath.dirname(path) for task in graph.tasks.values() for path in _files(task)}
+                {posixpath.dirname(path) for task in graph.tasks.values() for path in task.files}
             )
             pending: dict[Key, Any] = {}
             # Results left alone are values, not Dask tasks: they need no allocation
             # resources. Futures for everything that may run retain dependency order.
             for found in classified:
                 task = found.task
-                if task.key not in running:
+                if not found.may_run(refresh=refresh):
                     pending[task.key] = _left_alone(found, report)
                     continue
                 # What the checker found goes with the task: downstream of a
@@ -999,7 +990,7 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             full,
             license=spdx,
             dsid=dsid,
-            remote=dataset.head(root)[1],
+            remote=dataset.remote(root),
             writer=functools.partial(dataset.last_writer, root),
             keys=dataset.annex_keys(root),
         )
@@ -1063,7 +1054,7 @@ def run_record(task: Task, dsid: str, runtime: container.Runtime) -> str:
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(set(task.reads.values())),
-        "outputs": _files(task),
+        "outputs": task.files,
         "pwd": ".",
     }
     if runtime.mode == "containerized":

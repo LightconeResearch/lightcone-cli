@@ -102,9 +102,6 @@ def env_version(root: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
-_IRI = "urn:lightcone:env:"
-
-
 def files(root: Path) -> tuple[str, ...]:
     """Name the files :func:`env_version` reads, from the project root.
 
@@ -136,7 +133,7 @@ def environment(root: Path) -> str:
     Raises:
         ProjectError: If ``uv.lock`` or ``.python-version`` is missing.
     """
-    return _IRI + env_version(root)
+    return f"urn:lightcone:env:{env_version(root)}"
 
 
 def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
@@ -146,11 +143,6 @@ def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
     h.update(str(len(data)).encode("ascii"))
     h.update(b"\0")
     h.update(data)
-
-
-def _canonical(value: Any) -> str:
-    """JSON with a single spelling per value — sorted keys, no padding."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _install_settings(root: Path) -> str:
@@ -166,7 +158,11 @@ def _install_settings(root: Path) -> str:
     that install the same artifacts are one environment however they spell
     it.
     """
-    return _canonical({key: _uv_config(root).get(key) for key in _INSTALL_SETTINGS})
+    return json.dumps(
+        {key: _uv_config(root).get(key) for key in _INSTALL_SETTINGS},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 # =============================================================================

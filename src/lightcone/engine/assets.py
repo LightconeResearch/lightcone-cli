@@ -70,9 +70,12 @@ def record_places(path: str) -> list[str]:
         result's place.
     """
     *folder, file = path.split("/")
-    universe = folder[-1:] if folder[-2:-1] == ["results"] else []
-    top = folder[: -1 - len(universe)]
-    if folder[len(top) : len(top) + 1] != ["results"]:
+    # A universe's folder first: a universe may be called `results`.
+    if folder[-2:-1] == ["results"]:
+        top, universe = folder[:-2], folder[-1:]
+    elif folder[-1:] == ["results"]:
+        top, universe = folder[:-1], []
+    else:
         return []
     return [
         "/".join([*top, ".astra", "records", *universe, f"{file[:dot]}.json"])
@@ -108,10 +111,9 @@ def require_fetched(path: Path) -> None:
 
     Raises:
         ContentNotFetchedError: If *path* is one of these shapes without
-            its content. Loud, because the alternatives are silent:
+            its content. Loud, because the alternative is silent:
             hashing a pointer yields a well-formed digest of the wrong
-            bytes, and a dangling symlink drops out of a directory's
-            digest entirely.
+            bytes.
         OSError: If *path* cannot be read at all.
     """
     if path.is_symlink() and not path.exists():
