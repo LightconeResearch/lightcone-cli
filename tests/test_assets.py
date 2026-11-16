@@ -90,7 +90,7 @@ def test_an_unfetched_annexed_file_is_refused(tmp_path: Path) -> None:
     pointer.write_text("/annex/objects/SHA256E-s300000--4367c4a63392fa9b887bbcf046033d89.fits\n")
 
     assert assets.is_pointer(pointer)
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+    with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
         assets.require_fetched(pointer)
 
 
@@ -102,7 +102,7 @@ def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(tmp_path:
     locked.symlink_to("../.git/annex/objects/2K/9P/SHA256E-s300000--4367c4a6.fits")
 
     assert locked.is_symlink() and not locked.exists()
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+    with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
         assets.require_fetched(locked)
 
 
@@ -123,6 +123,35 @@ def test_a_broken_symlink_that_is_not_annexed_is_not_called_unfetched(tmp_path: 
     stray.symlink_to(tmp_path / "gone-with-the-scratch-dir")
 
     assets.require_fetched(stray)
+
+
+def test_a_git_lfs_pointer_is_refused_too(tmp_path: Path) -> None:
+    """lc fetches nothing from LFS, and a recipe handed the pointer would
+    read three lines of text for its data."""
+    pointer = tmp_path / "catalog.fits"
+    pointer.write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\n"
+        "size 12345\n"
+    )
+
+    with pytest.raises(assets.ContentNotFetchedError, match="git lfs pull"):
+        assets.require_fetched(pointer)
+
+
+def test_an_annexed_file_names_its_key_in_either_shape(tmp_path: Path) -> None:
+    key = "SHA256E-s8--9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.fits"
+    pointer = tmp_path / "unlocked.fits"
+    pointer.write_text(f"/annex/objects/{key}\n")
+    locked = tmp_path / "locked.fits"
+    locked.symlink_to(f".git/annex/objects/Xx/Yy/{key}/{key}")
+    content = tmp_path / "content.fits"
+    content.write_text("x,y\n1,2\n")
+
+    assert assets.annex_key(pointer) == key
+    assert assets.annex_key(locked) == key
+    assert assets.annex_key(content) == ""
+    assert assets.annex_key(tmp_path / "absent.fits") == ""
 
 
 def test_a_file_that_merely_mentions_the_prefix_is_content(tmp_path: Path) -> None:

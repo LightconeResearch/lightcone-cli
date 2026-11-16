@@ -223,7 +223,7 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
 
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
-        with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+        with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
             assets.require_fetched(output / name)
 
 
@@ -240,7 +240,7 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+    with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
         assets.require_fetched(output / "fit.csv")
 
 
@@ -770,3 +770,32 @@ def test_last_writer_answers_inside_an_enclosing_repository(
 
     write = dataset.last_writer(project_root, out)
     assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
+
+
+
+def test_status_names_each_path_as_it_is_on_disk(repo: Path) -> None:
+    """git quotes a name with a space or an accent unless asked not to,
+    and pairs a renamed file with its source: neither is a path a caller
+    can compare or hand back to git."""
+    (repo / "données du relevé.txt").write_text("x\n")
+    (repo / "kept.txt").write_text("y\n")
+    dataset.save(repo, [repo], "two files")
+    (repo / "données du relevé.txt").write_text("edited\n")
+    dataset._git(["mv", "kept.txt", "moved.txt"], cwd=repo)
+
+    assert sorted(dataset.status(repo)) == [
+        (" M", "données du relevé.txt"),
+        ("A ", "moved.txt"),
+        ("D ", "kept.txt"),
+    ]
+
+
+def test_restoring_takes_back_what_a_failed_save_had_staged(repo: Path) -> None:
+    (repo / "results").mkdir(exist_ok=True)
+    (repo / "results/new.txt").write_text("never committed\n")
+    dataset._git(["add", "--", "results/new.txt"], cwd=repo)
+
+    dataset.restore(repo, ["results/new.txt"])
+
+    assert not (repo / "results/new.txt").exists()
+    assert not dataset.status(repo)

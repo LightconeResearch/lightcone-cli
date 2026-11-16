@@ -88,6 +88,32 @@ class Task:
         read = (source.result for source in self.result.inputs)
         return tuple(dict.fromkeys(key for key in read if key is not None))
 
+    def owns(self, path: str) -> bool:
+        """Whether *path* is one of this result's own files.
+
+        Its record at a place, or a file named after it in the folder its
+        bytes go — the name and not the one declared path, so the payload
+        a previous format left behind is the result's too. ``<name>.``
+        cannot reach a sibling: ASTRA refuses an output that shares its
+        id with a declaration, which is the only way one result's name
+        could begin another's.
+
+        Args:
+            path: A file's POSIX path from the project root.
+
+        Returns:
+            True for a file this result's run writes or replaces.
+        """
+        folder, _, file = path.rpartition("/")
+        return any(
+            path == place.record_path
+            or (
+                folder == posixpath.dirname(place.file_path)
+                and file.startswith(f"{name(place)}.")
+            )
+            for place in self.result.places
+        )
+
 
 @dataclass(frozen=True)
 class Graph:
@@ -97,6 +123,14 @@ class Graph:
     #: What ASTRA's checker found of each task's result when the graph was
     #: read. The state a run starts from.
     found: dict[Key, Status]
+    #: The commit the repository was on when ASTRA read it — empty where
+    #: it has none yet. The files were read in the working tree, so this
+    #: says what was read only of a tree with no uncommitted change.
+    head: str = ""
+    #: The folder of each analysis read in the working tree that is not in
+    #: the project's own, from the project root (``../shared``): the rest
+    #: of what "no uncommitted change" has to cover.
+    beside: tuple[str, ...] = ()
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
@@ -136,9 +170,10 @@ class Graph:
         """Turn what a user typed into task keys.
 
         Args:
-            targets: Each a task as lc names it (``fit#baseline``), or a
-                result's name alone (``fit``) — matching it in every
-                universe that builds it.
+            targets: Each a task as lc names it (``fit#baseline``), an
+                address a result has at one of its places, or a result's
+                name alone (``fit``) — matching it in every universe that
+                builds it.
 
         Returns:
             The matching task keys, in the order given.
@@ -152,7 +187,8 @@ class Graph:
             matched = [
                 key
                 for key, task in self.tasks.items()
-                if target == key or any(target == name(place) for place in task.result.places)
+                if target == key
+                or any(target in (place.address, name(place)) for place in task.result.places)
             ]
             if not matched:
                 known = ", ".join(self.tasks) or "none"
@@ -254,7 +290,10 @@ def build(root: Path) -> Graph:
                 else made_at[source.result or ""]
                 for source in result.inputs
             },
-            decisions={ref: selection[ref] for ref in output.decisions},
+            # A result read through a pin can be made with a decision its
+            # universe does not itself use, and ASTRA's selection holds
+            # only those it uses: the option is in the command, not here.
+            decisions={ref: selection[ref] for ref in output.decisions if ref in selection},
             resources=(
                 {k: v for k, v in asdict(output.resources).items() if v is not None}
                 if output.resources
@@ -264,6 +303,16 @@ def build(root: Path) -> Graph:
     return Graph(
         tasks=tasks,
         found={key: report.statuses[key] for key in tasks},
+        head=analysis.head or "",
+        beside=tuple(
+            sorted(
+                {
+                    each.folder
+                    for each in analysis.analyses
+                    if each.commit is None and each.folder.startswith("..")
+                }
+            )
+        ),
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
         label=analysis.analyses[0].label or "",
         description=analysis.analyses[0].description or "",

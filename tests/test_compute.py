@@ -205,6 +205,43 @@ def test_named_cluster_errors_retain_the_immutable_id(
     assert error.value.cluster_id == IDENTITY.encode()
 
 
+def test_a_name_and_an_id_give_the_allocations_full_id(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    """A name costs one native discovery; an ID holds its own identity."""
+    provider.discover.return_value = [Snapshot(identity=IDENTITY, phase="active")]
+
+    assert compute.identity(IDENTITY.name) == IDENTITY.encode()
+    assert provider.discover.call_count == 1
+    assert compute.identity(IDENTITY.encode()) == IDENTITY.encode()
+    assert provider.discover.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "ended"),
+    [("ended", True), ("active", False), ("pending", False), ("stopping", False),
+     ("unknown", False)],
+)
+def test_only_an_allocation_its_authority_reports_ended_has_ended(
+    catalog: Path, provider: MagicMock, phase: str, ended: bool,
+) -> None:
+    """Unknown is never absence: a run's checkout is taken back from an
+    allocation only once nothing of it can still be running."""
+    provider.inspect.return_value = Snapshot(identity=IDENTITY, phase=phase)
+
+    assert compute.ended(IDENTITY.encode()) is ended
+
+
+@pytest.mark.parametrize("allocation", ["", "not-an-id", "clu_!!", "local"])
+def test_an_allocation_that_cannot_be_asked_about_has_not_ended(
+    catalog: Path, provider: MagicMock, allocation: str,
+) -> None:
+    provider.inspect.side_effect = ComputeError("cannot verify")
+
+    assert compute.ended(allocation) is False
+    assert compute.ended(IDENTITY.encode()) is False
+
+
 @pytest.mark.parametrize("observations", [[], [Snapshot(identity=IDENTITY, phase="ended")]])
 def test_missing_and_ended_names_do_not_select_an_allocation(
     catalog: Path, provider: MagicMock, observations: list[Snapshot],

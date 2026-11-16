@@ -53,12 +53,12 @@ jobs:
         # git-annex executables into ~/.local/bin. The commit under test
         # is the checkout itself, stamped into the version by hatch-vcs.
         # astra's executable belongs to astra-tools, so it is its own
-        # tool install, pinned to the version the branch depends on. No
+        # tool install, under the specifier the branch depends on it by. No
         # venv is activated: the agent's shell sees the tools exactly as
         # an end user's would.
         run: |
           uv tool install --python 3.12 "$GITHUB_WORKSPACE"
-          uv tool install --python 3.12 "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
+          uv tool install --python 3.12 "astra-tools$(grep -oP '"astra-tools\K[^"]+' pyproject.toml)"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Claude Code + astra plugin
@@ -83,11 +83,6 @@ jobs:
           # Overlay the task seed (astra.yaml, data/) on the scaffold
           cp -r evals/tasks/snae/. "$project"/
           cd "$project"
-          # Regenerate baseline.yaml from the task astra.yaml's defaults —
-          # the scaffolded one matches the boilerplate spec, not the task's
-          rm -f universes/baseline.yaml
-          astra universe generate -n baseline \
-            -d 'Default configuration using standard practices'
           # No scientific deps are pre-seeded — declaring what the
           # recipes import (`uv add`) is part of what the eval measures
           # lc materialize refuses a dirty tree — commit the seed so the
@@ -115,7 +110,7 @@ jobs:
         id: check
         working-directory: ${{ env.PROJECT }}
         run: |
-          astra validate astra.yaml
+          astra validate
           lc status
           # The gate: nothing failed, nothing left to make — and at least
           # one output actually got materialized

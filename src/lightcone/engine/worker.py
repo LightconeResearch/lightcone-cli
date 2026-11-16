@@ -95,15 +95,15 @@ class RunContext:
     """The driver-resolved facts of one run, handed to every task.
 
     Each field is read or resolved exactly once, by whoever owns the run
-    — the driver, or the rerun entry point — because a per-task read
-    could answer differently mid-run: HEAD moves as the driver commits,
-    and a runtime resolved twice could disagree. Frozen and picklable, so
-    it crosses to workers by value.
+    — the driver, or the rerun entry point — because a task has no git
+    to ask, and a runtime resolved twice could disagree. Frozen and
+    picklable, so it crosses to workers by value.
     """
 
     #: The IRI of the run's environment, checked either side of each recipe.
     environment: str
-    #: The commit the run started from, which every record it writes names.
+    #: The commit the run's checkout is at, which every record it writes
+    #: names.
     commit: str
     #: The execution world — the host mechanism, or the project image.
     runtime: container.Runtime
@@ -242,35 +242,48 @@ def execute(
     if moved := _gate(root, context.environment):
         return TaskResult(task.key, "failed", reason=moved)
 
-    # What the recipe is about to read, hashed before it runs: an input
-    # this clone does not hold is a refusal that should cost no compute.
+    # What the recipe is about to read, looked at before it runs: a file
+    # this checkout does not hold the content of is a refusal that should
+    # cost no compute — and a recipe handed a stand-in would read a few
+    # lines of text for its data, under a record naming the real bytes.
     read = []
+    watched: dict[str, tuple[Path, tuple[int, int, int]]] = {}
     for source in task.result.inputs:
-        if source.result is not None:
-            # What the upstream task reported, never a rehash: one left
-            # alone on a clone without its content is a pointer here.
-            digest = upstream[source.result].digest
-        else:
-            path = root / task.reads[source.entry]
-            try:
-                assets.require_fetched(path)
-                digest = assets.digest_file(path)
-            except (OSError, ProjectError) as e:
-                return TaskResult(
-                    task.key, "failed", reason=f"the input `{source.entry}` cannot be read: {e}"
-                )
+        path = root / task.reads[source.entry]
+        try:
+            assets.require_fetched(path)
+            # What an upstream task reported, never a rehash: its bytes
+            # were hashed once, by the task that made or kept them.
+            digest = (
+                upstream[source.result].digest
+                if source.result is not None
+                else assets.digest_file(path)
+            )
+            watched[source.entry] = path, assets.stamp(path)
+        except (OSError, ProjectError) as e:
+            # Named as the analysis names it: `path` is a file of the
+            # run's checkout, which is nobody's to act on.
+            why = str(e).removeprefix(f"{path}: ")
+            return TaskResult(
+                task.key,
+                "failed",
+                reason=(
+                    f"the input `{source.entry}` ({task.reads[source.entry]}) cannot be "
+                    f"read: {why}"
+                ),
+            )
         read.append(api.RecordedInput(source.entry, *digest))
 
     places = task.result.places
     made = root / places[0].file_path
     # Never the parent directory: siblings share it, and under Dask they
-    # are being written concurrently. What this result owns, at each of
-    # its places, is its record and any file named after it
-    # — the glob rather than the one declared path, so a spec that
-    # re-declares the output in another format leaves no stale payload
-    # behind. `<name>.` cannot reach a sibling: ASTRA refuses an output
-    # that shares its id with a declaration, which is the only way one
-    # result's name could begin another's.
+    # are being written concurrently. What this result owns there
+    # (`Task.owns`) is its record and any file named after it, so a spec
+    # that re-declares the output in another format leaves no stale
+    # payload behind.
+    folders = {
+        (root / path).parent for place in places for path in (place.file_path, place.record_path)
+    }
     for place in places:
         (root / place.file_path).parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
@@ -281,17 +294,18 @@ def execute(
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing outputs.
-        for place in places:
-            (root / place.record_path).unlink(missing_ok=True)
-            for stale in (root / place.file_path).parent.glob(f"{plan.name(place)}.*"):
-                if stale.is_file() or stale.is_symlink():
-                    stale.unlink()
+        for folder in folders:
+            for stale in folder.iterdir() if folder.is_dir() else ():
+                if not stale.is_dir() or stale.is_symlink():
+                    if task.owns(stale.relative_to(root).as_posix()):
+                        stale.unlink()
         started = datetime.now(UTC)
+        cwd = root / task.workdir
         outcome = sandbox.run(
-            container.backend(context.runtime),
+            container.backend(context.runtime, cwd),
             policy,
             [_SHELL, "-c", task.command],
-            cwd=root / task.workdir,
+            cwd=cwd,
             prefix=uv_prefix(root),
             env=child_env(),
             output=output,
@@ -307,12 +321,31 @@ def execute(
         )
     if moved := _gate(root, context.environment):
         return TaskResult(task.key, "failed", reason=moved, notes=outcome.notes)
+    # A file a recipe reads is a hard link to the bytes git-annex keeps,
+    # and only a sandbox makes it read-only: written in place, the record
+    # would name bytes that no longer exist anywhere.
+    if rewritten := [
+        entry
+        for entry, (path, stamp) in watched.items()
+        if not path.is_file() or assets.stamp(path) != stamp
+    ]:
+        return TaskResult(
+            task.key,
+            "failed",
+            reason=(
+                f"the recipe changed what it only reads: {', '.join(rewritten)}. "
+                "Nothing was recorded."
+            ),
+            notes=outcome.notes,
+        )
 
     # Guarded separately from the boundary catch above it, because these
     # two failures deserve different words: "your recipe failed" and "your
     # recipe worked and we could not record it" are different problems.
-    if not made.is_file():
-        found = "a directory" if made.is_dir() else "nothing"
+    if made.is_symlink() or not made.is_file():
+        found = (
+            "a symlink" if made.is_symlink() else "a directory" if made.is_dir() else "nothing"
+        )
         return TaskResult(
             task.key,
             "failed",
@@ -431,6 +464,20 @@ def main(argv: list[str]) -> int:
         if (task := graph.tasks.get(argv[0])) is None:
             print(f"no output `{argv[0]}` in this project", file=sys.stderr)
             return 2
+        # The record names HEAD, so the tree has to be HEAD's: all a rerun
+        # has changed by now is this result's own files, which it removed.
+        if edited := sorted(
+            path
+            for _, path in dataset.status(root, untracked_files=True, also=graph.beside)
+            if not task.owns(path)
+        ):
+            print(
+                f"error: uncommitted changes — {', '.join(edited)} — so the commit a "
+                "record names would not say what its recipe ran on (UNCOMMITTED_CHANGES). "
+                "Commit them first.",
+                file=sys.stderr,
+            )
+            return 2
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -441,7 +488,7 @@ def main(argv: list[str]) -> int:
         result = execute(
             root,
             task,
-            _from_disk(graph, task),
+            _from_disk(root, graph, task),
             RunContext(
                 environment=identity.environment(root),
                 commit=dataset.head(root)[0],
@@ -460,20 +507,27 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def _from_disk(graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
-    """What *task* reads of other results, from the records already in the tree.
+def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
+    """What *task* reads of other results, from the tree as it stands.
 
-    There is no graph in flight to take them from, so each upstream's
-    record stands in for the result its task would have reported.
+    There is no graph in flight to take them from. Each upstream has to
+    have a record of its own, and its bytes are hashed where they lie:
+    this run reads what is in the tree, and its record must say so even
+    where that is not what the upstream's record gives.
     """
     upstream = {}
     for key in task.depends_on:
-        if (record := graph.found[key].record) is None:
+        if graph.found[key].record is None:
             raise ProjectError(
                 f"`{key}`, which `{task.key}` reads, has no valid record. "
                 "Run `lc materialize <cluster>` instead."
             )
-        upstream[key] = TaskResult(key, "current", record.content_hash, record.size)
+        path = root / graph.tasks[key].result.places[0].file_path
+        try:
+            assets.require_fetched(path)
+            upstream[key] = TaskResult(key, "current", *assets.digest_file(path))
+        except OSError as e:
+            raise ProjectError(f"`{key}`, which `{task.key}` reads, cannot be read: {e}") from e
     return upstream
 
 

@@ -46,10 +46,9 @@ _PODMAN_FAMILY = ("podman", "podman-hpc")
 class Runtime:
     """The execution world one run enters, resolved once by whoever owns it.
 
-    The driver resolves it and hands it to every task — the same
-    discipline as the run's HEAD read — because resolving per task could
-    answer differently mid-run. The rerun entry point resolves its own,
-    because it *is* the driver of its one-task run.
+    The driver resolves it and hands it to every task, because resolving
+    per task could answer differently mid-run. The rerun entry point
+    resolves its own, because it *is* the driver of its one-task run.
     """
 
     root: Path
@@ -225,7 +224,7 @@ def runtime_name(root: Path) -> str:
     return name
 
 
-def backend(runtime: Runtime) -> sandbox.Backend:
+def backend(runtime: Runtime, cwd: Path) -> sandbox.Backend:
     """Pick the exec boundary for a resolved runtime.
 
     The only *mode* branch above the sandbox seam, mirroring
@@ -235,6 +234,8 @@ def backend(runtime: Runtime) -> sandbox.Backend:
 
     Args:
         runtime: A resolved runtime.
+        cwd: The folder the command runs in. A host mechanism inherits
+            it from the process; a container has to be told.
 
     Returns:
         The backend the exec goes through.
@@ -251,7 +252,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     return OCIBackend(
         runtime=cast(OCIRuntime, runtime.runtime),
         image_id=runtime.image_id,
-        root=runtime.root,
+        workdir=cwd,
         user_flags=(*uid_flags(runtime.runtime), *pull),
     )
 

@@ -594,7 +594,7 @@ def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list
     runtime = container.runtime_for_run(root, build=False)
 
     assert container.uid_flags("podman-hpc") == ["--userns=keep-id"]
-    backend = container.backend(runtime)
+    backend = container.backend(runtime, runtime.root)
     assert backend.capability.kind == "podman-hpc"
     assert "--pull=never" in backend.user_flags  # type: ignore[attr-defined]
     assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]

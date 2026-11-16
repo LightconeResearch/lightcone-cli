@@ -486,12 +486,12 @@ def test_home_and_friends_point_into_the_write_scope(built: policy_module.Policy
         assert Path(built.env[key]).is_relative_to(built.tmp_home), key
 
 
-def test_bytecode_is_redirected_out_of_the_read_only_tree(
-    built: policy_module.Policy,
-) -> None:
-    """Without it every `import` of an in-tree module fails trying to
-    write its `__pycache__` into a tree it may not write."""
-    assert Path(built.env["PYTHONPYCACHEPREFIX"]).is_relative_to(built.tmp_home)
+def test_bytecode_is_read_and_never_written(built: policy_module.Policy) -> None:
+    """An import must not try to write its `__pycache__` into a tree it
+    may not write — and must still read the bytecode the environment was
+    compiled to, which a redirected cache would hide from it."""
+    assert built.env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "PYTHONPYCACHEPREFIX" not in built.env
 
 
 def test_the_home_subdirs_exist(built: policy_module.Policy) -> None:

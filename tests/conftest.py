@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
-import tomllib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -179,6 +178,9 @@ class _Inline:
     upstreams have already run — which means the "handles" it is passed
     are the upstream results themselves, exactly what the worker expects.
     """
+
+    #: An allocation nothing can show ended, as a live one is.
+    allocation = CLUSTER_ID
 
     def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
@@ -358,18 +360,4 @@ def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
         text=True,
     )
     wheel = next(dist.glob("lightcone_cli-*.whl"))
-    # The engine's astra-tools pin is a uv source, which a wheel's metadata
-    # does not carry — so the rerun's resolver is served that too as a
-    # wheel, built from the very source `pyproject.toml` pins.
-    source = tomllib.loads((repository / "pyproject.toml").read_text())["tool"]["uv"]["sources"][
-        "astra-tools"
-    ]
-    subprocess.run(
-        ["uv", "run", "--no-project", "--with", "pip", "--", "python", "-m", "pip", "wheel",
-         "--no-deps", "--wheel-dir", str(dist),
-         f"astra-tools @ git+{source['git']}@{source['rev']}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     return wheel.name.split("-")[1], dist

@@ -23,8 +23,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
+# astra-tools 0.3.0rc2 is the first release with the `resolve` and `status`
+# API this engine is built on. astra-spec is a direct dependency only for
+# its specifier: 0.1 is a release candidate, which a resolver takes for a
+# package it is asked for by such a version.
 dependencies = [
-    "astra-tools>=0.3.0rc1",
+    "astra-tools>=0.3.0rc2",
     "astra-spec>=0.1.0rc1,<0.2",
     "click>=8.0",
     "rich>=13.0",
@@ -54,13 +58,6 @@ dev = [
     "types-psutil>=7.2.2.20260906",
 ]
 
-
-# astra-tools is pinned to the commit this engine is tested against until
-# the release that carries its `resolve` API. astra-spec is a direct
-# dependency only for its specifier: 0.1 is a release candidate, which a
-# resolver takes for a package it is asked for by such a version.
-[tool.uv.sources]
-astra-tools = { git = "https://github.com/astra-project/astra-tools", rev = "d4777ebc2c206cc5d06f8154c6e7c9da85d37769" }
 
 [project.urls]
 Repository = "https://github.com/LightconeResearch/lightcone-cli"

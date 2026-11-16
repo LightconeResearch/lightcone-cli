@@ -245,16 +245,108 @@ def test_uncommitted_changes(root: Path, inline: None) -> None:
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
 
-def test_an_edit_while_a_run_is_in_flight_leaves_its_results_unrecorded(
+class _Meanwhile(_Inline):
+    """Do something once the run has its checkout, before its first
+    recipe starts."""
+
+    def __init__(self, meanwhile: Callable[[], None]) -> None:
+        self.meanwhile: Callable[[], None] | None = meanwhile
+
+    def submit(
+        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+    ) -> object:
+        if self.meanwhile is not None:
+            self.meanwhile()
+            self.meanwhile = None
+        return fn(*args)
+
+
+def test_an_edit_while_a_run_is_in_flight_is_not_what_its_recipes_run_on(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`UNCOMMITTED_CHANGES` holds for the whole run, not only its start: a
-    result that arrives after somebody edited the checkout is not committed
-    as made from the run's commit. The edit is left exactly where it was."""
+    """`UNCOMMITTED_CHANGES` holds for the whole run, not only its start:
+    each recipe runs in a checkout of the run's commit that is lc's own,
+    so an edit in the project meanwhile is none of what it reads — and
+    is left exactly where it was."""
+    start = dataset.head(root)[0]
+    committed = _sha256(root / "data/catalog.txt")
+
+    def edit() -> None:
+        # As an editor saves: a new file under the old name. What the run
+        # reads is read-only, so it cannot be written to in place.
+        with pytest.raises(PermissionError):
+            (root / "data/catalog.txt").open("a")
+        (root / "data/catalog.txt").unlink()
+        (root / "data/catalog.txt").write_text("edited while the graph ran\n")
+
+    _cluster(monkeypatch, _Meanwhile(edit))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and sorted(report.made) == ["fit#baseline", "summary#baseline"]
+    assert (root / "results/baseline/fit.txt").read_text() == "1\n2\nalpha\n"
+    made = _record(root, ".astra/records/baseline/fit.json")["generated_by"]
+    assert made["commit"] == start
+    assert made["inputs"][0]["content_hash"] == committed
+    assert dataset.status(root) == [(" M", "data/catalog.txt")]
+
+
+def test_a_commit_while_a_run_is_in_flight_is_not_the_one_its_records_name(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record names the commit its recipe ran on: the one the run
+    started from, whatever was committed in the project meanwhile. Its
+    results land on top of that."""
+    start = dataset.head(root)[0]
+
+    def commit() -> None:
+        (root / "notes.md").write_text("committed while the graph ran\n")
+        dataset._git(["add", "--", "notes.md"], cwd=root)
+        dataset._git(["commit", "--quiet", "-m", "notes"], cwd=root)
+
+    _cluster(monkeypatch, _Meanwhile(commit))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok
+    for name in ("fit", "summary"):
+        made = _record(root, f".astra/records/baseline/{name}.json")["generated_by"]
+        assert made["commit"] == start
+    assert _commits(root)[2] == "notes"
+    assert dataset.status(root) == []
+
+
+def test_what_a_run_writes_is_no_edit_of_its_checkout(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Records and results are what a run's checkout may change by: a file
+    another task is still writing beside its result does not stop a
+    finished one from being recorded, and never reaches the project."""
+
+    class Writing(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            scratch = root / ".lightcone/checkouts/0/results/baseline/scratch.tmp"
+            scratch.write_text("another task, mid-write\n")
+            yield from handles
+
+    _cluster(monkeypatch, Writing())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and sorted(report.made) == ["fit#baseline", "summary#baseline"]
+    assert not (root / "results/baseline/scratch.tmp").exists()
+    assert dataset.status(root) == []
+
+
+def test_a_recipe_that_edits_its_checkout_leaves_what_was_made_unrecorded(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout changed by more than records and results is no longer
+    the commit's: nothing arriving after that is recorded as made from it."""
 
     class Editing(_Inline):
         def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "notes.md").write_text("scribbled while the graph ran\n")
+            (root / ".lightcone/checkouts/0/notes.md").write_text("left by a recipe\n")
             yield from handles
 
     _cluster(monkeypatch, Editing())
@@ -266,50 +358,7 @@ def test_an_edit_while_a_run_is_in_flight_leaves_its_results_unrecorded(
     assert sorted(report.failed) == ["fit#baseline", "summary#baseline"]
     assert any("notes.md" in w and "UNCOMMITTED_CHANGES" in w for w in report.warnings)
     assert _commits(root) == before
-    assert dataset.status(root) == [("??", "notes.md")]
-
-
-def test_a_commit_while_a_run_is_in_flight_leaves_its_results_unrecorded(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A foreign commit leaves the tree clean and still ends the run's
-    checkout: HEAD is no longer where the run left it."""
-
-    class Committing(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "notes.md").write_text("committed while the graph ran\n")
-            dataset._git(["add", "--", "notes.md"], cwd=root)
-            dataset._git(["commit", "--quiet", "-m", "notes"], cwd=root)
-            yield from handles
-
-    _cluster(monkeypatch, Committing())
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert not report.ok and report.made == []
-    assert any("a commit was made" in w for w in report.warnings)
-    assert _commits(root)[0] == "notes"
     assert dataset.status(root) == []
-
-
-def test_what_a_run_writes_is_no_edit_of_its_checkout(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Records and results are what a run's checkout may change by: a file
-    another task is still writing beside its result does not stop a
-    finished one from being recorded."""
-
-    class Writing(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "results/baseline/scratch.tmp").write_text("another task, mid-write\n")
-            yield from handles
-            (root / "results/baseline/scratch.tmp").unlink()
-
-    _cluster(monkeypatch, Writing())
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert report.ok and sorted(report.made) == ["fit#baseline", "summary#baseline"]
 
 
 #: A driven analysis whose recipe names a file by a path from its own folder.
@@ -359,7 +408,8 @@ def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) ->
     assert task.result.places[0].file_path == "results/u1/stage.fit.txt"
     here, cwd = (root / "results/u1/stage.fit.txt").read_text().splitlines()
     assert here == "in the stage's folder"
-    assert Path(cwd).resolve() == (root / "stage").resolve()
+    # In the run's own checkout of the commit, as every recipe is.
+    assert Path(cwd).resolve() == (root / ".lightcone/checkouts/0/stage").resolve()
 
 
 # ---- analyses from a commit -------------------------------------------------
@@ -526,6 +576,42 @@ def test_that_read_would_have_succeeded_unsandboxed(
 
     assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).ok
     assert (root / "results/baseline/fit.txt").read_text() == "1\n2\nundeclared\nalpha\n"
+
+
+def _reaching_the_project(analysis: Callable[..., Path], tmp_path: Path) -> Path:
+    """A recipe that names a file of the project's own working tree, where
+    the researcher works, by its absolute path."""
+    theirs = tmp_path / "analysis" / "notes.md"
+    return analysis(
+        _SPEC.replace("cat {inputs.catalog}", f"cat {{inputs.catalog}} {theirs}"),
+        {"data/catalog.txt": "1\n2\n", "notes.md": "the researcher's\n"},
+    )
+
+
+def test_a_recipe_reads_its_checkout_not_the_project_it_was_taken_from(
+    analysis: Callable[..., Path], tmp_path: Path, inline: None
+) -> None:
+    """The run's checkout is the tree a recipe is given. The project's own
+    working tree, which may hold anything by now, is outside it."""
+    if sandbox.detect().capability.kind == "none":
+        pytest.skip("no sandbox mechanism on this host")
+    root = _reaching_the_project(analysis, tmp_path)
+
+    report = engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID)
+
+    assert report.failed == ["fit#baseline"]
+    assert dataset.status(root) == []
+
+
+def test_that_read_of_the_project_would_have_succeeded_unsandboxed(
+    analysis: Callable[..., Path], tmp_path: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mutation check."""
+    monkeypatch.setattr(sandbox, "detect", Unavailable)
+    root = _reaching_the_project(analysis, tmp_path)
+
+    assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).ok
+    assert "the researcher's" in (root / "results/baseline/fit.txt").read_text()
 
 
 def test_code_outside_analysis(analysis: Callable[..., Path], inline: None) -> None:

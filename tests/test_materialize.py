@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+import textwrap
+import threading
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from conftest import CLUSTER_ID, _Inline
 
 from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
+from lightcone.engine.plan import Task
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskResult
 
@@ -367,6 +370,7 @@ def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     """It reads. Refusing here would make the one verb that tells you what
     state you are in unavailable exactly when you need it."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    (root / "results/baseline/first.txt").unlink()
     (root / "results/baseline/first.txt").write_text("edited by hand\n")
 
     assert engine.status(root).counts["current"] == 2
@@ -543,9 +547,31 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
 
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
-    assert "discard these" in message and "results/baseline/stray.txt" in message
-    assert message.index("discard these") < message.index(".astra/records/baseline/stray.json")
-    assert message.index("lc compute down") < message.index("git restore")
+    assert "discard them" in message
+    assert (
+        "git clean -f -- .astra/records/baseline/stray.json results/baseline/stray.txt"
+        in message
+    )
+    assert "git restore" not in message  # nothing tracked was changed there
+
+
+def test_the_discard_commands_do_what_they_say(root: Path, inline: None) -> None:
+    """A remedy that fails is worse than none: each command names the very
+    paths, so it runs on the tree as it is."""
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+    (root / "results/baseline/first.txt").unlink()
+    (root / "results/baseline/stray.txt").write_text("by hand\n")
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    commands = [
+        line.strip() for line in str(raised.value).splitlines() if line.strip().startswith("git ")
+    ]
+    assert len(commands) == 2
+    for command in commands:
+        subprocess.run(command, shell=True, cwd=root, check=True, env=child_env())
+    assert not dataset.status(root)
 
 
 @pytest.mark.parametrize("invalid", ["dirty", "spec"])
@@ -583,23 +609,64 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
     assert (root / "ro-crate-metadata.json").is_file()
 
 
-@pytest.mark.parametrize("failing", ["first#baseline", "second#baseline"])
-def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
-    root: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
+def test_a_result_that_cannot_be_committed_is_reported_and_the_project_put_back(
+    root: Path, inline: None
 ) -> None:
-    _cluster(monkeypatch, _Inline())
-    save = dataset.save
+    """A commit git refuses loses the result, not the tree: what the
+    landing staged and wrote is taken back out, so the next run starts."""
+    hook = root / ".git/hooks/pre-commit"
+    hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n")
+    hook.chmod(0o755)
 
-    def fail(root: Path, paths: list[Path], message: str) -> None:
-        if message.startswith(engine.datalad_run_subject(failing)):
-            raise ProjectError("git commit failed")
-        save(root, paths, message)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    monkeypatch.setattr(dataset, "save", fail)
-    with pytest.raises(ProjectError, match="git commit failed") as raised:
+    assert report.failed == ["first#baseline", "second#baseline"] and not report.made
+    assert all(
+        any(w.startswith(f"{name}: made, but not recorded") and "refused" in w
+            for w in report.warnings)
+        for name in report.failed
+    )
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
+    hook.unlink()
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+
+
+def test_a_result_waits_for_another_git_command_to_be_done(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The researcher's own `git add` of a large file holds the index for
+    as long as hashing takes. That is over in a moment, so a landing waits
+    it out — refusing on it would fail whichever result arrived last."""
+    lock = root / ".git/index.lock"
+
+    class Adding(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            lock.touch()
+            threading.Timer(0.6, lock.unlink).start()
+            yield from handles
+
+    _cluster(monkeypatch, Adding())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.made == ["first#baseline", "second#baseline"]
+    assert not dataset.status(root)
+
+
+def test_an_index_lock_that_does_not_go_away_refuses_before_anything_runs(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A git that was killed leaves it for good, and every commit after
+    that fails: for a run, every result, once its recipe has run."""
+    monkeypatch.setattr(dataset, "_PATIENCE", 0.3)
+    (root / ".git/index.lock").touch()
+
+    with pytest.raises(ProjectError, match="holds the project's index"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    # Only the first output leaves another one outstanding.
-    assert ("did not stop the allocation" in str(raised.value)) == (failing == "first#baseline")
+
+    assert not (root / ".lightcone/checkouts").exists()
 
 
 def test_a_dependency_the_lock_does_not_pin_is_refused(root: Path) -> None:
@@ -659,68 +726,169 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-def test_an_edit_while_the_graph_runs_leaves_what_was_made_unrecorded(
+class _Meanwhile(_Inline):
+    """Do something in the project once the run has its checkout, before
+    its first recipe starts."""
+
+    def __init__(self, meanwhile: Callable[[], None]) -> None:
+        self.meanwhile: Callable[[], None] | None = meanwhile
+
+    def submit(
+        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+    ) -> object:
+        if self.meanwhile is not None:
+            self.meanwhile()
+            self.meanwhile = None
+        return fn(*args)
+
+
+def test_an_edit_while_the_graph_runs_is_no_part_of_the_run(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The dirty check runs at start of run and each result is recorded
-    later, so an edit in between means the commit a record would name no
-    longer says what the recipe ran on. Nothing arriving after it is
-    committed: each result is undone and reported failed, naming the edit,
-    which stays exactly where the user left it."""
+    """Recipes run in the run's own checkout of the commit, so what is
+    edited in the project meanwhile changes nothing they see and nothing
+    a record says — and stays exactly where the researcher left it."""
+    start = dataset.head(root)[0]
 
-    class Editing(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "notes.md").write_text("scribbled while the graph ran\n")
-            yield from handles
+    def edit() -> None:
+        spec = root / "astra.yaml"
+        spec.write_text(spec.read_text().replace("echo {decisions.method}", "echo edited"))
+        (root / "notes.md").write_text("scribbled while the graph ran\n")
 
-    _cluster(monkeypatch, Editing())
-    before = _commits(root)
+    _cluster(monkeypatch, _Meanwhile(edit))
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert not report.ok
-    assert (report.made, report.failed) == ([], ["first#baseline", "second#baseline"])
-    for name in report.failed:
-        assert any(
-            w.startswith(f"{name}: made, but not recorded")
-            and "notes.md" in w
-            and "in flight" in w
-            and "UNCOMMITTED_CHANGES" in w
-            for w in report.warnings
-        )
-    assert _commits(root) == before
-    assert dataset.status(root) == [("??", "notes.md")]
+    assert report.ok and report.made == ["first#baseline", "second#baseline"]
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"  # the commit's recipe
+    assert _record(root, "first")["generated_by"]["commit"] == start
+    assert dataset.status(root) == [(" M", "astra.yaml"), ("??", "notes.md")]
+
+
+def test_a_commit_while_the_graph_runs_is_built_on(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Results land on top of whatever the researcher committed meanwhile,
+    each record naming the commit its recipe ran on."""
+    start = dataset.head(root)[0]
+
+    def commit() -> None:
+        (root / "notes.md").write_text("committed while the graph ran\n")
+        dataset.save(root, ["notes.md"], "notes")
+
+    _cluster(monkeypatch, _Meanwhile(commit))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.made == ["first#baseline", "second#baseline"]
+    assert _record(root, "second")["generated_by"]["commit"] == start
+    subjects = dataset._git(["log", "--format=%s", "-3"], cwd=root).splitlines()
+    assert subjects == [
+        "[DATALAD RUNCMD] second#baseline", "[DATALAD RUNCMD] first#baseline", "notes",
+    ]
+    assert not dataset.status(root)
+    assert engine.status(root).counts["current"] == 2
+
+
+def test_a_project_that_changes_while_a_run_is_prepared_is_refused(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASTRA reads the working tree and names its commit; the two are one
+    thing only while nothing is uncommitted. An edit between that read and
+    the checkout would have the run follow a plan its commit does not hold."""
+
+    class Editing(_Inline):
+        def validate(self, tasks: Iterable[Task]) -> dict[str, dict[str, float]]:
+            (root / "notes.md").write_text("scribbled while lc was reading\n")
+            return super().validate(tasks)
+
+    _cluster(monkeypatch, Editing())
+
+    with pytest.raises(ProjectError, match="changed while lc was preparing"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not (root / "results/baseline/first.txt").exists()
-    assert not (root / ".astra/records/baseline/first.json").exists()
 
 
 def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Work the user staged while the graph ran ends the run exactly
-    where they left it: staged, named in the refusal to record what was
-    made after it, and in none of lc's commits — `dataset.save` stages
-    scoped and commits scoped, so the trailing crate commit, which a
-    licensed project still gets, leaves it alone too."""
-    _declare_license(root)
+    """Work the researcher staged while the graph ran ends the run exactly
+    where they left it: staged, and in none of lc's commits —
+    `dataset.save` stages scoped and commits scoped."""
 
-    class Staging(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "notes.py").write_text("draft = True\n")
-            dataset._git(["add", "--", "notes.py"], cwd=root)
-            yield from handles
+    def stage() -> None:
+        (root / "notes.py").write_text("draft = True\n")
+        dataset._git(["add", "--", "notes.py"], cwd=root)
 
-    _cluster(monkeypatch, Staging())
+    _cluster(monkeypatch, _Meanwhile(stage))
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.failed == ["first#baseline", "second#baseline"]
-    assert any("notes.py" in w and "in flight" in w for w in report.warnings)
+    assert report.ok and report.made == ["first#baseline", "second#baseline"]
     staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
     assert staged == ["notes.py"]
     ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
-    assert "ro-crate-metadata.json" in ever_committed
     assert "notes.py" not in ever_committed
+
+
+def test_the_crate_waits_for_a_tree_that_is_the_commit(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crate is read off the working tree, so one being edited would
+    publish the edit: it is left for the next run, and said so."""
+    _declare_license(root)
+
+    def edit() -> None:
+        (root / "notes.md").write_text("in progress\n")
+
+    _cluster(monkeypatch, _Meanwhile(edit))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok
+    assert any("RO-Crate" in w and "uncommitted changes" in w for w in report.warnings)
+    assert not (root / "ro-crate-metadata.json").exists()
+
+
+def test_a_result_made_while_the_project_is_on_another_branch_waits_for_it(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result lands on the branch its run started from. While the
+    project is elsewhere it waits, and lands with the next one to arrive."""
+    home = dataset.branch(root)
+
+    class Wandering(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            dataset._git(["checkout", "-q", "-b", "elsewhere"], cwd=root)
+            yield handles[0]
+            dataset._git(["checkout", "-q", home.removeprefix("refs/heads/")], cwd=root)
+            yield handles[1]
+
+    _cluster(monkeypatch, Wandering())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and sorted(report.made) == ["first#baseline", "second#baseline"]
+    assert not dataset._git(["log", "--format=%s", "elsewhere", f"^{home}"], cwd=root).strip()
+    assert engine.status(root).counts["current"] == 2
+
+
+def test_a_result_that_never_gets_to_land_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Leaving(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            dataset._git(["checkout", "-q", "-b", "elsewhere"], cwd=root)
+            yield from handles
+
+    _cluster(monkeypatch, Leaving())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.failed == ["first#baseline", "second#baseline"] and not report.made
+    unrecorded = [w for w in report.warnings if "made, but not recorded" in w]
+    assert len(unrecorded) == 2 and all("no longer on" in w for w in unrecorded)
+    assert not dataset.status(root)
 
 
 def test_a_clean_run_records_everything_it_made(root: Path, inline: None) -> None:
@@ -728,7 +896,6 @@ def test_a_clean_run_records_everything_it_made(root: Path, inline: None) -> Non
 
     assert report.ok
     assert report.made == ["first#baseline", "second#baseline"]
-    assert not any("in flight" in w for w in report.warnings)
 
 
 # ---- leaving the tree as clean as it was found -----------------------------
@@ -769,7 +936,7 @@ def test_a_run_in_which_everything_failed_is_not_up_to_date(
     # nothing`, where the same empty `made` does mean up to date.
 
 
-def test_a_rebuild_that_fails_puts_the_previous_output_back(
+def test_a_rebuild_that_fails_leaves_the_committed_output_in_the_project(
     root: Path, inline: None
 ) -> None:
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
@@ -787,11 +954,12 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     assert not dataset.status(root)
 
 
-def test_an_interrupted_run_retains_what_never_reported(
+def test_an_interrupted_run_leaves_the_project_clean_and_keeps_its_checkout(
     root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sibling that already saved keeps its commit; the output still in
-    flight may still have a writer, so its partial files are retained."""
+    """A sibling that already landed keeps its commit. The result still in
+    flight may still have a writer, so the checkout it writes in is kept
+    out of use, and the project's own tree never held any of it."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
     dataset.save(root, [root], "edit both recipes")
@@ -806,8 +974,208 @@ def test_an_interrupted_run_retains_what_never_reported(
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert dataset.status(root)
-    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
+    assert not dataset.status(root)
+    assert (root / "results/baseline/first.txt").read_text() == "changed\n"  # landed
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"  # as committed
+    held = root / ".lightcone/checkouts"
+    assert (held / "0.run").read_text() == CLUSTER_ID
+    assert (held / "0/results/baseline/second.txt").read_text() == "changed\n"
+
+    # The next run does not wait for it, and does not write where it may.
+    _cluster(monkeypatch, _Inline())
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.made == ["second#baseline"]
+    assert (held / "0.run").exists() and not (held / "1.run").exists()
+    assert (held / "1").is_dir()
+
+
+def test_a_checkout_is_kept_and_taken_again(root: Path, inline: None) -> None:
+    """One checkout serves run after run: moved to each new commit, given
+    back when the run's tasks have all reported."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    _switch_method(root)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok
+    held = root / ".lightcone/checkouts"
+    assert sorted(p.name for p in held.iterdir()) == ["0", "pyproject.toml", "uv.toml"]
+    assert dataset._git(["rev-parse", "HEAD"], cwd=held / "0").strip() != dataset.head(root)[0]
+    assert not dataset.status(root)
+
+
+def test_a_checkout_whose_allocation_ended_is_taken_again(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one fact that proves no recipe is left writing in it."""
+    from lightcone.engine import compute
+
+    held = root / ".lightcone/checkouts"
+    held.mkdir(parents=True)
+    (held / "0.run").write_text("clu_of_an_earlier_run")
+    monkeypatch.setattr(compute, "ended", lambda allocation: allocation == "clu_of_an_earlier_run")
+
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+
+    assert (held / "0").is_dir() and not (held / "1").exists()
+    assert not (held / "0.run").exists()
+
+
+def test_a_landed_result_is_one_copy_and_cannot_be_written_in_place(
+    root: Path, inline: None
+) -> None:
+    """The project's file is the stored object itself, as a thin add
+    leaves it — and read-only, so nothing can change the bytes a record
+    names by opening the file for update."""
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+
+    landed = root / "results/baseline/first.txt"
+    key = dataset._git(["annex", "lookupkey", "results/baseline/first.txt"], cwd=root).strip()
+    stored = root / dataset._git(["annex", "contentlocation", key], cwd=root).strip()
+    assert landed.samefile(stored)
+    with pytest.raises(PermissionError):
+        landed.open("a")
+    assert not dataset.status(root)
+
+
+# ---- an analysis declared beside the project ---------------------------------
+
+
+def _beside(analysis: Callable[..., Path], tmp_path: Path) -> Path:
+    """A project below the top of its repository that declares the
+    analysis in the folder next to it."""
+    built = analysis(
+        """
+        spec_version: "0.1.0"
+        analyses:
+          shared: {path: ../shared}
+        universes:
+          shared_v1: {analysis: shared, universe: v1}
+        outputs:
+          report:
+            type: report
+            format: txt
+            inputs: ["shared.fit#shared_v1"]
+            recipe:
+              command: cat {inputs} > {output}
+        """
+    )
+    outer = tmp_path / "outer"
+    (outer / "shared").mkdir(parents=True)
+    for name in (".git", ".gitattributes"):
+        (built / name).rename(outer / name)
+    root = built.rename(outer / "project")
+    (outer / "shared/astra.yaml").write_text(
+        textwrap.dedent(
+            """
+            spec_version: "0.1.0"
+            decisions:
+              m:
+                options: {x: {}}
+            outputs:
+              fit:
+                type: metric
+                format: txt
+                decisions: [m]
+                recipe:
+                  command: echo committed {decisions.m} > {output}
+            universes:
+              v1: {decisions: {m: x}}
+            """
+        )
+    )
+    dataset._git(["add", "-A", "."], cwd=outer)
+    dataset._git(["commit", "-q", "-m", "move the project below the top"], cwd=outer)
+    return root
+
+
+def test_an_analysis_declared_beside_the_project_is_built_from_the_commit(
+    analysis: Callable[..., Path], tmp_path: Path, inline: None
+) -> None:
+    root = _beside(analysis, tmp_path)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and sorted(report.made) == ["report", "shared:fit#v1"]
+    assert (root / "results/report.txt").read_text() == "committed x\n"
+    assert not dataset._git(["status", "--porcelain"], cwd=root.parent).strip()
+
+
+def test_an_uncommitted_change_in_an_analysis_declared_beside_the_project_refuses(
+    analysis: Callable[..., Path], tmp_path: Path, inline: None
+) -> None:
+    """ASTRA reads every analysis of the stack in the working tree, so the
+    tree that has to be a commit's reaches as far as the stack does: an
+    edit there would be in the plan, and in no commit a record could name."""
+    root = _beside(analysis, tmp_path)
+    spec = root.parent / "shared/astra.yaml"
+    spec.write_text(spec.read_text().replace("echo committed", "echo UNCOMMITTED"))
+
+    with pytest.raises(ProjectError, match="uncommitted changes") as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert "../shared/astra.yaml" in str(raised.value)
+    assert not (root.parent / "shared/results").exists()
+
+
+# ---- results git would not store as lc does ---------------------------------
+
+
+def _rules(root: Path, name: str, rewrite: Callable[[str], str]) -> None:
+    path = root / name
+    path.write_text(rewrite(path.read_text()))
+    dataset.save(root, [path], f"rewrite {name}")
+
+
+def test_a_result_no_line_sends_to_the_annex_is_refused(root: Path, inline: None) -> None:
+    """Committed anyway, its bytes would be in git itself, in every clone,
+    for good — and the run would have reported it made."""
+    _rules(
+        root,
+        ".gitattributes",
+        lambda text: "\n".join(line for line in text.splitlines() if "results/" not in line) + "\n",
+    )
+
+    with pytest.raises(ProjectError, match="committed to git itself") as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert "results/baseline/first.txt" in str(raised.value)
+    assert "lc init" in str(raised.value)
+
+
+def test_a_result_git_ignores_is_refused(root: Path, inline: None) -> None:
+    """`git add` skips an ignored path without a word."""
+    _rules(root, ".gitignore", lambda text: text + "results/baseline/second.*\n")
+
+    with pytest.raises(ProjectError, match="results/baseline/second.txt is git-ignored"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
+def test_a_universe_may_be_called_results(analysis: Callable[..., Path], inline: None) -> None:
+    """Its records are at `.astra/records/results/`, which a line meant for
+    the results of a nested analysis would annex: unreadable then on a
+    clone that holds no content."""
+    root = analysis(_SPEC.replace("  baseline:", "  results:"))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok
+    blob = dataset._git(["cat-file", "-p", "HEAD:.astra/records/results/second.json"], cwd=root)
+    assert blob.startswith("{")
+
+
+def test_a_record_a_line_would_annex_is_refused(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    root = analysis(_SPEC.replace("  baseline:", "  results:"))
+    _rules(
+        root,
+        ".gitattributes",
+        lambda text: "\n".join(line for line in text.splitlines() if ".astra/" not in line) + "\n",
+    )
+
+    with pytest.raises(ProjectError, match="a record has to stay in git"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
 
 # ---- the commit message ----------------------------------------------------
@@ -962,24 +1330,117 @@ outputs:
 """
 
 
-def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
+_CHAIN = """
+spec_version: "0.1.0"
+
+inputs:
+  catalog: {path: "data/my catalog.txt"}
+
+outputs:
+  first:
+    type: data
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: sort "{inputs.catalog}" > {output}
+
+  second:
+    type: data
+    format: txt
+    inputs: [first]
+    recipe:
+      command: head -1 {inputs.first} > {output}
+
+  third:
+    type: report
+    format: txt
+    inputs: [second]
+    recipe:
+      command: cat {inputs.second} > {output}
+"""
+
+
+def test_a_result_left_standing_by_an_identical_rebuild_is_still_read(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`second` may run only because `first` may, and is left alone when
+    `first` comes out byte-identical. `third`, which does run, reads the
+    bytes `second` already had — which the run's checkout has to hold."""
+    root = analysis(_CHAIN, {"data/my catalog.txt": "2\n1\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    spec = root / "astra.yaml"
+    spec.write_text(
+        spec.read_text()
+        .replace('sort "{inputs.catalog}"', 'sort  "{inputs.catalog}"')
+        .replace("cat {inputs.second}", "cat -u {inputs.second}")
+    )
+    dataset.save(root, [spec], "the same bytes upstream, another recipe downstream")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (report.made, report.current) == (["first", "third"], ["second"])
+    assert (root / "results/third.txt").read_text() == "1\n"
+    assert not dataset.status(root)
+
+
+def test_a_path_git_would_quote_is_a_path_like_any_other(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A space or an accent in an input's name: git quotes such a path
+    unless asked not to, and a quoted one equals no path on disk."""
+    root = analysis(
+        _CHAIN.replace("my catalog.txt", "données du relevé.txt"),
+        {"data/données du relevé.txt": "2\n1\n"},
+    )
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert report.made == ["first", "second", "third"]
+    assert not dataset.status(root)
+
+
+def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
     analysis: Callable[..., Path], inline: None, tmp_path: Path
 ) -> None:
-    """lc fetches declared inputs rather than telling anyone to — a clone
-    holding only pointers materializes straight to up-to-date, and ends
-    holding the bytes a recipe would read."""
+    """A run fetches what its recipes read. With nothing to make, a clone
+    holding only pointers is up to date as it is."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
     clone = _clone(root, tmp_path)
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.require_fetched(clone / "data" / "catalog.fits")
-
     again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert again.up_to_date, (again.failed, again.warnings)
-    assert (clone / "data" / "catalog.fits").read_text() == "stars\n"  # the bytes came
+    with pytest.raises(assets.ContentNotFetchedError):
+        assets.require_fetched(clone / "data" / "catalog.fits")
     assert not dataset.status(clone)
+
+
+def test_a_bytes_free_clone_fetches_what_its_recipes_read(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """lc fetches rather than telling anyone to — a declared input, and a
+    result left alone that a remade one reads. Handed the pointer in its
+    place, the recipe would read a line of text for its data, under a
+    record naming the real bytes."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    clone = _clone(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(spec.read_text().replace("cat {inputs.first}", "cat -u {inputs.first}"))
+    dataset.save(clone, [spec], "edit the downstream recipe")
+
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.made == ["second#baseline"]
+    assert report.current == ["first#baseline"]
+    assert (clone / "results/baseline/second.txt").read_text() == "alpha\n"
+    read = _record(clone, "second")["generated_by"]["inputs"]
+    assert read == [{"entry": "first", **dict(zip(
+        ("content_hash", "size"), assets.digest_file(clone / "results/baseline/first.txt"),
+        strict=True,
+    ))}]
 
 
 def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
@@ -1011,7 +1472,7 @@ def test_check_mode_never_fetches(root: Path, monkeypatch: pytest.MonkeyPatch) -
     def refuse(*args: Any) -> None:
         raise AssertionError("check mode fetched")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", refuse)
+    monkeypatch.setattr(engine.checkout, "fill", refuse)
     engine.check(root, [])
     engine.status(root)
 
@@ -1020,11 +1481,9 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
     """Workers pass `--no-sync`, so this is the only place on a run's path
-    where the environment is made to match the lock (a rerun's worker
-    entry point syncs for itself). Reported and refused, a lock edited
-    without a sync would leave recipes importing packages the lock does
-    not describe while every record named the new lock's environment;
-    doing it instead is shorter and impossible to ignore."""
+    where an environment is made to match the commit's lock (a rerun's
+    worker entry point syncs for itself): the one in the run's checkout,
+    which is the one its recipes import from."""
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
@@ -1038,7 +1497,10 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     assert report.ok
-    assert project_mod._env_is_current(root)
+    # The run's environment is its checkout's; the project's own is the
+    # researcher's, and is left as it was.
+    assert project_mod._env_is_current(root / ".lightcone/checkouts/0")
+    assert not project_mod._env_is_current(root)
 
 
 def test_the_recorded_command_reproduces_the_output(
@@ -1143,7 +1605,7 @@ def test_resource_refusal_precedes_preparation_and_all_recipes(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began before all resource requests were validated")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.checkout, "fill", unexpected)
     monkeypatch.setattr(engine.container, "runtime_for_run", unexpected)
     with pytest.raises(ProjectError, match="second#baseline:.*no worker"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -1170,7 +1632,7 @@ def test_execution_only_resources_do_not_block_read_only_commands(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began before execution requirements were validated")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.checkout, "fill", unexpected)
     with pytest.raises(ProjectError, match="second#baseline"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not dataset.status(root)
@@ -1208,7 +1670,7 @@ def test_empty_cluster_refuses_before_project_preparation(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began without an available worker")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.checkout, "fill", unexpected)
     with pytest.raises(ProjectError, match="no workers"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not dataset.status(root)

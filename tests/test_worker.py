@@ -557,6 +557,41 @@ def test_a_recipe_that_writes_nothing_fails(root: Path) -> None:
     assert not _recorded(root)
 
 
+def test_a_recipe_that_leaves_a_link_fails(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result is its own bytes at its place. A link there is some other
+    file's, which git would record as a link and no clone could read."""
+    monkeypatch.setattr(sandbox, "detect", Unavailable)
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo {decisions.word} > {output}", "ln -s ../../astra.yaml {output}")
+    )
+
+    result = _make(root, "first#baseline")
+
+    assert result.status == "failed"
+    assert "a symlink" in result.reason
+    assert not _recorded(root)
+
+
+def test_a_recipe_that_changes_what_it_reads_is_not_recorded(root: Path) -> None:
+    """Its record would name bytes that no longer exist: what a recipe
+    reads has to be what it read when it ends."""
+    first = _make(root, "first#baseline")
+    (root / "astra.yaml").write_text(
+        _SPEC.replace(
+            "cat {inputs.first} > {output}",
+            "cat {inputs.first} > {output} && rm {inputs.first} && echo other > {inputs.first}",
+        )
+    )
+
+    result = _make(root, "second#baseline", first)
+
+    assert result.status == "failed"
+    assert "changed what it only reads: first" in result.reason
+    assert not (root / _SECOND_RECORD).exists()
+
+
 def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:
     """A result is one file, and a record of a directory would describe
     something that is not the output at all."""
@@ -743,18 +778,38 @@ def test_the_module_converges_the_environment(
     assert (root / _FIRST).read_text() == "one\n"
 
 
-def test_the_module_reads_what_its_task_read_from_the_records_in_the_tree(
+def test_the_module_records_the_bytes_its_task_read_in_the_tree(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """There is no graph in flight to take an upstream's result from, so
-    its record stands in — and not a rehash of its file, for the reason
-    no dependent ever rehashes."""
+    its bytes are hashed where they lie: a run that read a file somebody
+    replaced says so, whatever the upstream's own record gives."""
     monkeypatch.chdir(root)
-    first = _make(root, "first#baseline")
+    _make(root, "first#baseline")
+    (root / _FIRST).unlink()
     (root / _FIRST).write_text("not the bytes the record gives\n")
+    dataset.save(root, [root], "first, then replaced by hand")
 
     assert worker.main(["second#baseline"]) == 0
-    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
+    read = _record(root, _SECOND_RECORD)["generated_by"]["inputs"]
+    assert read == [
+        {"entry": "first", **dict(zip(("content_hash", "size"), _digest(
+            b"not the bytes the record gives\n"), strict=True))}
+    ]
+
+
+def test_the_module_refuses_a_tree_that_is_not_its_commit(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its record names HEAD. All a rerun has changed by the time it runs
+    is the result's own files; anything else uncommitted would make that
+    record false of the run."""
+    monkeypatch.chdir(root)
+    (root / "notes.md").write_text("in progress\n")
+
+    assert worker.main(["first#baseline"]) == 2
+    assert "UNCOMMITTED_CHANGES" in capsys.readouterr().err
+    assert not (root / _FIRST).exists()
 
 
 def test_the_module_refuses_a_task_whose_upstream_has_no_record(

@@ -188,6 +188,7 @@ def test_gpu_rerun_missing_mask_explains_how_to_select_local_devices(
     (root / "astra.yaml").write_text(_SPEC.replace(
         "command:", "resources: {gpus: 1}\n      command:",
     ))
+    dataset.save(root, [root / "astra.yaml"], "ask for a GPU")
     monkeypatch.chdir(root)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert worker.main(["visibility"]) == 2

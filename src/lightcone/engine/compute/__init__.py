@@ -273,6 +273,41 @@ class Compute:
         return identity
 
 
+def identity(cluster_id: str) -> str:
+    """Give the immutable ID of the allocation a name or an ID addresses.
+
+    Args:
+        cluster_id: A cluster name, or an ID ``lc compute launch`` returned.
+
+    Returns:
+        The allocation's full ID. One native discovery for a name; none
+        for an ID, which holds its own identity.
+
+    Raises:
+        ComputeError: If the name is of no current cluster, or of several.
+    """
+    return Compute().resolve(cluster_id)[1].encode()
+
+
+def ended(allocation: str) -> bool:
+    """Whether an allocation is known to have ended, and its processes with it.
+
+    Unknown is never absence: an allocation of another host or boot, one
+    accounting cannot verify, or a query that fails all answer False.
+
+    Args:
+        allocation: An allocation's full ID.
+
+    Returns:
+        True only where its native authority reports it ended.
+    """
+    try:
+        provider, found = Compute().resolve(allocation)
+        return provider.inspect(found).phase == "ended"
+    except ComputeError:
+        return False
+
+
 @contextmanager
 def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
     """Borrow a validated standard Dask client; detach without closing its cluster."""

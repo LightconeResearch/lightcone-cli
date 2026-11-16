@@ -169,13 +169,17 @@ class _Builder:
         self.keys = dict(keys)
         self.crate = ROCrate(version=_RO_CRATE_VERSION)
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
-        #: Every materialized task, sorted, with its record as ASTRA's
-        #: checker read it, so a record that is not the result's own
-        #: publishes nothing.
+        #: Every task whose record still describes the analysis, sorted,
+        #: with that record as ASTRA's checker read it. A record that is
+        #: not the result's own publishes nothing, and neither does one
+        #: the checker finds stale: the command and the options below are
+        #: the spec's as it now stands, which is what made a result only
+        #: while nothing it is made from has changed.
         self.made: list[tuple[Key, ProvenanceRecord]] = [
             (key, record)
             for key in sorted(graph.tasks)
             if (record := graph.found[key].record) is not None
+            and graph.found[key].state == "unchanged"
         ]
         self.made_keys = {key for key, _ in self.made}
         self.persons: dict[str, str] = {}  # email/name → @id

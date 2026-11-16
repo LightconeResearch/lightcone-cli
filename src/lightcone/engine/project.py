@@ -677,7 +677,9 @@ def _project_root(directory: Path | None, required: Sequence[str]) -> Path:
 # =============================================================================
 
 
-def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], *, cwd: Path, stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """One seam for every external tool convergence invokes.
 
     Tests monkeypatch this, so the suite never shells out and every call is
@@ -685,7 +687,7 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 
     """
     return subprocess.run(
-        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env()
+        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env(), input=stdin
     )
 
 

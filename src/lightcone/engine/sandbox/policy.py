@@ -171,7 +171,6 @@ _HOME_LAYOUT = {
     "XDG_CACHE_HOME": ".cache",
     "XDG_DATA_HOME": ".local/share",
     "MPLCONFIGDIR": ".mplconfig",
-    "PYTHONPYCACHEPREFIX": ".pycache",
     "TMPDIR": ".tmp",
 }
 
@@ -215,7 +214,9 @@ def exec_policy(
     builder for both, so a probe still gets what a recipe gets per mode.
 
     Args:
-        project: The project root, granted read.
+        project: The root the command is given, granted read: the project
+            root for a probe, the same folder inside the run's checkout
+            for a recipe.
         read_paths: Declared inputs outside the tree.
         env_dir: The project environment prefix; defaults to the host
             ``.venv``.
@@ -318,9 +319,16 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
     work, and they cannot be steered.
 
     ``PATH`` is set so what the command resolves is what the policy
-    granted. ``PYTHONPYCACHEPREFIX`` and ``TMPDIR`` point inside the
-    private HOME, so an in-tree import can write its ``__pycache__`` and
+    granted, and ``TMPDIR`` points inside the private HOME, so
     ``tempfile`` works even where the shared ``/tmp`` left the write set.
+
+    ``PYTHONDONTWRITEBYTECODE`` keeps an import from trying to write its
+    ``__pycache__`` into a tree it may not write, and leaves Python
+    reading the bytecode the environment was compiled to when it was
+    synced. Pointing the cache somewhere writable instead makes Python
+    look only there: every run then compiles every module it imports,
+    and the environment's own bytecode is never read (measured: three
+    times the import time of a scientific stack).
 
     Args:
         tmp_home: The per-run directory to point at.
@@ -344,6 +352,7 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
         "PATH": os.pathsep.join(
             [str(env_dir / "bin"), _IMAGE_PATH if containerized else _UTILITY_PATH]
         ),
+        "PYTHONDONTWRITEBYTECODE": "1",
         **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()},
     }
     if containerized:
