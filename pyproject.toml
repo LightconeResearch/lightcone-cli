@@ -58,6 +58,12 @@ dev = [
     "types-psutil>=7.2.2.20260906",
 ]
 
+# The head of astra-project/astra-tools' `resolve-commit-files` until it is
+# released: `resolve(commits=...)` gives a command to a result that reads a
+# result from a commit.
+[tool.uv.sources]
+astra-tools = { git = "https://github.com/astra-project/astra-tools", rev = "1bf275c7ae9a9427d98a664a4dda06e8fce6d93d" }
+
 
 [project.urls]
 Repository = "https://github.com/LightconeResearch/lightcone-cli"

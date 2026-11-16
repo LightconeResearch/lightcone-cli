@@ -537,7 +537,10 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
-    if not report.ok:
+    if not report.ok and dry_run:
+        # Only `blocked` makes a check not ok: nothing ran to finish.
+        verdict = f"[red]✗[/red] {len(report.blocked)} output(s) could not be made"
+    elif not report.ok:
         verdict = f"[red]✗[/red] {where} did not finish"
     elif report.up_to_date:
         verdict = f"[green]✓[/green] {where} is up to date — nothing to do"

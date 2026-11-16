@@ -42,6 +42,13 @@ the recipe's own file, for the tasks that read it, until the run gives
 the slot back. A result lands only where its record will be true and
 kept: on the branch the run started from, with the run's commit in its
 history, and with no other git operation under way.
+
+**Results from a commit.** A result an analysis declared with a
+``commit`` holds is read, never built: a run gives its checkout the bytes
+that result's record names, under ``.lightcone/commits/``, at the path
+ASTRA's command for a result that reads it names. They are git-annex's,
+found by the key the commit's own file names, from the project's annex
+or from a clone of the other repository lc keeps beside its checkouts.
 """
 
 from __future__ import annotations
@@ -58,13 +65,17 @@ import time
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import psutil
 
 from lightcone.engine import assets, dataset
-from lightcone.engine.plan import Task, name
+from lightcone.engine.plan import Graph, Key, Task, at_commit, name
 from lightcone.engine.project import ProjectError
+
+if TYPE_CHECKING:
+    from astra.api import Result, Status
 
 #: What every git command in a checkout carries: no hooks, and no annex
 #: filter. ``required`` has to be cleared with the commands, or git reads
@@ -361,17 +372,123 @@ def fill(checkout: Checkout, paths: Sequence[str], replaceable: Collection[str] 
     for path, key in keys.items():
         if key not in stored:
             continue
-        # An object a working tree holds thin is writable, and under one
-        # more name here: written in place through any of them, the
-        # commit's bytes are gone and the recipe reads the edit.
-        mode = stat.S_IMODE(stored[key].stat().st_mode)
-        if mode & 0o222:
-            os.chmod(stored[key], mode & ~0o222)
+        _read_only(stored[key])
         _place(stored[key], checkout.root / path)
         checkout.filled[path] = (
             None if path in replaceable else assets.stamp(checkout.root / path)
         )
     return unfetched
+
+
+def stale_input(found: Status) -> str:
+    """Say why nothing may be built from a result from a commit.
+
+    It is read through its record at that commit, so one ASTRA finds
+    anything but unchanged is no result to build on (``STALE_INPUT``).
+
+    Args:
+        found: What ASTRA's checker found of it.
+
+    Returns:
+        Why, in ASTRA's words; empty for one a run may read.
+    """
+    if found.state == "unchanged" and found.record is not None:
+        return ""
+    said = "; ".join(dict.fromkeys(d.message for d in found.why if d.level == "error"))
+    return (
+        f"it is {found.state} at its commit{f' ({said})' if said else ''}, and lc builds "
+        "nothing from it (STALE_INPUT)"
+    )
+
+
+def pin(project: Path, root: Path, graph: Graph, keys: Collection[Key]) -> dict[Key, str]:
+    """Give a tree the bytes of each result from a commit its recipes read.
+
+    Each at :func:`~lightcone.engine.plan.at_commit` under *root*: the
+    bytes its record names, and nothing else. The key is read off the
+    file the commit itself holds, and the content fetched where this
+    clone lacks it — for a commit of the project's repository into its
+    own annex, for one of another repository into lc's clone of that
+    (:func:`~lightcone.engine.dataset.clone_of`). Each is a hard link to
+    its annex object, made read-only as :func:`fill` makes one, and is
+    hashed once against its record: a commit can hold a file its record
+    does not describe.
+
+    Args:
+        project: The project root, whose repository and annex are asked.
+        root: The tree whose recipes read them: the run's checkout, or
+            the project's own for a rerun.
+        graph: The graph, with each result from a commit its tasks read
+            and what ASTRA's checker found of it.
+        keys: The results from a commit to give.
+
+    Returns:
+        Why each of *keys* could not be given its bytes, or empty for one
+        that was.
+    """
+    why: dict[Key, str] = {}
+    wanted: dict[str | None, list[tuple[Result, str]]] = {}
+    for key in sorted(keys):
+        result = graph.pinned[key]
+        assert result.commit is not None  # a result from a commit
+        if refused := stale_input(graph.found[key]):
+            why[key] = refused
+        else:
+            wanted.setdefault(result.commit.repository, []).append((result, result.commit.id))
+    for repository, results in wanted.items():
+        try:
+            with contextlib.ExitStack() as held:
+                repo = project
+                if repository is not None:
+                    # One fetch at a time into a clone the runs of a
+                    # project share.
+                    held.enter_context(_exclusive(_base(project) / "fetching", _LANDING_ABANDONED))
+                    repo = dataset.clone_of(project, repository, {c for _, c in results})
+                refs = [f"{commit}:{result.places[0].file_path}" for result, commit in results]
+                keyed = dict(zip(refs, dataset.keys_at(repo, refs), strict=True))
+                annexed = [key for key in dict.fromkeys(keyed.values()) if key]
+                unfetched = dataset.annex_get(repo, annexed)
+                if unfetched and repository is not None:
+                    # git-annex records where content is in a journal it
+                    # commits only later, so a repository can hold what it
+                    # has not said it holds: it is asked directly.
+                    unfetched = dataset.annex_get(repo, annexed, source="origin")
+                stored = dataset.annex_objects(repo, annexed)
+        except ProjectError as e:
+            why |= {result.id: f"its bytes could not be read: {e}" for result, _ in results}
+            continue
+        for (result, commit), ref in zip(results, refs, strict=True):
+            content, target = keyed[ref], root / at_commit(result)
+            record = graph.found[result.id].record
+            assert record is not None  # `stale_input` refuses one with none
+            if not content:
+                why[result.id] = (
+                    f"what {commit[:7]} holds of it is not kept by git-annex, which lc fetches from"
+                )
+            elif content not in stored:
+                why[result.id] = "its bytes could not be fetched" + (
+                    f":\n{unfetched}" if unfetched else ""
+                )
+            else:
+                _read_only(stored[content])
+                _place(stored[content], target)
+                why[result.id] = ""
+                if assets.digest_file(target) != (record.content_hash, record.size):
+                    target.unlink()
+                    why[result.id] = f"what {commit[:7]} holds is not the bytes its record names"
+    return why
+
+
+def _read_only(file: Path) -> None:
+    """Make an annex object read-only before a recipe reads it.
+
+    An object a working tree holds thin is writable, and under one more
+    name in a run's tree: written in place through any of them, the
+    committed bytes are gone and the recipe reads the edit.
+    """
+    mode = stat.S_IMODE(file.stat().st_mode)
+    if mode & 0o222:
+        os.chmod(file, mode & ~0o222)
 
 
 def changed(checkout: Checkout, written: Sequence[str]) -> list[str]:

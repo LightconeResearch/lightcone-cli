@@ -247,6 +247,59 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 # ---- committing ------------------------------------------------------------
 
 
+def test_a_key_is_read_off_the_file_a_commit_holds(repo: Path) -> None:
+    """Whatever the working tree holds by now, and in either shape: a
+    pointer file, or a link a researcher locked. A file git carries itself
+    names no key, and neither does one the commit lacks."""
+    (repo / "results" / "fit.txt").write_text("one\n")
+    (repo / "results" / "kept.txt").write_text("kept\n")
+    (repo / "notes.md").write_text("in git\n")
+    dataset.save(repo, [repo], "one")
+    dataset._git(["annex", "lock", "-q", "results/kept.txt"], cwd=repo)
+    dataset._git(["commit", "-q", "-m", "lock"], cwd=repo)
+    then = dataset.head(repo)
+    (repo / "results" / "fit.txt").unlink()
+    (repo / "results" / "fit.txt").write_text("two\n")
+    dataset.save(repo, [repo], "two")
+
+    keys = dataset.keys_at(
+        repo, [f"{then}:{path}" for path in ("results/fit.txt", "results/kept.txt", "notes.md")]
+        + [f"{then}:results/none.txt"]
+    )
+
+    assert keys[0].startswith("SHA256E-s4--") and keys[0] != dataset.keys_at(
+        repo, ["HEAD:results/fit.txt"]
+    )[0]
+    assert keys[1].startswith("SHA256E-s5--")
+    assert keys[2:] == ["", ""]
+
+
+def test_a_clone_of_another_repository_is_kept_and_fetched_again(
+    repo: Path, tmp_path: Path
+) -> None:
+    """One per URL, in the project's ignored `.lightcone/`: a commit made
+    there since the clone was made is fetched, and its content can be
+    asked of the repository, though git-annex there has not committed
+    that it holds it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (repo / "results" / "fit.txt").write_text("one\n")
+    dataset.save(repo, [repo], "one")
+    first = dataset.head(repo)
+    clone = dataset.clone_of(project, repo.as_uri(), [first])
+    (repo / "results" / "fit.txt").unlink()
+    (repo / "results" / "fit.txt").write_text("two\n")
+    dataset.save(repo, [repo], "two")
+    then = dataset.head(repo)
+
+    assert dataset.clone_of(project, repo.as_uri(), [then]) == clone
+    assert clone.parent == project / ".lightcone" / "remotes"
+    [key] = dataset.keys_at(clone, [f"{then}:results/fit.txt"])
+    assert "No other repository is known to contain" in dataset.annex_get(clone, [key])
+    assert dataset.annex_get(clone, [key], source="origin") == ""
+    assert dataset.annex_objects(clone, [key])[key].read_text() == "two\n"
+
+
 def test_save_leaves_foreign_staged_work_staged_and_uncommitted(repo: Path) -> None:
     """The user can `git add` while a graph runs; the next save must not
     sweep it. The commit is a partial commit — built from HEAD plus the

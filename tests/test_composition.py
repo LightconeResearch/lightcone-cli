@@ -250,14 +250,17 @@ def test_a_target_is_a_task_or_a_name_in_every_universe(project: Path) -> None:
     assert list(graph.closure(["fit#u2"]).tasks) == ["stage.cleaned#u2", "fit#u2"]
 
 
-def test_an_analysis_declared_at_a_commit_is_refused_not_guessed(
-    analysis: Callable[..., Path],
-) -> None:
-    """Reading results from a commit means reading them through their
-    records at that commit, which this engine does not do — so it says so
-    before anything runs."""
-    project = analysis(ROOT, FILES)
+def test_a_result_from_a_commit_is_read_and_never_rebuilt(built: Path) -> None:
+    """`stage` declared at the commit that holds its own `v1` result: what
+    reads that result reads the bytes its record there names, and nothing
+    of `stage` is made again or written where it is kept."""
+    project = built
     head = dataset.head(project)
+    kept = PLACES["stage:cleaned#v1"]
+    before = {
+        path: (project / path).read_bytes()
+        for path in (kept, "stage/.astra/records/v1/cleaned.json")
+    }
     spec = project / "astra.yaml"
     spec.write_text(
         spec.read_text()
@@ -269,5 +272,11 @@ def test_an_analysis_declared_at_a_commit_is_refused_not_guessed(
     )
     dataset.save(project, ["astra.yaml"], "pin stage to a commit")
 
-    with pytest.raises(plan.ProjectError, match="lc does not build from"):
-        plan.build(project)
+    report = materialize.materialize(project, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert sorted(report.made) == ["comparison", "diagnostic#u1", "fit#u1", "fit#u2"]
+    assert "stage:cleaned#v1" not in plan.build(project).tasks
+    assert (project / "results/u1/fit.txt").read_text() == "a,b\n1,2\nx\n1\nloose\nstage\nb\n"
+    assert {path: (project / path).read_bytes() for path in before} == before
+    assert not dataset.status(project)

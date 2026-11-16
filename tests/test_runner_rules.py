@@ -475,10 +475,11 @@ findings:
     assert not (root / "lib/results").exists() and not (root / "lib/.astra").exists()
 
 
-def test_stale_input(analysis: Callable[..., Path]) -> None:
-    """lc builds nothing from a result from a commit, whatever state that
-    result is in: the project that reads one is refused before anything
-    runs."""
+def test_stale_input(analysis: Callable[..., Path], inline: None) -> None:
+    """lc builds nothing from a result from a commit that is missing,
+    stale or lacks its recorded bytes: here `lib` was never built at that
+    commit, so `lib.fit#v1` has no record there. What reads it is blocked,
+    by `--check` as by a run, and what does not is made."""
     root = _from_commit(
         analysis,
         """
@@ -492,19 +493,29 @@ outputs:
     inputs: [lib.fit#v1]
     recipe:
       command: cat {inputs} > {output}
+  alone:
+    type: metric
+    format: txt
+    recipe:
+      command: echo alone > {output}
 """,
     )
 
-    with pytest.raises(ProjectError, match=r"`report` reads `lib\.fit#v1` from an analysis"):
-        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    checked = engine.check(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
+    assert checked.blocked == ["report"] and "alone" in checked.planned
+    assert any("lib:fit#v1" in w and "STALE_INPUT" in w for w in checked.warnings)
+    assert report.blocked == ["report"] and report.made == ["alone"]
+    assert any(w.startswith("lib:fit#v1: it is missing") for w in report.warnings)
     assert not (root / "results/report.txt").exists()
+    assert not list((root / ".lightcone").rglob("commits"))  # nothing given to any tree
 
 
 def test_not_at_commit(analysis: Callable[..., Path]) -> None:
-    """lc drives no analysis from a commit: its recipes would have to run
-    on exactly that commit's files, and lc runs recipes in the working
-    tree only."""
+    """lc drives no analysis from a commit: `lib.fit` read without a pin is
+    made in `u1` on exactly that commit's files, and lc runs recipes on
+    the run's own commit only."""
     root = _from_commit(
         analysis,
         """
@@ -515,16 +526,15 @@ outputs:
   alone:
     type: metric
     format: txt
-    inputs: [lib.once]
-    decisions: [lib.method]
+    inputs: [lib.fit]
     recipe:
-      command: echo {decisions.lib.method} > {output}
+      command: cat {inputs} > {output}
 universes:
   u1: {decisions: {lib.method: alpha}}
 """,
     )
 
-    with pytest.raises(ProjectError, match="an analysis declared with a `commit`"):
+    with pytest.raises(ProjectError, match=r"`lib\.fit#u1` is made on the files of an analysis"):
         plan.build(root)
 
 

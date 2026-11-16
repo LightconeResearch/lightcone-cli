@@ -1171,6 +1171,199 @@ def test_an_uncommitted_change_in_an_analysis_declared_beside_the_project_refuse
     assert not (root.parent / "shared/results").exists()
 
 
+# ---- results from a commit --------------------------------------------------
+
+_FIT = """
+spec_version: "0.1.0"
+outputs:
+  fit:
+    type: metric
+    format: txt
+    recipe:
+      command: echo %s > {output}
+"""
+
+#: A project that reads `fit` as an analysis declared at a commit made it,
+#: and has an output of its own that reads nothing.
+_READS_AT = """
+spec_version: "0.1.0"
+analyses:
+  %s: {%s, commit: "%s"}
+outputs:
+  fit:
+    type: metric
+    format: txt
+    recipe:
+      command: echo two > {output}
+  plot:
+    type: report
+    format: txt
+    inputs: [%s.fit]
+    recipe:
+      command: cat {inputs} > {output}
+  alone:
+    type: metric
+    format: txt
+    recipe:
+      command: echo alone > {output}
+"""
+
+
+def _sha(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
+def _previous(analysis: Callable[..., Path]) -> tuple[Path, str]:
+    """A project whose `fit` said `one` at a commit and says `two` now,
+    and whose `plot`, not made yet, reads `fit` as it was at that commit.
+
+    Returns:
+        The project root, and that commit.
+    """
+    root = analysis(_FIT % "one")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    then = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(textwrap.dedent(_READS_AT % ("previous", "path: .", then, "previous")))
+    dataset.save(root, [spec], "plot what fit said then")
+    return root, then
+
+
+def test_a_result_from_a_commit_is_read_as_its_record_there_names_it(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`fit` says `two` now, and `plot` reads it as it was at the commit
+    its analysis is declared with: what the record there names, put in the
+    run's own folder for it and never in the project's tree. `fit` itself
+    is made again only as the project's own output, and its result from
+    that commit never: nothing is written where it was kept."""
+    root, then = _previous(analysis)
+    kept = dataset._git(["show", f"{then}:.astra/records/fit.json"], cwd=root)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert sorted(report.made) == ["alone", "fit", "plot"]
+    assert (root / "results/plot.txt").read_text() == "one\n"
+    assert (root / "results/fit.txt").read_text() == "two\n"
+    assert dataset._git(["show", f"{then}:.astra/records/fit.json"], cwd=root) == kept
+    [read] = json.loads((root / ".astra/records/plot.json").read_text())["generated_by"]["inputs"]
+    assert read == {"entry": "previous.fit", "content_hash": _sha("one\n"), "size": 4}
+    assert not (root / ".lightcone/commits").exists()  # given to the run's checkout only
+    assert not dataset.status(root)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
+    assert {o.output: o.status for o in engine.status(root).outputs}["plot"] == "current"
+
+
+def test_a_clone_with_no_annex_content_fetches_what_it_reads_at_a_commit(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """lc fetches it, by the key the commit's own file names: nobody is
+    told to. A read-only verb fetches nothing, and bytes this clone lacks
+    make nothing stale."""
+    root, then = _previous(analysis)
+    clone = _clone(root, tmp_path)
+    key = _key(clone, then)
+
+    assert sorted(engine.check(clone, []).planned) == ["alone", "fit", "plot"]
+    assert dataset.annex_objects(clone, [key]) == {}
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (clone / "results/plot.txt").read_text() == "one\n"
+    assert key in dataset.annex_objects(clone, [key])
+
+
+def test_a_result_from_another_repository_is_read_at_its_commit(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """Its content is in that repository's annex, which lc fetches from
+    through a clone of its own, kept in the project's `.lightcone/`. The
+    repository moving on since changes nothing a run reads."""
+    upstream = analysis(_FIT % "one", folder="upstream")
+    assert engine.materialize(upstream, [], cluster_id=CLUSTER_ID).ok
+    then = dataset.head(upstream)
+    spec = upstream / "astra.yaml"
+    spec.write_text(textwrap.dedent(_FIT % "three"))
+    dataset.save(upstream, [spec], "fit says three")
+    assert engine.materialize(upstream, [], cluster_id=CLUSTER_ID).ok
+    root = analysis(_READS_AT % ("up", f"url: '{upstream.as_uri()}'", then, "up"))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (root / "results/plot.txt").read_text() == "one\n"
+    assert not dataset.status(root)
+    assert (upstream / "results/fit.txt").read_text() == "three\n"
+
+
+def test_bytes_that_cannot_be_fetched_block_only_what_reads_them(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    upstream = analysis(_FIT % "one", folder="upstream")
+    assert engine.materialize(upstream, [], cluster_id=CLUSTER_ID).ok
+    then = dataset.head(upstream)
+    (upstream / "results/fit.txt").unlink()
+    dataset._git(["annex", "drop", "-q", "--force", "--key", _key(upstream, then)], cwd=upstream)
+    dataset._git(["checkout", "-q", "--", "results/fit.txt"], cwd=upstream)
+    root = analysis(_READS_AT % ("up", f"url: '{upstream.as_uri()}'", then, "up"))
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.blocked == ["plot"]
+    assert sorted(report.made) == ["alone", "fit"]
+    assert any(w.startswith("up:fit: its bytes could not be fetched") for w in report.warnings)
+    assert not (root / "results/plot.txt").exists()
+
+
+def test_bytes_a_commit_holds_that_its_record_does_not_name_block_what_reads_them(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A commit can hold a result's file written after its record: the
+    record names other bytes, and nothing is built on either."""
+    root = analysis(_FIT % "one")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / "results/fit.txt").unlink()
+    (root / "results/fit.txt").write_text("forged\n")
+    dataset.save(root, ["results/fit.txt"], "write fit by hand")
+    then = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(textwrap.dedent(_READS_AT % ("previous", "path: .", then, "previous")))
+    dataset.save(root, [spec], "plot what fit said then")
+
+    report = engine.materialize(root, ["plot", "alone"], cluster_id=CLUSTER_ID)
+
+    assert report.blocked == ["plot"] and report.made == ["alone"]
+    assert any(w.startswith("previous:fit: what") for w in report.warnings), report.warnings
+    assert not (root / "results/plot.txt").exists()
+
+
+def test_a_rerun_gives_its_tree_what_it_reads_at_a_commit(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry point a run record names drives its own run: it puts the
+    bytes where the command reads them, in the project's own `.lightcone/`.
+    The record lists no such path among datalad's inputs, which datalad
+    would try to fetch from the repository."""
+    from lightcone.engine import worker
+
+    root, _ = _previous(analysis)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    message = dataset._git(["log", "-1", "--format=%B", "--", "results/plot.txt"], cwd=root)
+    recorded = json.loads(message.split("===\n", 1)[1].rsplit("\n^^^", 1)[0])
+    (root / "results/plot.txt").unlink()
+    monkeypatch.chdir(root)
+
+    assert worker.main(["plot"]) == 0
+
+    assert recorded["inputs"] == []
+    assert (root / "results/plot.txt").read_text() == "one\n"
+
+
+def _key(root: Path, commit: str) -> str:
+    return dataset.keys_at(root, [f"{commit}:results/fit.txt"])[0]
+
+
 # ---- results git would not store as lc does ---------------------------------
 
 

@@ -279,8 +279,8 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     and `uv sync` together cost milliseconds.
     """
 
-    def build(spec: str, files: dict[str, str] | None = None) -> Path:
-        root = tmp_path / "analysis"
+    def build(spec: str, files: dict[str, str] | None = None, *, folder: str = "analysis") -> Path:
+        root = tmp_path / folder
         for name in ("results", "data"):
             (root / name).mkdir(parents=True, exist_ok=True)
 

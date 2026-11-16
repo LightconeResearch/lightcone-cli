@@ -16,6 +16,10 @@ one task crosses to a worker by itself. It refuses what this engine
 cannot execute. Which tasks a run actually makes is decided from what the
 checker found, kept beside them.
 
+A result from a commit is never a task: it is read, never built. A task
+that reads one reads it where a run puts it, under :data:`COMMITS`, which
+is the folder ASTRA is told of so that the task's command names that path.
+
 Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and that order is kept; at execution time ordering is
 Dask's job.
@@ -33,13 +37,19 @@ from typing import TYPE_CHECKING, Any
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Analysis, Place, Result, Source, Status
+    from astra.api import Place, Result, Source, Status
 
 #: A task's identity within a run: its result's id, as ASTRA gives it —
 #: its address, after the key of the analysis the result belongs to and a
 #: colon when that is not the project's own (``fit#baseline``,
 #: ``stage:fit#v1``).
 Key = str
+
+#: Where a run puts the bytes of each result from a commit its recipes
+#: read, from the project root: ``<COMMITS>/<commit id>/<its place in that
+#: commit's tree>``, the layout ASTRA renders a command for when it is
+#: given this folder. In ``.lightcone/``, which every project ignores.
+COMMITS = ".lightcone/commits"
 
 #: Of what ASTRA notes for an author, the two a run would silently live
 #: with: an output nothing plans, and a command that runs code from
@@ -129,8 +139,12 @@ class Graph:
 
     tasks: dict[Key, Task]
     #: What ASTRA's checker found of each task's result when the graph was
-    #: read. The state a run starts from.
+    #: read, and of each result from a commit a task reads. The state a
+    #: run starts from.
     found: dict[Key, Status]
+    #: Each result from a commit a task reads: never a task, as it is read
+    #: as its record names it and never built again.
+    pinned: dict[Key, Result] = field(default_factory=dict)
     #: The commit the repository was on when ASTRA read it — empty where
     #: it has none yet. The files were read in the working tree, so this
     #: says what was read only of a tree with no uncommitted change.
@@ -167,11 +181,13 @@ class Graph:
             if key in wanted:
                 continue
             wanted.add(key)
-            pending.extend(self.tasks[key].depends_on)
+            if key in self.tasks:
+                pending.extend(self.tasks[key].depends_on)
         return replace(
             self,
             tasks={k: t for k, t in self.tasks.items() if k in wanted},
             found={k: f for k, f in self.found.items() if k in wanted},
+            pinned={k: r for k, r in self.pinned.items() if k in wanted},
         )
 
     def resolve(self, targets: list[str]) -> list[Key]:
@@ -211,6 +227,13 @@ def name(place: Place) -> str:
     return place.address.partition("#")[0]
 
 
+def at_commit(result: Result) -> str:
+    """Where a run puts the bytes of a result from a commit, from the
+    project root: the path the command of a result that reads it names."""
+    assert result.commit is not None  # only a result from a commit is put there
+    return posixpath.join(COMMITS, result.commit.id, result.places[0].file_path)
+
+
 # =============================================================================
 # Building the graph
 # =============================================================================
@@ -221,10 +244,10 @@ def build(root: Path) -> Graph:
 
     A result that belongs to an analysis declared with a ``commit`` is no
     task: it is never built again, only read through its record
-    (``REBUILT_FROM_COMMIT``). Reading one, and driving an analysis on a
-    commit's files (``NOT_AT_COMMIT``), are what lc does not do at all,
-    so a project that needs either is refused whole rather than run in
-    part.
+    (``REBUILT_FROM_COMMIT``). A task may read one, at :func:`at_commit`.
+    Driving an analysis on a commit's files (``NOT_AT_COMMIT``), and
+    reading an input file of one, are what lc does not do at all, so a
+    project that needs either is refused whole rather than run in part.
 
     Args:
         root: The project root.
@@ -240,7 +263,7 @@ def build(root: Path) -> Graph:
     from astra import api
 
     with asking_astra(root):
-        analysis = api.resolve(root)
+        analysis = api.resolve(root, commits=COMMITS)
         report = api.status(root)
     if report.head != analysis.head:
         # The statuses are of another commit's results than the ones resolved.
@@ -258,29 +281,39 @@ def build(root: Path) -> Graph:
         result.id: universes[result.universe][0] if result.universe else outputs[result.output][0]
         for result in analysis.results
     }
-    made_at = {result.id: result.places[0].file_path for result in analysis.results}
+    results = {result.id: result for result in analysis.results}
 
-    def read_in(source: Source) -> Analysis:
-        """The analysis that holds what an entry reads: an input's own, or
-        the one the result it reads belongs to."""
+    def read(source: Source) -> str:
+        """The file an entry reads, from the project root: an input's, or
+        the bytes of the result it reads, where a run puts them for one
+        from a commit."""
         if source.input is not None:
-            return inputs[source.input][0]
+            return inputs[source.input][1].path
         assert source.result is not None  # an entry reads one or the other
-        return owners[source.result]
+        found = results[source.result]
+        return found.places[0].file_path if found.commit is None else at_commit(found)
 
     tasks: dict[Key, Task] = {}
+    pinned: dict[Key, Result] = {}
     for result in analysis.results:
         owner = owners[result.id]
         if owner.commit is not None:
             continue
         runs_in, output = outputs[result.output]
         if result.command is None:
-            read = [source.entry for source in result.inputs if read_in(source).commit]
-            what = f"reads `{read[0]}` from" if read else "belongs to"
             raise ProjectError(
-                f"`{result.id}` {what} an analysis declared with a `commit`, which lc does "
-                "not build from. Declare that analysis by `path` alone to build it from the "
-                "working tree."
+                f"`{result.id}` is made on the files of an analysis declared with a `commit`, "
+                "which lc does not do (NOT_AT_COMMIT). Declare that analysis by `path` alone "
+                "to build it from the working tree."
+            )
+        if at := [
+            source.entry
+            for source in result.inputs
+            if source.input is not None and inputs[source.input][0].commit
+        ]:
+            raise ProjectError(
+                f"`{result.id}` reads `{at[0]}`, an input file of an analysis declared with a "
+                "`commit`: lc reads a result from a commit, never one of its input files."
             )
         if any((root / parent / ".git").exists() for parent in _folders(owner.folder)):
             raise ProjectError(
@@ -289,15 +322,15 @@ def build(root: Path) -> Graph:
                 "only. Run lc from that analysis instead."
             )
         selection = universes[result.universe][1].selection if result.universe else {}
+        pinned |= {
+            source.result: results[source.result]
+            for source in result.inputs
+            if source.result is not None and results[source.result].commit is not None
+        }
         tasks[result.id] = Task(
             result=result,
             workdir=runs_in.folder,
-            reads={
-                source.entry: inputs[source.input][1].path
-                if source.input is not None
-                else made_at[source.result or ""]
-                for source in result.inputs
-            },
+            reads={source.entry: read(source) for source in result.inputs},
             # A result read through a pin can be made with a decision its
             # universe does not itself use, and ASTRA's selection holds
             # only those it uses: the option is in the command, not here.
@@ -310,7 +343,8 @@ def build(root: Path) -> Graph:
         )
     return Graph(
         tasks=tasks,
-        found={key: report.statuses[key] for key in tasks},
+        found={key: report.statuses[key] for key in (*tasks, *pinned)},
+        pinned=pinned,
         head=analysis.head or "",
         beside=tuple(
             sorted(

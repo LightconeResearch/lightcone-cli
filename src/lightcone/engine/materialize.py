@@ -151,7 +151,10 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     graph, environment, _ = _graph(root, targets, report)
     for found in _classify(root, graph, environment, refresh=refresh):
         verdict = found.verdict
-        if verdict.calls_for_a_remake(refresh=refresh):
+        if found.may_run(refresh=refresh) and (unread := _stale_inputs(graph, found.task)):
+            report.blocked.append(found.task.key)
+            report.warnings.extend(f"{found.task.key}: {why}" for why in unread)
+        elif verdict.calls_for_a_remake(refresh=refresh):
             report.planned[found.task.key] = verdict.why
         elif found.upstream:
             # Nothing here can know whether a rebuild comes out
@@ -164,6 +167,16 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
         else:
             report.current.append(found.task.key)
     return report
+
+
+def _stale_inputs(graph: Graph, task: Task) -> list[str]:
+    """Why *task* cannot be made from what it reads at a commit, one line
+    each; empty where it can, as far as can be told without fetching."""
+    return [
+        f"reads `{dep}`: {why}"
+        for dep in task.depends_on
+        if dep in graph.pinned and (why := checkout.stale_input(graph.found[dep]))
+    ]
 
 
 @dataclass(frozen=True)
@@ -208,11 +221,13 @@ def _classify(
         One entry per task, in the graph's order.
     """
 
-    def recorded(key: Key) -> assets.Digest:
-        record = graph.found[key].record
-        assert record is not None  # a result left alone has a record of its own
-        return record.content_hash, record.size
-
+    # What each result's record says it holds: a result left alone, or one
+    # from a commit, gives these bytes to what reads it.
+    recorded = {
+        key: (found.record.content_hash, found.record.size)
+        for key, found in graph.found.items()
+        if found.record is not None
+    }
     may_run: set[Key] = set()
     classified = []
     for key, task in graph.tasks.items():
@@ -227,15 +242,17 @@ def _classify(
             assets.classify(
                 found=found,
                 environment=environment,
-                # A result left alone gives the bytes its record does. One
+                # A result left alone, or one from a commit, gives the bytes
+                # its record does; one from a commit with no record gives
+                # none, and ASTRA already finds what reads it stale. One
                 # that may be remade gives bytes nobody knows yet.
                 read=(
                     None
                     if upstream
                     else {
-                        source.entry: recorded(source.result)
+                        source.entry: recorded[source.result]
                         for source in task.result.inputs
-                        if source.result is not None
+                        if source.result in recorded
                     }
                 ),
                 foreign=foreign,
@@ -569,8 +586,34 @@ def materialize(
         tree = checkout.take(root, graph.head, scheduler.allocation)
         handles: list[Any] = []
         reported = 0
+        # What the tasks that may run wait on: the value of each result
+        # left alone, and of each result from a commit they read.
+        pending: dict[Key, Any] = {}
         try:
             running = [found.task for found in classified if found.may_run(refresh=refresh)]
+            # Each result from a commit a task that may run reads, given
+            # the bytes its record names, or a failure its readers are
+            # blocked on: independent tasks still run.
+            given = checkout.pin(
+                root,
+                tree.root,
+                graph,
+                {dep for task in running for dep in task.depends_on if dep in graph.pinned},
+            )
+            for key, why in given.items():
+                if why:
+                    report.warnings.append(f"{key}: {why}")
+                    pending[key] = worker.TaskResult(key, "failed", reason=why)
+                    continue
+                record = graph.found[key].record
+                assert record is not None  # one with no record is never given
+                pending[key] = worker.TaskResult(
+                    key, "current", record.content_hash, record.size
+                )
+                # Checked as each made result arrives, like any file the
+                # run was given to read.
+                placed = plan.at_commit(graph.pinned[key])
+                tree.filled[placed] = assets.stamp(tree.root / placed)
             # Every file a task that may run reads, bar a result certain
             # to be remade. One that may run only because something it
             # reads may is left alone when that comes out as recorded,
@@ -587,7 +630,7 @@ def materialize(
                         task.reads[source.entry]
                         for task in running
                         for source in task.result.inputs
-                        if source.result not in certain
+                        if source.result not in certain and source.result not in graph.pinned
                     }
                 ),
                 replaceable={place.file_path for task in running for place in task.result.places},
@@ -633,7 +676,6 @@ def materialize(
             written = sorted(
                 {posixpath.dirname(path) for task in graph.tasks.values() for path in task.files}
             )
-            pending: dict[Key, Any] = {}
             # Results left alone are values, not Dask tasks: they need no allocation
             # resources. Futures for everything that may run retain dependency order.
             for found in classified:
@@ -1074,7 +1116,12 @@ def run_record(task: Task, dsid: str, runtime: container.Runtime) -> str:
         ),
         "dsid": dsid,
         "exit": 0,
-        "inputs": sorted(set(task.reads.values())),
+        # What datalad fetches before a rerun: the repository's own files.
+        # What a task reads at a commit is not one — the worker gives the
+        # tree those bytes itself.
+        "inputs": sorted(
+            {path for path in task.reads.values() if not path.startswith(f"{plan.COMMITS}/")}
+        ),
         "outputs": task.files,
         "pwd": ".",
     }

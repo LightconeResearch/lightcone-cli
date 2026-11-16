@@ -18,7 +18,9 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
+import shutil
 import subprocess
 import time
 from collections.abc import Iterable, Sequence
@@ -435,7 +437,7 @@ def annex_objects(directory: Path, keys: Sequence[str]) -> dict[str, Path]:
     return {key: directory / where for key, where in zip(keys, answers, strict=True) if where}
 
 
-def annex_get(directory: Path, keys: Sequence[str]) -> str:
+def annex_get(directory: Path, keys: Sequence[str], *, source: str = "") -> str:
     """Fetch into this clone the content of each of *keys* it lacks.
 
     By key and not by path, so it is the content a commit names that is
@@ -445,6 +447,8 @@ def annex_get(directory: Path, keys: Sequence[str]) -> str:
     Args:
         directory: A directory inside the repository.
         keys: git-annex keys.
+        source: A remote to ask, whether or not git-annex has been told it
+            holds the content; empty to ask those it has.
 
     Returns:
         Empty when every key's content is here now. Otherwise git-annex's
@@ -454,7 +458,7 @@ def annex_get(directory: Path, keys: Sequence[str]) -> str:
     if not keys:
         return ""
     got = project._run(
-        ["git", "annex", "get", "--batch-keys"],
+        ["git", "annex", "get", "--batch-keys", *(["--from", source] if source else [])],
         cwd=directory,
         stdin="".join(f"{key}\n" for key in keys),
     )
@@ -462,6 +466,78 @@ def annex_get(directory: Path, keys: Sequence[str]) -> str:
         return ""
     # git-annex says why on stdout, and only how many failed on stderr.
     return "\n".join(filter(None, (got.stdout.strip(), got.stderr.strip())))
+
+
+def keys_at(directory: Path, refs: Sequence[str]) -> list[str]:
+    """Read which annexed content each of *refs*, a ``<commit>:<path>``, names.
+
+    git-annex's own reading of the file the commit holds, a pointer or a
+    link, so it is that commit's content and not whatever a working tree
+    holds now. One process for any number of refs.
+
+    Args:
+        directory: A directory inside the repository.
+        refs: A commit and a path from the top of its tree, each.
+
+    Returns:
+        One key per ref, in order: empty for a file git itself carries,
+        and for one the commit does not have.
+
+    Raises:
+        ProjectError: If git-annex cannot be asked.
+    """
+    asked = project._run(
+        ["git", "annex", "lookupkey", "--ref", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{ref}\n" for ref in refs),
+    )
+    if asked.returncode != 0:
+        raise project.ProjectError(f"`git annex lookupkey` failed:\n{asked.stderr.strip()}")
+    # One line per ref, empty for one that names no key.
+    return asked.stdout.split("\n")[: len(refs)]
+
+
+def clone_of(directory: Path, url: str, commits: Iterable[str]) -> Path:
+    """Find, or make, lc's clone of the repository at *url*, holding *commits*.
+
+    What a run reads at a commit of another repository is in that
+    repository's annex, so lc keeps a clone of it to fetch the content
+    into: under the project's ``.lightcone/remotes/``, one per URL, on the
+    filesystem the project and its checkouts are on, where content can
+    arrive as hard links. Nothing of the project's own repository points
+    at it. It is fetched every time it is asked for, so git-annex knows
+    where the content is now.
+
+    Args:
+        directory: The project root.
+        url: The repository, as an analysis declares it.
+        commits: The commits the clone has to hold.
+
+    Returns:
+        The clone's top folder.
+
+    Raises:
+        ProjectError: If git cannot fetch from *url*, or *url* lacks one of
+            *commits*.
+    """
+    clone = directory / ".lightcone" / "remotes" / hashlib.sha256(url.encode()).hexdigest()[:16]
+    if not (clone / ".git").is_dir():
+        # A clone that was never finished is made again: all it holds is
+        # fetched.
+        shutil.rmtree(clone, ignore_errors=True)
+        clone.mkdir(parents=True)
+        _git(["init", "-q"], cwd=clone)
+        _git(["remote", "add", "origin", url], cwd=clone)
+    # Every branch, the git-annex one among them: it says where the
+    # content is. A commit no branch reaches is asked for by its id.
+    _git(["fetch", "-q", "origin"], cwd=clone)
+    for commit in commits:
+        if not _git_ok(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=clone):
+            _git(["fetch", "-q", "origin", commit], cwd=clone)
+    if not _git_ok(["config", "--get", "annex.uuid"], cwd=clone):
+        # Once the git-annex branch is here, so it is the one taken up.
+        _git(["annex", "init", "-q", "lightcone: what a run reads from this repository"], cwd=clone)
+    return clone
 
 
 def is_ancestor(directory: Path, commit: str) -> bool:

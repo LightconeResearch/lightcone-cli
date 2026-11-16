@@ -364,9 +364,9 @@ def test_the_graph_asks_astra_for_the_analysis_and_its_status_once_each(
     asked: list[str] = []
     resolve, status = api.resolve, api.status
 
-    def resolved(path: Path) -> api.ResolvedAnalysis:
+    def resolved(path: Path, **kwargs: str) -> api.ResolvedAnalysis:
         asked.append("resolve")
-        return resolve(path)
+        return resolve(path, **kwargs)
 
     def checked(path: Path) -> api.StatusReport:
         asked.append("status")
@@ -496,23 +496,69 @@ def test_an_unparseable_spec_is_a_clean_error(tmp_path: Path) -> None:
         plan.build(_project(tmp_path, "outputs: [unclosed\n"))
 
 
-@pytest.mark.parametrize(
-    ("spec", "fragment"),
-    [(_SPEC, "`stage.mask#baseline` belongs to"), (_PINNED, "reads `stage.mask#v` from")],
-)
-def test_an_analysis_declared_with_a_commit_is_refused(
-    tmp_path: Path, spec: str, fragment: str
-) -> None:
-    """Its results are made from that commit's tree, which is not the tree
-    a recipe would run in here."""
-    root = _project(tmp_path, spec)
+def _at_commit(root: Path, spec: str) -> str:
+    """Commit *root* as it is, and declare `stage` at that commit in
+    *spec*, written to the working tree. Returns the commit."""
     _git(root, "commit", "-q", "-m", "stage")
-    pinned = f"stage: {{path: stage, commit: {_git(root, 'rev-parse', 'HEAD')}}}"
-    (root / "astra.yaml").write_text(spec.replace("stage: {path: stage}", pinned))
+    commit = _git(root, "rev-parse", "HEAD")
+    pinned = f"stage: {{path: stage, commit: {commit}}}"
+    (root / "astra.yaml").write_text(textwrap.dedent(spec).replace("stage: {path: stage}", pinned))
+    return commit
+
+
+def test_driving_an_analysis_declared_with_a_commit_is_refused(tmp_path: Path) -> None:
+    """A recipe driven on its files would have to run on that commit's
+    tree, which is not the tree a recipe runs in here (NOT_AT_COMMIT)."""
+    root = _project(tmp_path)
+    _at_commit(root, _SPEC)
 
     with pytest.raises(ProjectError, match="declared with a `commit`") as raised:
         plan.build(root)
-    assert fragment in str(raised.value)
+    assert "`stage.mask#baseline` is made on the files of" in str(raised.value)
+    assert "NOT_AT_COMMIT" in str(raised.value)
+
+
+def test_a_result_from_a_commit_is_read_where_a_run_puts_it(tmp_path: Path) -> None:
+    """It is no task, as it is never built again. What reads it is one,
+    reading it under the run's folder for what it reads at a commit, at
+    the place that commit's tree gives it — the path ASTRA's command
+    names, since lc tells ASTRA where that folder is."""
+    root = _project(tmp_path, _PINNED)
+    commit = _at_commit(root, _PINNED)
+
+    graph = plan.build(root)
+
+    at = f".lightcone/commits/{commit}/stage/results/v/mask.txt"
+    assert "stage:mask#v" not in graph.tasks
+    assert list(graph.pinned) == ["stage:mask#v"]
+    assert graph.found["stage:mask#v"].state == "missing"  # never built at that commit
+    fit = graph.tasks["fit#baseline"]
+    assert fit.reads["stage.mask#v"] == at
+    assert plan.at_commit(graph.pinned["stage:mask#v"]) == at
+    assert f" {at} " in fit.command
+    assert fit.depends_on == ("summary", "stage:mask#v")
+    narrowed = graph.closure(["fit#baseline"])
+    assert list(narrowed.pinned) == ["stage:mask#v"]
+    assert "stage:mask#v" in narrowed.found
+
+
+def test_reading_an_input_file_of_an_analysis_declared_with_a_commit_is_refused(
+    tmp_path: Path,
+) -> None:
+    """lc reads a result from a commit through its record. An input file
+    has none, and is kept in git as often as in the annex."""
+    stage = _STAGE + "\ninputs:\n  raw: {path: raw.txt}\n"
+    spec = _PINNED.replace("stage.mask#v]", "stage.raw]").replace(
+        "{inputs.stage.mask#v}", "{inputs.stage.raw}"
+    )
+    root = _project(tmp_path, spec)
+    (root / "stage" / "astra.yaml").write_text(textwrap.dedent(stage))
+    (root / "stage" / "raw.txt").write_text("raw\n")
+    _git(root, "add", ".")
+    _at_commit(root, spec)
+
+    with pytest.raises(ProjectError, match="reads `stage.raw`, an input file of an analysis"):
+        plan.build(root)
 
 
 def test_a_result_from_a_commit_that_nothing_here_reads_is_no_task(tmp_path: Path) -> None:

@@ -435,6 +435,28 @@ def test_check_exits_nonzero_when_something_would_run(
     assert "would run fit#baseline" in result.output
 
 
+def test_check_says_what_could_not_be_made(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result that reads one from a commit lc builds nothing from: no
+    run could make it, and a check that ran nothing did not "not finish"."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(
+        monkeypatch,
+        check=MaterializeReport(
+            blocked=["plot"], warnings=["plot: reads `up:fit`: it is stale at its commit"]
+        ),
+    )
+
+    result = runner.invoke(main, ["materialize", "--check"])
+
+    assert result.exit_code == 1
+    assert "blocked plot" in result.output
+    assert "1 output(s) could not be made" in result.output
+    assert "did not finish" not in result.output
+
+
 def test_check_treats_all_positionals_as_targets_without_querying_compute(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

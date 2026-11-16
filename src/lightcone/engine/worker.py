@@ -551,10 +551,24 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[Key, TaskResul
     There is no graph in flight to take them from. Each upstream has to
     have a record of its own, and its bytes are hashed where they lie:
     this run reads what is in the tree, and its record must say so even
-    where that is not what the upstream's record gives.
+    where that is not what the upstream's record gives. A result from a
+    commit is given to the tree as a run gives it to its checkout, and
+    reads as its record names it.
     """
     upstream = {}
+    if pinned := [key for key in task.depends_on if key in graph.pinned]:
+        # A run's driver does this; here the rerun is its own driver.
+        from lightcone.engine import checkout
+
+        for key, why in checkout.pin(root, root, graph, pinned).items():
+            if why:
+                raise ProjectError(f"`{key}`, which `{task.key}` reads: {why}")
+            record = graph.found[key].record
+            assert record is not None  # one with no record is never given
+            upstream[key] = TaskResult(key, "current", record.content_hash, record.size)
     for key in task.depends_on:
+        if key in upstream:
+            continue
         if graph.found[key].record is None:
             raise ProjectError(
                 f"`{key}`, which `{task.key}` reads, has no valid record. "
