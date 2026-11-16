@@ -369,6 +369,24 @@ def test_a_result_without_a_valid_record_is_not_described_as_made(project: Path)
     assert not [e for e in entities.values() if e["@type"] == "CreateAction"]
 
 
+def test_a_result_the_checker_finds_stale_is_not_described_as_made(project: Path) -> None:
+    """The command and the options a run is described with are the spec's
+    as it now stands. A result made from something that has since changed
+    was made by another recipe, so the crate does not say this one made it."""
+    graph = _materialized(project)
+
+    def actions() -> int:
+        entities = _entities(_render(project, graph))
+        return len([e for e in entities.values() if e["@type"] == "CreateAction"])
+
+    current = actions()
+    found = graph.found["second#baseline"]
+    graph.found["second#baseline"] = api.Status("stale", found.bytes, found.record)
+
+    assert actions() == current - 1
+    assert "results/baseline/second.txt" not in _entities(_render(project, graph))
+
+
 def test_a_result_built_once_has_no_universe_in_its_ids(project: Path) -> None:
     graph = _graph_of(_task("summary", decisions={}))
     _made(project, graph, "summary")
