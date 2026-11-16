@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
-import tomllib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -358,18 +357,4 @@ def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
         text=True,
     )
     wheel = next(dist.glob("lightcone_cli-*.whl"))
-    # The engine's astra-tools pin is a uv source, which a wheel's metadata
-    # does not carry — so the rerun's resolver is served that too as a
-    # wheel, built from the very source `pyproject.toml` pins.
-    source = tomllib.loads((repository / "pyproject.toml").read_text())["tool"]["uv"]["sources"][
-        "astra-tools"
-    ]
-    subprocess.run(
-        ["uv", "run", "--no-project", "--with", "pip", "--", "python", "-m", "pip", "wheel",
-         "--no-deps", "--wheel-dir", str(dist),
-         f"astra-tools @ git+{source['git']}@{source['rev']}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     return wheel.name.split("-")[1], dist
