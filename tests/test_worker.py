@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +104,7 @@ def _context(root: Path, environment: str | None = None) -> worker.RunContext:
     """
     return worker.RunContext(
         environment=environment if environment is not None else identity.environment(root),
-        commit=dataset.head(root)[0],
+        commit=dataset.head(root),
         runtime=container.runtime_for_run(root, build=False),
     )
 
@@ -162,7 +163,7 @@ def test_the_record_says_what_the_run_was(root: Path) -> None:
     run = record["generated_by"]
     assert record["address"] == "first#baseline"
     assert (record["content_hash"], record["size"]) == (result.content_hash, result.size)
-    assert run["commit"] == dataset.head(root)[0]
+    assert run["commit"] == dataset.head(root)
     assert run["environment"] == {"iri": identity.environment(root)}
     # The engine's version is attestation, not identity: with lc outside
     # the project's lock, this field is the record of which engine ran.
@@ -370,7 +371,7 @@ def _stale_through_first(root: Path, read: assets.Digest) -> api.Status:
         "sha256:" + "5" * 64,
         7,
         api.Generation(
-            dataset.head(root)[0],
+            dataset.head(root),
             api.Environment(identity.environment(root)),
             api.Runner("lightcone-cli", "1.0"),
             (api.RecordedInput("first", *read),),
@@ -590,6 +591,61 @@ def test_a_recipe_that_changes_what_it_reads_is_not_recorded(root: Path) -> None
     assert result.status == "failed"
     assert "changed what it only reads: first" in result.reason
     assert not (root / _SECOND_RECORD).exists()
+
+
+def _hashed_by(asked: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Note in *asked* the name of each file the worker hashes."""
+    digest_file = assets.digest_file
+
+    def counted(path: Path) -> assets.Digest:
+        asked.append(path.name)
+        return digest_file(path)
+
+    monkeypatch.setattr(assets, "digest_file", counted)
+
+
+def test_a_task_takes_the_digest_the_driver_took_of_the_file_it_reads(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared input more than one task reads is hashed once, by the
+    driver, and a task that finds that very file does not read it again."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    catalog = root / "data/catalog.txt"
+    context = replace(
+        _context(root),
+        hashed={"data/catalog.txt": (assets.stamp(catalog), assets.digest_file(catalog))},
+    )
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
+
+    assert result.status == "ok", result.reason
+    assert "catalog.txt" not in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
+
+
+def test_a_digest_taken_of_another_file_is_not_the_tasks(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other way: a digest stands for the file it was computed from,
+    by inode, size and time. Handed one for any other, the task hashes
+    what it reads itself, so its record names what the recipe read."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    another = (0, 0, 0), ("sha256:" + "0" * 64, 0)
+    context = replace(_context(root), hashed={"data/catalog.txt": another})
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(root, graph.tasks["fit"], graph.found["fit"], context, False, None)
+
+    assert result.status == "ok", result.reason
+    assert "catalog.txt" in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
 
 
 def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:

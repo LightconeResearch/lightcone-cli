@@ -4,7 +4,7 @@ Three types, and keeping them distinct is the whole design:
 
 - :class:`Policy` — *what we will enforce*. Mechanism-free path sets.
 - :class:`Capability` — *what this host can do*. The probe's answer.
-- :class:`Attestation` — *what was actually enforced*. Recorded with
+- :class:`Attestation` — *what was actually enforced*. Returned with
   every run, and derived from the flags actually applied — never a
   paraphrase of what should have happened.
 
@@ -159,6 +159,6 @@ class Backend(Protocol):
             policy: The policy being wrapped.
 
         Returns:
-            The record written with every output.
+            What was enforced.
         """
         ...

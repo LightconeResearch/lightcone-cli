@@ -147,7 +147,7 @@ class OCIBackend:
             policy: The policy being wrapped.
 
         Returns:
-            The record written with every output.
+            What was enforced.
         """
         return Attestation(
             mechanism=self.runtime,

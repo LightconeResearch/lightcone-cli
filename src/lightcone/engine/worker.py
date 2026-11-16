@@ -18,7 +18,7 @@ has never built one.
 Keep this module cheap to import: no click, no rich. It is on the
 ``python -m`` path of every rerun, and of every task in every run.
 
-Nothing here writes to git, and nothing here raises. A task that fails
+Nothing here writes to git, and a task never raises. One that fails
 returns a result saying so, because Dask propagates an exception to every
 dependent and "who actually failed" would stop being answerable —
 reporting every independent failure in one run is most of the point of
@@ -30,8 +30,8 @@ from __future__ import annotations
 import functools
 import shutil
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -107,6 +107,38 @@ class RunContext:
     commit: str
     #: The execution world — the host mechanism, or the project image.
     runtime: container.Runtime
+    #: Each declared input more than one task of the run reads, by its
+    #: path from the project root → the stamp of the file the driver
+    #: hashed, and its digest. A task that finds that very file takes the
+    #: digest; one that finds any other hashes what it reads.
+    hashed: Mapping[str, tuple[tuple[int, int, int], assets.Digest]] = field(
+        default_factory=dict
+    )
+
+
+def require_recreatable(root: Path) -> None:
+    """Refuse a run whose commit could not recreate its environment.
+
+    A clean tree does not say the environment is in the commit: an
+    ignored file is clean. A record names its environment by the files
+    of its commit, so each has to be there for lc to recreate it. Asked
+    by whoever owns a run, before it writes a record: the driver, and
+    the rerun entry point.
+
+    Args:
+        root: The project root.
+
+    Raises:
+        ProjectError: Naming each file of the environment git does not
+            track.
+    """
+    if missing := dataset.untracked(root, identity.files(root)):
+        raise ProjectError(
+            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
+            "could not recreate the environment its recipe ran in "
+            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
+            "whatever .gitignore rule keeps them out."
+        )
 
 
 # =============================================================================
@@ -252,14 +284,19 @@ def execute(
         path = root / task.reads[source.entry]
         try:
             assets.require_fetched(path)
-            # What an upstream task reported, never a rehash: its bytes
-            # were hashed once, by the task that made or kept them.
-            digest = (
-                upstream[source.result].digest
-                if source.result is not None
-                else assets.digest_file(path)
-            )
-            watched[source.entry] = path, assets.stamp(path)
+            stamp = assets.stamp(path)
+            known = context.hashed.get(task.reads[source.entry])
+            if source.result is not None:
+                # What an upstream task reported, never a rehash: its bytes
+                # were hashed once, by the task that made or kept them.
+                digest = upstream[source.result].digest
+            elif known is not None and known[0] == stamp:
+                # What the driver read of this very file, for every task
+                # of the run that reads it.
+                digest = known[1]
+            else:
+                digest = assets.digest_file(path)
+            watched[source.entry] = path, stamp
         except (OSError, ProjectError) as e:
             # Named as the analysis names it: `path` is a file of the
             # run's checkout, which is nobody's to act on.
@@ -281,9 +318,7 @@ def execute(
     # (`Task.owns`) is its record and any file named after it, so a spec
     # that re-declares the output in another format leaves no stale
     # payload behind.
-    folders = {
-        (root / path).parent for place in places for path in (place.file_path, place.record_path)
-    }
+    folders = {(root / path).parent for path in task.files}
     for place in places:
         (root / place.file_path).parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
@@ -296,9 +331,11 @@ def execute(
         # Validate device visibility and container support before removing outputs.
         for folder in folders:
             for stale in folder.iterdir() if folder.is_dir() else ():
-                if not stale.is_dir() or stale.is_symlink():
-                    if task.owns(stale.relative_to(root).as_posix()):
-                        stale.unlink()
+                # The name first: it costs no stat of a sibling's file.
+                if task.owns(stale.relative_to(root).as_posix()) and (
+                    not stale.is_dir() or stale.is_symlink()
+                ):
+                    stale.unlink()
         started = datetime.now(UTC)
         cwd = root / task.workdir
         outcome = sandbox.run(
@@ -478,6 +515,7 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
+        require_recreatable(root)
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -491,7 +529,7 @@ def main(argv: list[str]) -> int:
             _from_disk(root, graph, task),
             RunContext(
                 environment=identity.environment(root),
-                commit=dataset.head(root)[0],
+                commit=dataset.head(root),
                 runtime=runtime,
             ),
         )

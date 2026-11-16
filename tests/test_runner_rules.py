@@ -22,15 +22,14 @@ import json
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import CLUSTER_ID, _Inline
+from conftest import CLUSTER_ID, _cluster, _Inline, _Meanwhile
 
-from lightcone.engine import dataset, identity, plan, sandbox
+from lightcone.engine import dataset, identity, plan, sandbox, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import Unavailable
@@ -92,14 +91,6 @@ def _record(root: Path, path: str) -> dict[str, Any]:
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
-    @contextmanager
-    def fake(cluster_id: str) -> Iterator[_Inline]:
-        yield scheduler
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
 
 
 def _commits(root: Path) -> list[str]:
@@ -174,7 +165,7 @@ def test_false_record(root: Path, inline: None) -> None:
     """Every field of a record is true of the run that wrote it: the bytes
     the recipe made, the bytes it read through each entry, the commit and
     the environment it ran in, and who ran it."""
-    started_at = dataset.head(root)[0]
+    started_at = dataset.head(root)
 
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
@@ -212,6 +203,29 @@ def test_unrecreatable_environment(root: Path, inline: None) -> None:
     assert not (root / "results/baseline").exists()
 
 
+def test_a_rerun_answers_for_its_environment_too(
+    root: Path,
+    inline: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rerun entry point writes a record as a run does, naming the
+    commit it is on, so it is refused where a run would be."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    made = _record(root, ".astra/records/baseline/fit.json")
+    with (root / ".gitignore").open("a") as ignore:
+        ignore.write("uv.lock\n")
+    dataset._git(["rm", "--cached", "--quiet", "uv.lock"], cwd=root)
+    dataset._git(["commit", "--quiet", "-am", "ignore the lock"], cwd=root)
+    assert dataset.status(root) == []
+    monkeypatch.chdir(root)
+
+    assert worker.main(["fit#baseline"]) == 2
+
+    assert "UNRECREATABLE_ENVIRONMENT" in capsys.readouterr().err
+    assert _record(root, ".astra/records/baseline/fit.json") == made
+
+
 def test_the_environment_a_record_names_is_in_its_commit(root: Path, inline: None) -> None:
     """The other half of `UNRECREATABLE_ENVIRONMENT`: checked out at the
     commit a record names, the project's files give the IRI it records."""
@@ -245,22 +259,6 @@ def test_uncommitted_changes(root: Path, inline: None) -> None:
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
 
-class _Meanwhile(_Inline):
-    """Do something once the run has its checkout, before its first
-    recipe starts."""
-
-    def __init__(self, meanwhile: Callable[[], None]) -> None:
-        self.meanwhile: Callable[[], None] | None = meanwhile
-
-    def submit(
-        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
-    ) -> object:
-        if self.meanwhile is not None:
-            self.meanwhile()
-            self.meanwhile = None
-        return fn(*args)
-
-
 def test_an_edit_while_a_run_is_in_flight_is_not_what_its_recipes_run_on(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -268,7 +266,7 @@ def test_an_edit_while_a_run_is_in_flight_is_not_what_its_recipes_run_on(
     each recipe runs in a checkout of the run's commit that is lc's own,
     so an edit in the project meanwhile is none of what it reads — and
     is left exactly where it was."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
     committed = _sha256(root / "data/catalog.txt")
 
     def edit() -> None:
@@ -297,7 +295,7 @@ def test_a_commit_while_a_run_is_in_flight_is_not_the_one_its_records_name(
     """A record names the commit its recipe ran on: the one the run
     started from, whatever was committed in the project meanwhile. Its
     results land on top of that."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
 
     def commit() -> None:
         (root / "notes.md").write_text("committed while the graph ran\n")
@@ -440,7 +438,7 @@ universes:
 def _from_commit(analysis: Callable[..., Path], spec: str) -> Path:
     """A project that declares `lib` at the commit that added it."""
     root = analysis('spec_version: "0.1.0"\n', {"lib/astra.yaml": _LIB})
-    (root / "astra.yaml").write_text(spec % dataset.head(root)[0])
+    (root / "astra.yaml").write_text(spec % dataset.head(root))
     dataset.save(root, [root / "astra.yaml"], "declare lib at a commit")
     return root
 

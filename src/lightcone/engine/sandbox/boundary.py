@@ -276,7 +276,7 @@ def _downgrade_note(capability: Capability) -> str:
     one shipped implementations are cited for.
     """
     reason = f" — {capability.detail}" if capability.detail else ""
-    return f"not sandboxed on this host{reason}; recorded as `fs: open`"
+    return f"not sandboxed on this host{reason}"
 
 
 def write_output(name: str, data: bytes) -> None:

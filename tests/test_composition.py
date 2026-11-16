@@ -257,7 +257,7 @@ def test_an_analysis_declared_at_a_commit_is_refused_not_guessed(
     records at that commit, which this engine does not do — so it says so
     before anything runs."""
     project = analysis(ROOT, FILES)
-    head = dataset.head(project)[0]
+    head = dataset.head(project)
     spec = project / "astra.yaml"
     spec.write_text(
         spec.read_text()

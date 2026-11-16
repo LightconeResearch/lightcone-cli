@@ -36,8 +36,9 @@ import json
 import posixpath
 import re
 import shlex
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -301,7 +302,7 @@ class StatusReport:
     """Every result the analysis plans, in dependency order."""
 
     outputs: list[OutputStatus] = field(default_factory=list)
-    #: The lock scan's prose, and inputs this clone has not fetched.
+    #: The lock scan's prose, and what ASTRA notes for the author.
     warnings: list[str] = field(default_factory=list)
     #: The three header facts nothing else surfaces: which world this
     #: project executes in, where its image stands, and what would
@@ -440,17 +441,10 @@ def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
     record is also what carries the history across a re-declared format,
     where the payload's own path is new and would read as clean.
     """
-    write = dataset.last_writer(root, *_files(task))
+    write = dataset.last_writer(root, *task.files)
     if not write or write.subject == datalad_run_subject(task.key):
         return None
     return write
-
-
-def _files(task: Task) -> list[str]:
-    """The bytes and the record at each of *task*'s places."""
-    return [
-        path for place in task.result.places for path in (place.file_path, place.record_path)
-    ]
 
 
 def _sandbox_line(mode: str) -> str:
@@ -469,7 +463,7 @@ def _sandbox_line(mode: str) -> str:
     found = sandbox.detect().capability
     if found.kind == "none":
         detail = f" — {found.detail}" if found.detail else ""
-        return f"none{detail}; runs record `fs: open`"
+        return f"none{detail} (fs: open, network: allowed)"
     return f"{found.kind} (fs: declared, network: allowed)"
 
 
@@ -516,16 +510,7 @@ def materialize(
         changes = dataset.status(root)
     if changes:
         raise ProjectError(_dirty(root, changes))
-    # A clean tree does not say the environment is in the commit: an
-    # ignored file is clean. A record names its environment by the files
-    # of its commit, so each has to be there for lc to recreate it.
-    if missing := dataset.untracked(root, identity.files(root)):
-        raise ProjectError(
-            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
-            "could not recreate the environment its recipe ran in "
-            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
-            "whatever .gitignore rule keeps them out."
-        )
+    worker.require_recreatable(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
@@ -560,7 +545,7 @@ def materialize(
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
-        if dataset.head(root)[0] != graph.head:
+        if dataset.head(root) != graph.head:
             # The image was built and committed. That commit is the one
             # the run builds, so its plan is the one to follow.
             graph, environment, full = _graph(root, targets, MaterializeReport())
@@ -574,7 +559,7 @@ def materialize(
         with checkout.landing(root):
             moved = (
                 dataset.status(root, also=graph.beside)
-                or dataset.head(root)[0] != graph.head
+                or dataset.head(root) != graph.head
             )
         if moved:
             raise ProjectError(
@@ -585,7 +570,7 @@ def materialize(
         handles: list[Any] = []
         reported = 0
         try:
-            running = {found.task.key for found in classified if found.may_run(refresh=refresh)}
+            running = [found.task for found in classified if found.may_run(refresh=refresh)]
             # Every file a task that may run reads, bar a result certain
             # to be remade. One that may run only because something it
             # reads may is left alone when that comes out as recorded,
@@ -599,15 +584,13 @@ def materialize(
                 tree,
                 sorted(
                     {
-                        graph.tasks[key].reads[source.entry]
-                        for key in running
-                        for source in graph.tasks[key].result.inputs
+                        task.reads[source.entry]
+                        for task in running
+                        for source in task.result.inputs
                         if source.result not in certain
                     }
                 ),
-                replaceable={
-                    place.file_path for key in running for place in graph.tasks[key].result.places
-                },
+                replaceable={place.file_path for task in running for place in task.result.places},
             )
             if unfetched:
                 # A *warning*, never a refusal: independent tasks still
@@ -624,19 +607,38 @@ def materialize(
             # does not come through here; its entry point converges too.)
             runtime = replace(runtime, root=tree.root, env_dir=project.env_dir(tree.root))
             report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+            # A declared input more than one task reads is hashed here,
+            # once: each task would otherwise read all of it to name it in
+            # its record, and a multiverse reads one catalog in every
+            # universe. One this checkout cannot give is left for the
+            # task that reads it to report.
+            readers = Counter(
+                task.reads[source.entry]
+                for task in running
+                for source in task.result.inputs
+                if source.result is None
+            )
+            hashed: dict[str, tuple[tuple[int, int, int], assets.Digest]] = {}
+            for path in sorted(path for path, count in readers.items() if count > 1):
+                with suppress(OSError, ProjectError):
+                    assets.require_fetched(tree.root / path)
+                    hashed[path] = (
+                        assets.stamp(tree.root / path),
+                        assets.digest_file(tree.root / path),
+                    )
             # Every record of the run names the commit its checkout is at.
             context = worker.RunContext(
-                environment=environment, commit=tree.commit, runtime=runtime
+                environment=environment, commit=tree.commit, runtime=runtime, hashed=hashed
             )
             written = sorted(
-                {posixpath.dirname(path) for task in graph.tasks.values() for path in _files(task)}
+                {posixpath.dirname(path) for task in graph.tasks.values() for path in task.files}
             )
             pending: dict[Key, Any] = {}
             # Results left alone are values, not Dask tasks: they need no allocation
             # resources. Futures for everything that may run retain dependency order.
             for found in classified:
                 task = found.task
-                if task.key not in running:
+                if not found.may_run(refresh=refresh):
                     pending[task.key] = _left_alone(found, report)
                     continue
                 # What the checker found goes with the task: downstream of a
@@ -883,9 +885,15 @@ def _require_storable(root: Path, graph: Graph) -> None:
     places = [place for task in graph.tasks.values() for place in task.result.places]
     files = [place.file_path for place in places]
     records = [place.record_path for place in places]
-    ignored = project._run(
-        ["git", "check-ignore", "--no-index", "--", *files, *records], cwd=root
-    ).stdout.split()
+    # NUL-separated both ways, as `check-attr` is below: git otherwise
+    # quotes a path holding an accent, and a space would end one. For
+    # `check-ignore` that means paths on stdin, the only way it takes `-z`.
+    asked = project._run(
+        ["git", "check-ignore", "-z", "--no-index", "--stdin"],
+        cwd=root,
+        stdin="".join(f"{path}\0" for path in (*files, *records)),
+    )
+    ignored = [path for path in asked.stdout.split("\0") if path]
     listed = dataset._git(
         ["check-attr", "-z", "annex.largefiles", "--", *files, *records], cwd=root
     ).split("\0")
@@ -969,7 +977,11 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
-    if dataset.status(root):
+    # Read while no other run is landing a result, which would look like
+    # an edit.
+    with checkout.landing(root):
+        edited = dataset.status(root)
+    if edited:
         # The crate is a function of what is committed, and it is read
         # off the working tree: one being edited would publish the edit.
         report.warnings.append(
@@ -999,7 +1011,7 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             full,
             license=spdx,
             dsid=dsid,
-            remote=dataset.head(root)[1],
+            remote=dataset.remote(root),
             writer=functools.partial(dataset.last_writer, root),
             keys=dataset.annex_keys(root),
         )
@@ -1063,7 +1075,7 @@ def run_record(task: Task, dsid: str, runtime: container.Runtime) -> str:
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(set(task.reads.values())),
-        "outputs": _files(task),
+        "outputs": task.files,
         "pwd": ".",
     }
     if runtime.mode == "containerized":

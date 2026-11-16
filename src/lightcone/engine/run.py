@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from lightcone.engine import container, sandbox
+from lightcone.engine import container, plan, sandbox
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
     ProjectError,
@@ -118,15 +118,10 @@ def input_paths(project: Path) -> list[Path]:
     from astra import api
 
     try:
-        # Offline: a probe reads the project, and never a remote for it.
-        analysis = api.resolve(project, offline=True)
-    except (
-        api.NoAnalysisError,
-        api.InvalidAnalysisError,
-        api.GitError,
-        api.CacheError,
-        OSError,
-    ):
+        with plan.asking_astra(project):
+            # Offline: a probe reads the project, and never a remote for it.
+            analysis = api.resolve(project, offline=True)
+    except ProjectError:
         return []
     found = [
         path.resolve()

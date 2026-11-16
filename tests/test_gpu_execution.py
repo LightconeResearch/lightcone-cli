@@ -34,7 +34,7 @@ def project(analysis: Callable[..., Path]) -> tuple[Path, plan.Task, worker.RunC
     task = plan.build(root).tasks["visibility"]
     context = worker.RunContext(
         environment=identity.environment(root),
-        commit=dataset.head(root)[0],
+        commit=dataset.head(root),
         runtime=container.runtime_for_run(root, build=False),
     )
     return root, task, context

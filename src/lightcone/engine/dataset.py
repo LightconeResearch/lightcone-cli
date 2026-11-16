@@ -250,23 +250,30 @@ def require_committer(directory: Path) -> None:
         )
 
 
-def head(directory: Path) -> tuple[str, str]:
-    """Read the commit ``HEAD`` is at and the ``origin`` URL.
-
-    Both are reads and neither takes the index lock.
+def head(directory: Path) -> str:
+    """Read the commit ``HEAD`` is at.
 
     Args:
         directory: The repository to read.
 
     Returns:
-        ``(commit sha, origin URL)``. The URL is empty rather than absent
-        when the repository has no remote.
+        The commit's sha.
     """
-    remote = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
-    return (
-        _git(["rev-parse", "HEAD"], cwd=directory).strip(),
-        remote.stdout.strip() if remote.returncode == 0 else "",
-    )
+    return _git(["rev-parse", "HEAD"], cwd=directory).strip()
+
+
+def remote(directory: Path) -> str:
+    """Read the ``origin`` URL.
+
+    Args:
+        directory: The repository to read.
+
+    Returns:
+        The URL, empty rather than absent when the repository has no
+        remote.
+    """
+    asked = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
+    return asked.stdout.strip() if asked.returncode == 0 else ""
 
 
 def dataset_id(directory: Path) -> str:

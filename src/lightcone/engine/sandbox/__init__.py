@@ -2,7 +2,7 @@
 
 Guarantees that a command cannot use executables or files outside the
 declared set wherever a mechanism exists, and what actually enforced it
-is always recorded.
+is always reported.
 
 This includes three components. :mod:`policy` decides *what* is allowed, in
 plain path sets that mention no mechanism. A :class:`~model.Backend`

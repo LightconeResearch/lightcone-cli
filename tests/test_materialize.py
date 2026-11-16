@@ -12,6 +12,7 @@ the seam is only worth having if the real thing still fits through it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -23,9 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import CLUSTER_ID, _Inline
+from conftest import CLUSTER_ID, _cluster, _Inline, _Meanwhile
 
-from lightcone.engine import assets, dataset, identity
+from lightcone.engine import assets, checkout, dataset, identity, plan
 from lightcone.engine import materialize as engine
 from lightcone.engine.plan import Task
 from lightcone.engine.project import ProjectError, child_env
@@ -81,16 +82,6 @@ def _record(root: Path, name: str) -> dict[str, Any]:
 
 def _commits(root: Path) -> int:
     return len(dataset._git(["log", "--oneline"], cwd=root).splitlines())
-
-
-def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
-    """Point the run at a custom scheduler — the one monkeypatch point."""
-
-    @contextmanager
-    def fake(cluster_id: str) -> Iterator[_Inline]:
-        yield scheduler
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
 
 
 # ---- a run, end to end -----------------------------------------------------
@@ -310,7 +301,7 @@ def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
 def test_status_names_the_commit_each_output_came_from(root: Path, inline: None) -> None:
     """The verb's whole reason to exist: an output that is behind is not
     wrong, and this is where the code that produced it can be read back."""
-    ran_against = dataset.head(root)[0]
+    ran_against = dataset.head(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     report = engine.status(root)
@@ -340,7 +331,7 @@ def test_status_names_the_environment_each_output_ran_in(root: Path, inline: Non
 def test_status_reports_behind_after_the_environment_moves(
     root: Path, inline: None
 ) -> None:
-    made_at, made_in = dataset.head(root)[0], identity.environment(root)
+    made_at, made_in = dataset.head(root), identity.environment(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _move_the_environment(root)
 
@@ -454,6 +445,57 @@ def test_a_run_asks_astra_once_however_far_a_remake_cascades(
 
     assert report.made == ["first#baseline", "second#baseline"]
     assert asked == [root]
+
+
+_SHARED = """
+spec_version: "0.1.0"
+
+inputs:
+  catalog: {path: data/catalog.txt}
+  mask: {path: data/mask.txt}
+
+outputs:
+  left:
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} > {output}
+
+  right:
+    type: metric
+    format: txt
+    inputs: [catalog, mask]
+    recipe:
+      command: cat {inputs.catalog} {inputs.mask} > {output}
+"""
+
+
+def test_an_input_more_than_one_task_reads_is_hashed_once(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each task that reads a declared input would otherwise read all of
+    it again to name it in its record, and a multiverse reads one catalog
+    in every universe. An input one task reads is that task's to hash."""
+    root = analysis(_SHARED, {"data/catalog.txt": "stars\n", "data/mask.txt": "sky\n"})
+    hashed: list[str] = []
+    digest_file = assets.digest_file
+
+    def counted(path: Path) -> assets.Digest:
+        hashed.append(path.name)
+        return digest_file(path)
+
+    monkeypatch.setattr(assets, "digest_file", counted)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (hashed.count("catalog.txt"), hashed.count("mask.txt")) == (1, 1)
+    for name in ("left", "right"):
+        read = json.loads((root / f".astra/records/{name}.json").read_text())["generated_by"]
+        catalog = next(item for item in read["inputs"] if item["entry"] == "catalog")
+        assert catalog["content_hash"] == "sha256:" + hashlib.sha256(b"stars\n").hexdigest()
+        assert catalog["size"] == 6
 
 
 def test_a_changed_input_remakes_what_reads_it(
@@ -726,29 +768,13 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-class _Meanwhile(_Inline):
-    """Do something in the project once the run has its checkout, before
-    its first recipe starts."""
-
-    def __init__(self, meanwhile: Callable[[], None]) -> None:
-        self.meanwhile: Callable[[], None] | None = meanwhile
-
-    def submit(
-        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
-    ) -> object:
-        if self.meanwhile is not None:
-            self.meanwhile()
-            self.meanwhile = None
-        return fn(*args)
-
-
 def test_an_edit_while_the_graph_runs_is_no_part_of_the_run(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Recipes run in the run's own checkout of the commit, so what is
     edited in the project meanwhile changes nothing they see and nothing
     a record says — and stays exactly where the researcher left it."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
 
     def edit() -> None:
         spec = root / "astra.yaml"
@@ -770,7 +796,7 @@ def test_a_commit_while_the_graph_runs_is_built_on(
 ) -> None:
     """Results land on top of whatever the researcher committed meanwhile,
     each record naming the commit its recipe ran on."""
-    start = dataset.head(root)[0]
+    start = dataset.head(root)
 
     def commit() -> None:
         (root / "notes.md").write_text("committed while the graph ran\n")
@@ -848,6 +874,32 @@ def test_the_crate_waits_for_a_tree_that_is_the_commit(
     assert report.ok
     assert any("RO-Crate" in w and "uncommitted changes" in w for w in report.warnings)
     assert not (root / "ro-crate-metadata.json").exists()
+
+
+def test_the_crate_reads_the_tree_while_no_other_run_is_landing(
+    root: Path, inline: None
+) -> None:
+    """Another run's result, half landed, would read as an edit, and the
+    crate would be left for the next run though the tree is a commit's."""
+    _declare_license(root)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    report = engine.MaterializeReport()
+    converge = threading.Thread(
+        target=engine._converge_crate,
+        args=(root, report, plan.build(root), dataset.dataset_id(root)),
+    )
+    half_landed = root / "results/baseline/third.txt"
+
+    with checkout.landing(root):
+        half_landed.write_text("another run's\n")
+        converge.start()
+        converge.join(timeout=0.5)
+        assert converge.is_alive()
+        half_landed.unlink()
+    converge.join(timeout=60)
+
+    assert not converge.is_alive()
+    assert not any("uncommitted changes" in w for w in report.warnings)
 
 
 def test_a_result_made_while_the_project_is_on_another_branch_waits_for_it(
@@ -1001,7 +1053,7 @@ def test_a_checkout_is_kept_and_taken_again(root: Path, inline: None) -> None:
     assert report.ok
     held = root / ".lightcone/checkouts"
     assert sorted(p.name for p in held.iterdir()) == ["0", "pyproject.toml", "uv.toml"]
-    assert dataset._git(["rev-parse", "HEAD"], cwd=held / "0").strip() != dataset.head(root)[0]
+    assert dataset._git(["rev-parse", "HEAD"], cwd=held / "0").strip() != dataset.head(root)
     assert not dataset.status(root)
 
 
@@ -1151,6 +1203,47 @@ def test_a_result_git_ignores_is_refused(root: Path, inline: None) -> None:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
 
+def test_an_ignored_result_is_named_as_it_is_on_disk(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A space or an accent in the folder of an analysis: git quotes such
+    a path unless asked not to, and a refusal has to name the file."""
+    stage = """
+    spec_version: "0.1.0"
+    decisions:
+      depth:
+        options: {deep: {}, shallow: {}}
+    universes:
+      v: {decisions: {depth: deep}}
+    outputs:
+      mask:
+        type: data
+        format: txt
+        decisions: [depth]
+        recipe:
+          command: echo {decisions.depth} > {output}
+    """
+    spec = """
+    spec_version: "0.1.0"
+    analyses:
+      stage: {path: "étape une"}
+    outputs:
+      report:
+        type: report
+        format: txt
+        inputs: ["stage.mask#v"]
+        recipe:
+          command: cat "{inputs}" > {output}
+    """
+    root = analysis(spec, files={"étape une/astra.yaml": stage})
+    _rules(root, ".gitignore", lambda text: text + "étape une/results/\n")
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert "étape une/results/v/mask.txt is git-ignored" in str(raised.value)
+
+
 def test_a_universe_may_be_called_results(analysis: Callable[..., Path], inline: None) -> None:
     """Its records are at `.astra/records/results/`, which a line meant for
     the results of a nested analysis would annex: unreadable then on a
@@ -1258,7 +1351,7 @@ def test_every_record_of_one_run_names_the_commit_it_started_from(
     """The driver commits each output as it lands, so HEAD moves during the
     run — and reading it per task would stamp later records with a commit
     this same run created, nondeterministically."""
-    started_at = dataset.head(root)[0]
+    started_at = dataset.head(root)
 
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 

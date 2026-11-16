@@ -195,18 +195,39 @@ class _Inline:
         yield from handles
 
 
-@pytest.fixture
-def inline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the Dask cluster with an in-thread scheduler — the one
-    monkeypatch point `cluster_for_run` exists to be."""
+class _Meanwhile(_Inline):
+    """Do something in the project once the run has its checkout, before
+    its first recipe starts."""
+
+    def __init__(self, meanwhile: Callable[[], None]) -> None:
+        self.meanwhile: Callable[[], None] | None = meanwhile
+
+    def submit(
+        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+    ) -> object:
+        if self.meanwhile is not None:
+            self.meanwhile()
+            self.meanwhile = None
+        return fn(*args)
+
+
+def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
+    """Point the run at *scheduler* — the one monkeypatch point
+    `cluster_for_run` exists to be."""
     from lightcone.engine import materialize
 
     @contextmanager
     def fake(cluster_id: str) -> Iterator[_Inline]:
         assert cluster_id == CLUSTER_ID
-        yield _Inline()
+        yield scheduler
 
     monkeypatch.setattr(materialize, "cluster_for_run", fake)
+
+
+@pytest.fixture
+def inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the Dask cluster with an in-thread scheduler."""
+    _cluster(monkeypatch, _Inline())
 
 
 @pytest.fixture

@@ -91,23 +91,17 @@ class RunHandler(APIHandler):
         model = await ensure_async(cm.get(path, type="file", content=False))
         root = Path(cm.root_dir).resolve()
 
-        def read(name: str) -> str | None:
-            # The record is hidden, but uses the same confined opener as artifacts.
-            try:
-                with open_fd(root, root / name, hidden=True) as fd:
-                    with os.fdopen(fd, "r", closefd=False) as file:
-                        return file.read()
-            except (web.HTTPError, UnicodeDecodeError):
-                return None
-
         run: dict[str, Any] | None = None
         for record_path in assets.record_places(model["path"]):
-            if (text := read(record_path)) is None:
-                continue
             # A record is plain JSON in ASTRA's own shape, read as written:
             # whether it still holds is the checker's to say, not this page's.
             try:
-                made = json.loads(text)["generated_by"]
+                # The record is hidden, but uses the same confined opener as artifacts.
+                with (
+                    open_fd(root, root / record_path, hidden=True) as fd,
+                    os.fdopen(fd, "r", closefd=False) as file,
+                ):
+                    made = json.load(file)["generated_by"]
                 run = {
                     "finishedAt": made.get("finished", ""),
                     "gitRevision": made["commit"],
@@ -117,7 +111,7 @@ class RunHandler(APIHandler):
                         item["entry"]: item["content_hash"] for item in made.get("inputs", [])
                     },
                 }
-            except (ValueError, KeyError, TypeError, AttributeError):
+            except (web.HTTPError, ValueError, KeyError, TypeError, AttributeError):
                 continue
             break
         self.set_header("Cache-Control", "private, no-store")
@@ -138,8 +132,7 @@ class StatusHandler(APIHandler):
             raise web.HTTPError(422, str(error)) from error
         outputs = {o.output: {"state": o.status, "detail": o.why} for o in report.outputs}
         self.set_header("Cache-Control", "private, no-store")
-        # The warnings qualify the verdicts — an unfetched input reads as
-        # "changed" without the line saying it is merely not in this clone.
+        # The warnings qualify the verdicts, so they travel with them.
         self.finish({"outputs": outputs, "warnings": report.warnings})
 
 

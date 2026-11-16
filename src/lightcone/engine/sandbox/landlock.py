@@ -106,8 +106,7 @@ class LandlockBackend:
             policy: The policy being wrapped.
 
         Returns:
-            The record written with every output, derived from the flags
-            actually applied.
+            What was enforced, derived from the flags actually applied.
         """
         return Attestation(
             mechanism="landlock",

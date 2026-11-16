@@ -26,7 +26,6 @@ workflow's ``HowToStep`` s.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import posixpath
 import re
@@ -48,7 +47,7 @@ if TYPE_CHECKING:
     from astra.api import ProvenanceRecord
 
 #: The vocabulary the run-level facts come from. Without it in the
-#: ``@context``, terms like ``containerImage`` and ``sha256`` are
+#: ``@context``, terms like ``sha256`` are
 #: undefined and silently dropped on JSON-LD expansion — typed but inert.
 _WORKFLOW_RUN_CONTEXT = "https://w3id.org/ro/terms/workflow-run"
 
@@ -187,13 +186,11 @@ class _Builder:
         self.engines: set[str] = set()  # engine @ids already added
         self.actions: list[str] = []  # action @ids, for the root's mentions
         #: Loop invariants, asked once: the uuid5 namespace every minted
-        #: id lives under, the spec's header and last commit, and which
-        #: decisions it declares.
+        #: id lives under, and the spec's header and last commit.
         self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
         self.remote = remote
         self.title = graph.label or root.name
         self.spec_write = writer(root / SPEC_FILENAME)
-        self.parameters = {d for t in graph.tasks.values() for d in t.decisions}
 
     def document(self) -> str:
         """Assemble the graph and serialize it, deterministically."""
@@ -263,7 +260,7 @@ class _Builder:
             workflow["creator"] = {
                 "@id": self._person(self.spec_write.author, self.spec_write.email)
             }
-        for decision in sorted(self.parameters):
+        for decision in sorted({d for t in self.graph.tasks.values() for d in t.decisions}):
             parameter = ContextEntity(
                 self.crate,
                 f"#param-{decision}",
@@ -374,10 +371,10 @@ class _Builder:
         try:
             if path.is_symlink() or assets.is_pointer(path):
                 return {}
-            data = path.read_bytes()
+            content_hash, length = assets.digest_file(path)
         except OSError:
             return {}
-        return {"contentSize": str(len(data)), "sha256": hashlib.sha256(data).hexdigest()}
+        return {"contentSize": str(length), "sha256": content_hash.removeprefix("sha256:")}
 
     def _dataset_id(self, key: Key) -> str:
         """One result's crate id — the place ASTRA gives its bytes, never
@@ -390,7 +387,7 @@ class _Builder:
         # A `File`, not a `Dataset` with parts: a result is one file, so
         # there is one annex key to look up by name and one checksum to
         # publish — the same digest its record gives.
-        entity = self._file(self._dataset_id(key))
+        entity = self._file(place.file_path)
         entity["name"] = record.address
         entity["description"] = f"output {_titled(key)}, materialized"
         entity["version"] = record.content_hash
@@ -463,11 +460,7 @@ class _Builder:
         own record's ``inputs``.
         """
         if self.crate.dereference(path) is None:
-            properties: dict[str, Any] = {"@type": "File", "name": path}
-            if fmt := _format_of(path):
-                properties["encodingFormat"] = fmt
-            properties.update(self._integrity(path))
-            self.crate.add_file(self.root / path, path, properties=properties)
+            self._file(path)["name"] = path
         return path
 
     def _control(self, key: Key, action_id: str) -> None:
