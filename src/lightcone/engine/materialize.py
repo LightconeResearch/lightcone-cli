@@ -1,35 +1,32 @@
 """Making a whole analysis: what runs, in what order, and what gets committed.
 
-The driver's three jobs, and the order matters.
+The driver's jobs, and the order matters.
 
-**It refuses to start on a dirty tree.** Every materialization is
-committed together with the code that produced it, so a run that began
-with uncommitted changes could not honestly say which code that was. And
-it keeps asking: a result whose recipe finished in a checkout somebody
-edited or committed to meanwhile is not recorded as made from the run's
-commit.
+**It builds a commit, in a checkout of its own.** A run starts from a
+tree with no uncommitted change, so that what the researcher sees is
+what runs; then every recipe runs in the run's own checkout of that
+commit (:mod:`~lightcone.engine.checkout`), and the project's tree is
+the researcher's again. Editing it, staging in it or committing to it
+while the run is in flight changes nothing a recipe sees and nothing a
+record says.
 
 **It hands the work to Dask and gets out of the way.** Tasks that may run
 receive upstream futures or already-current results as arguments, so the
 ordering, parallelism, and scheduling are Dask's — there is no ready-set
 loop here to get wrong.
 
-**It owns git, alone.** Workers execute and return; the driver commits, in
-one thread, as results arrive. That is not a preference: concurrent git
-operations on one repository race on the index lock. The same loop
-restores what a completed failed task left behind. Unreported tasks may
-still be writing, so interruptions retain their partial files.
+**It owns git, alone.** Workers execute and return; the driver lands each
+result in the project and commits it there, in one thread, as results
+arrive. That is not a preference: concurrent git operations on one
+repository race on the index lock. A result that cannot be landed yet —
+the project is mid-merge, or on another branch for a moment — waits, and
+is tried again as each later one arrives; one still waiting when the
+last has arrived is reported failed.
 
-One consequence, checked rather than assumed: a dependent starts as soon
-as its upstream's *worker* returns, which is milliseconds before the
-driver finishes annexing that upstream — so a recipe does read an input
-directory while ``git annex add`` is replacing its files with symlinks.
-That is safe, because git-annex hard-links the content into the object
-store first and then renames the symlink over the file: the path never
-stops existing and never holds partial bytes. Measured, on a run of
-concurrent full-content reads across 24 MB: no missing paths, no short
-reads, no wrong bytes. Do not "fix" this by moving the save into the
-task — that is what puts git back in the workers.
+A dependent starts as soon as its upstream's *worker* returns, and reads
+the upstream's file in the checkout, where the recipe left it: landing a
+result gives its bytes a second name in the project and takes nothing
+away from the checkout.
 """
 
 from __future__ import annotations
@@ -46,7 +43,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, worker
+from lightcone.engine import (
+    assets,
+    checkout,
+    container,
+    dataset,
+    identity,
+    plan,
+    project,
+    worker,
+)
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
@@ -496,11 +502,19 @@ def materialize(
     report = MaterializeReport()
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
-    # The dirty check comes before anything that writes: the image
-    # converge below *commits*, and `dataset.save` stages scoped but
-    # commits the whole index — on a dirty tree the user's staged edits
-    # would be swept into the image commit.
-    if changes := dataset.status(root):
+    if held := dataset.index_held(root):
+        raise ProjectError(
+            f"another git command holds the project's index ({held}), so no result "
+            "could be committed. Wait for it to end; if none is running, a git that "
+            "was killed left that file, and removing it is the remedy."
+        )
+    # A run builds a commit, and an uncommitted change would be no part
+    # of it. Refused rather than left out: what the researcher sees in
+    # the tree when a run starts is what the run builds. Read while no
+    # other run is landing a result, which would look like an edit.
+    with checkout.landing(root):
+        changes = dataset.status(root)
+    if changes:
         raise ProjectError(_dirty(root, changes))
     # A clean tree does not say the environment is in the commit: an
     # ignored file is clean. A record names its environment by the files
@@ -517,174 +531,220 @@ def materialize(
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment, full = _graph(root, targets, report)
+    # ASTRA read every analysis of the stack in the working tree, and one
+    # the project declares beside itself is outside the folder asked
+    # about above.
+    if graph.beside:
+        with checkout.landing(root):
+            changes = dataset.status(root, also=graph.beside)
+        if changes:
+            raise ProjectError(_dirty(root, changes))
     dsid = dataset.dataset_id(root)
-    if not graph.tasks:
-        # No tasks is not no project: a spec whose outputs were all dropped
-        # still has a crate describing them, and this is its only
-        # maintainer. Nothing is submitted, so no allocation is needed.
+    classified = _classify(root, graph, environment, refresh=refresh)
+    if not any(found.may_run(refresh=refresh) for found in classified):
+        # Nothing to make is not nothing to do: the crate describes the
+        # project, and this is its only maintainer. Nothing is submitted,
+        # so no allocation and no checkout are needed.
+        for found in classified:
+            _left_alone(found, report)
         _converge_crate(root, report, full, dsid)
         return report
-    classified = _classify(root, graph, environment, refresh=refresh)
+    _require_storable(root, graph)
     with cluster_for_run(cluster_id) as scheduler:
         requirements = scheduler.validate(
             found.task for found in classified if found.may_run(refresh=refresh)
         )
-        _fetch_inputs(root, graph, report)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
-        # one. Resolved once, then handed to every task — the HEAD discipline.
+        # one. Resolved once, then handed to every task.
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
-        # Converge the environment: workers pass `--no-sync`, so this is the
-        # only place on a run's path where it is made to match the lock. (A
-        # rerun does not come through here; its entry point converges too.)
-        report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
-        # The run's driver-resolved facts, each read once: HEAD because the
-        # driver commits as outputs land and a per-task read would stamp
-        # later records with a commit this run created.
-        commit, _ = dataset.head(root)
-        context = worker.RunContext(environment=environment, commit=commit, runtime=runtime)
-        written = {
-            posixpath.dirname(path) + "/" for task in graph.tasks.values() for path in _files(task)
-        }
-        checkout = _Checkout(root, commit, tuple(written))
-        pending: dict[Key, Any] = {}
-        handles = []
-        # Results left alone are values, not Dask tasks: they need no allocation
-        # resources. Futures for everything that may run retain dependency order.
-        for found in classified:
-            task, verdict = found.task, found.verdict
-            if not found.may_run(refresh=refresh):
-                assert found.record is not None and verdict.status != "stale"
-                result = worker.TaskResult(
-                    task.key,
-                    verdict.status,
-                    found.record.content_hash,
-                    found.record.size,
-                    reason=verdict.why,
-                )
-                pending[task.key] = result
-                _consume(checkout, task, result, dsid, runtime, report)
-                continue
-            # What the checker found goes with the task: downstream of a
-            # remake, whether the result still stands is known only once
-            # its upstreams have landed, and the task answers that from
-            # these findings and the bytes they gave, without git.
-            pending[task.key] = scheduler.submit(
-                worker.materialize,
-                root,
-                task,
-                graph.found[task.key],
-                context,
-                refresh,
-                found.foreign,
-                *[pending[dep] for dep in task.depends_on],
-                key=task.key,
-                resources=requirements[task.key],
+        if dataset.head(root)[0] != graph.head:
+            # The image was built and committed. That commit is the one
+            # the run builds, so its plan is the one to follow.
+            graph, environment, full = _graph(root, targets, MaterializeReport())
+            classified = _classify(root, graph, environment, refresh=refresh)
+            requirements = scheduler.validate(
+                found.task for found in classified if found.may_run(refresh=refresh)
             )
-            handles.append(pending[task.key])
-        from lightcone.engine.compute import UNSTOPPED
+        # ASTRA read the working tree and named the commit it was on.
+        # The two are the same thing only while nothing is uncommitted,
+        # and from here on it is the commit that is built.
+        with checkout.landing(root):
+            moved = (
+                dataset.status(root, also=graph.beside)
+                or dataset.head(root)[0] != graph.head
+            )
+        if moved:
+            raise ProjectError(
+                "the project changed while lc was preparing the run — a file was "
+                "edited, or a commit made. Run again."
+            )
+        tree = checkout.take(root, graph.head, scheduler.allocation)
+        handles: list[Any] = []
+        reported = 0
+        try:
+            running = {found.task.key for found in classified if found.may_run(refresh=refresh)}
+            # Every file a task that may run reads, bar a result certain
+            # to be remade. One that may run only because something it
+            # reads may is left alone when that comes out as recorded,
+            # and its bytes are then what its own readers read.
+            certain = {
+                found.task.key
+                for found in classified
+                if found.verdict.calls_for_a_remake(refresh=refresh)
+            }
+            unfetched = checkout.fill(
+                tree,
+                sorted(
+                    {
+                        graph.tasks[key].reads[source.entry]
+                        for key in running
+                        for source in graph.tasks[key].result.inputs
+                        if source.result not in certain
+                    }
+                ),
+                replaceable={
+                    place.file_path for key in running for place in graph.tasks[key].result.places
+                },
+            )
+            if unfetched:
+                # A *warning*, never a refusal: independent tasks still
+                # run, and the task whose input is unreachable reports
+                # its own failure — per-task reporting is most of what
+                # owning the loop buys.
+                report.warnings.append(
+                    "some of what this run reads could not be fetched into this clone — "
+                    f"tasks needing it will report it:\n{unfetched}"
+                )
+            # The run's environment is the checkout's own, made to match
+            # the commit's lock: workers pass `--no-sync`, so this is the
+            # only place on a run's path where it is converged. (A rerun
+            # does not come through here; its entry point converges too.)
+            runtime = replace(runtime, root=tree.root, env_dir=project.env_dir(tree.root))
+            report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+            # Every record of the run names the commit its checkout is at.
+            context = worker.RunContext(
+                environment=environment, commit=tree.commit, runtime=runtime
+            )
+            written = sorted(
+                {posixpath.dirname(path) for task in graph.tasks.values() for path in _files(task)}
+            )
+            pending: dict[Key, Any] = {}
+            # Results left alone are values, not Dask tasks: they need no allocation
+            # resources. Futures for everything that may run retain dependency order.
+            for found in classified:
+                task = found.task
+                if task.key not in running:
+                    pending[task.key] = _left_alone(found, report)
+                    continue
+                # What the checker found goes with the task: downstream of a
+                # remake, whether the result still stands is known only once
+                # its upstreams have landed, and the task answers that from
+                # these findings and the bytes they gave, without git.
+                pending[task.key] = scheduler.submit(
+                    worker.materialize,
+                    tree.root,
+                    task,
+                    graph.found[task.key],
+                    context,
+                    refresh,
+                    found.foreign,
+                    *[pending[dep] for dep in task.depends_on],
+                    key=task.key,
+                    resources=requirements[task.key],
+                )
+                handles.append(pending[task.key])
+            from lightcone.engine.compute import UNSTOPPED
 
-        # An unreported task can still have a running subprocess. Leave its
-        # partial files in place on interruption rather than restoring over it.
-        outstanding = len(handles)
-        for result in scheduler.completed(handles):
-            outstanding -= 1
-            try:
-                _consume(checkout, graph.tasks[result.key], result, dsid, runtime, report)
-            except Exception as exc:
-                if not outstanding:
-                    raise
-                raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
+            # Made, and not yet committed in the project: task → why not.
+            waiting: dict[Key, str] = {}
+            for result in scheduler.completed(handles):
+                reported += 1
+                try:
+                    _consume(tree, written, graph, result, dsid, runtime, report, waiting)
+                except Exception as exc:
+                    if reported == len(handles):
+                        raise
+                    raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
+            for key, why in waiting.items():
+                report.failed.append(key)
+                report.warnings.append(f"{key}: made, but not recorded: {why}")
+        finally:
+            # An unreported task can still have a running recipe, writing
+            # in the checkout: then the slot is kept from the next run.
+            if reported == len(handles):
+                checkout.give_back(tree)
         _converge_crate(root, report, full, dsid)
         return report
 
 
-@dataclass
-class _Checkout:
-    """The checkout a run's recipes run in, and whether it is still the run's.
-
-    Every record a run writes names the commit the run started from, and
-    that is only true of a recipe that ran in that commit's checkout,
-    changed by nothing but what runs write: records and results. The
-    start-of-run refusal establishes it; this is what notices it ending.
-    Asked as each made result arrives, before it is committed, because a
-    result recorded against code that was edited under it is a false
-    record however the edit ends up — and git is the driver's alone, so
-    this is the one place that can ask.
-    """
-
-    root: Path
-    #: Where the run last left HEAD: the commit it started from, then each
-    #: commit it made.
-    head: str
-    #: The folders the run's tasks write their results and records in: a
-    #: change there is the run's own.
-    written: tuple[str, ...]
-
-    def moved(self) -> str:
-        """Say why a result made now cannot be recorded, or nothing.
-
-        Returns:
-            Empty while HEAD is where the run left it and the only
-            changes are in the folders its tasks write in.
-        """
-        if dataset.head(self.root)[0] != self.head:
-            return (
-                "a commit was made in the project while the run was in flight, so the "
-                "commit the run started from no longer says what its recipes ran on "
-                "(UNCOMMITTED_CHANGES)"
-            )
-        edited = sorted(
-            path
-            for _, path in dataset.status(self.root, untracked_files=True)
-            if not path.startswith(self.written)
-        )
-        if edited:
-            return (
-                f"edited while the run was in flight: {', '.join(edited)} — the commit "
-                "the run started from no longer says what its recipes ran on "
-                "(UNCOMMITTED_CHANGES)"
-            )
-        return ""
+def _left_alone(found: _Classified, report: MaterializeReport) -> worker.TaskResult:
+    """Report a result no run has to make, as the value its dependents read."""
+    assert found.record is not None and found.verdict.status != "stale"
+    if found.verdict.status == "behind":
+        report.behind[found.task.key] = found.verdict.why
+    else:
+        report.current.append(found.task.key)
+    return worker.TaskResult(
+        found.task.key,
+        found.verdict.status,
+        found.record.content_hash,
+        found.record.size,
+        reason=found.verdict.why,
+    )
 
 
 def _consume(
-    checkout: _Checkout,
-    task: Task,
+    tree: checkout.Checkout,
+    written: Sequence[str],
+    graph: Graph,
     result: worker.TaskResult,
     dsid: str,
     runtime: container.Runtime,
     report: MaterializeReport,
+    waiting: dict[Key, str],
 ) -> None:
-    """Record one finished task, and commit or undo what it left on disk."""
-    root, name = checkout.root, task.key
+    """Record one finished task, and land in the project what can be landed."""
+    name = result.key
     if result.notes:
         # Named on a line of their own rather than prefixed onto each: a
         # prefix would land in the middle of a multi-line remedy and make
         # it uncopyable, which is the whole reason these travel separately.
         report.notes.extend([f"{name}:", *result.notes])
 
-    if result.status == "ok" and (moved := checkout.moved()):
-        result = replace(result, status="failed", reason=f"made, but not recorded: {moved}")
     if result.status == "ok":
-        dataset.save(root, _owned(task), run_record(root, task, dsid, runtime))
-        checkout.head = dataset.head(root)[0]
-        report.made.append(name)
-        return
-
-    if result.status == "current":
+        # Asked as each made result arrives, of the checkout its recipe
+        # ran in: a record written there names a commit, and that is only
+        # true of a checkout nothing but the run's own results changed.
+        if edited := checkout.changed(tree, written):
+            result = replace(
+                result,
+                status="failed",
+                reason=(
+                    "made, but not recorded: the run's checkout no longer holds the "
+                    f"commit's files alone — {', '.join(edited)} (UNCOMMITTED_CHANGES)"
+                ),
+            )
+        else:
+            waiting[name] = ""
+    elif result.status == "current":
         report.current.append(name)
-        return
-
-    if result.status == "behind":
+    elif result.status == "behind":
         report.behind[name] = result.reason
-        return
+    if result.status in ("failed", "blocked"):
+        getattr(report, result.status).append(name)
+        report.warnings.append(f"{name}: {result.reason}")
 
-    dataset.restore(root, _owned(task))
-    getattr(report, result.status).append(name)
-    report.warnings.append(f"{name}: {result.reason}")
+    # Each made result that is not in the project yet, this one included:
+    # one that could not land a moment ago may be able to now.
+    for key in list(waiting):
+        task = graph.tasks[key]
+        waiting[key] = checkout.land(tree, task, run_record(task, dsid, runtime))
+        if not waiting[key]:
+            del waiting[key]
+            report.made.append(key)
 
 
 class Scheduler(Protocol):
@@ -693,6 +753,13 @@ class Scheduler(Protocol):
     Hand over tasks with their upstream handles and iterate results as
     they land, keeping the commit logic independent of the provider.
     """
+
+    @property
+    def allocation(self) -> str:
+        """The full ID of the allocation the tasks execute on. A run's
+        checkout is held in its name: while the allocation lives, a
+        recipe of the run may too."""
+        ...
 
     def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Validate all requests and return their Dask resource reservations."""
@@ -729,6 +796,7 @@ class _Dask:
     """A borrowed Dask client, narrowed to what the graph driver needs."""
 
     client: Any
+    allocation: str
     invocation: str
     output: Forwarder
     workers: dict[str, Any]
@@ -789,41 +857,66 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
     from lightcone.engine import compute
     from lightcone.engine.compute.output import forwarding
 
-    with compute.connect(cluster_id) as client:
+    # Resolved once: a name costs a native discovery, an ID none.
+    allocation = compute.identity(cluster_id)
+    with compute.connect(allocation) as client:
         invocation = uuid4().hex
         with forwarding(client, stdout="stderr") as output:
-            yield _Dask(client, invocation, output, client.scheduler_info()["workers"])
+            yield _Dask(
+                client, allocation, invocation, output, client.scheduler_info()["workers"]
+            )
 
 
-def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
-    """Bring declared inputs' bytes into this clone before workers hash or execute.
+def _require_storable(root: Path, graph: Graph) -> None:
+    """Refuse a project whose results git would not store as lc means them.
 
-    lc fetches rather than telling anyone to — the storage invariant —
-    and only here: ``--check`` and ``status`` are read-only verbs that
-    must not start network transfers. Unconditional rather than probed:
-    ``git annex get`` on content already present is a fast no-op, and one
-    batch invocation beats a detection walk.
+    Asked of git for the very paths a run would commit, because the
+    rules are files the researcher owns and convergence only appends to:
+    an ignored result is committed by nobody and reported made; one that
+    no line sends to the annex lands in git itself, in every clone
+    forever; and a record a line does send there cannot be read on a
+    clone that holds no content.
 
-    A failed fetch is a *warning*, never a refusal: independent tasks
-    still run, and the task whose input is genuinely unreachable reports
-    its own failure with the real error — per-task reporting is most of
-    what owning the loop buys.
+    Raises:
+        ProjectError: Naming each such path.
     """
-    declared = sorted(
-        {
-            task.reads[source.entry]
-            for task in graph.tasks.values()
-            for source in task.result.inputs
-            if source.input is not None
-        }
-    )
-    if not declared:
-        return
-    got = project._run(["git", "annex", "get", "--", *declared], cwd=root)
-    if got.returncode != 0:
-        report.warnings.append(
-            "some declared inputs could not be fetched into this clone — tasks "
-            f"needing them will report it:\n{got.stderr.strip()}"
+    places = [place for task in graph.tasks.values() for place in task.result.places]
+    files = [place.file_path for place in places]
+    records = [place.record_path for place in places]
+    ignored = project._run(
+        ["git", "check-ignore", "--no-index", "--", *files, *records], cwd=root
+    ).stdout.split()
+    listed = dataset._git(
+        ["check-attr", "-z", "annex.largefiles", "--", *files, *records], cwd=root
+    ).split("\0")
+    routed = dict(zip(listed[::3], listed[2::3], strict=False))
+    unrouted = [path for path in files if routed.get(path) in ("nothing", "unspecified", "unset")]
+    annexed = [path for path in records if routed.get(path) == "anything"]
+    refusals = [
+        *(
+            f"{path} is git-ignored, so it would never be committed — remove the "
+            ".gitignore rule that covers it"
+            for path in ignored
+        ),
+        *(
+            f"{path} would be committed to git itself — the last .gitattributes line "
+            "that matches it does not send it to the annex"
+            for path in unrouted
+        ),
+        *(
+            f"{path} would be annexed — the last .gitattributes line that matches it "
+            "sends it there, and a record has to stay in git, where a clone with no "
+            "content can read it"
+            for path in annexed
+        ),
+    ]
+    if refusals:
+        raise ProjectError(
+            "this project's results would not be stored as lc stores them:\n  "
+            + "\n  ".join(refusals)
+            + "\n`lc init` adds any of lightcone's .gitattributes lines that is missing. "
+            "Where it adds none, a later line overrides them: remove it, or move "
+            "lightcone's lines below it."
         )
 
 
@@ -876,6 +969,14 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
+    if dataset.status(root):
+        # The crate is a function of what is committed, and it is read
+        # off the working tree: one being edited would publish the edit.
+        report.warnings.append(
+            "the project has uncommitted changes, so the RO-Crate publication view "
+            "was not brought up to date — the next `lc materialize` does it"
+        )
+        return
     # A set difference rather than a walk driven by the spec: what is on
     # disk is exactly what the *previous* spec planned, so the edit that
     # orphans a record is the same edit that drops it from the graph.
@@ -921,7 +1022,7 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
 # =============================================================================
 
 
-def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) -> str:
+def run_record(task: Task, dsid: str, runtime: container.Runtime) -> str:
     """Build the commit message for one materialized output.
 
     A ``[DATALAD RUNCMD]`` record — datalad's format, not ours, so all of
@@ -938,7 +1039,6 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
     environment itself from the lock of the commit being rerun.
 
     Args:
-        root: The project root.
         task: The output that was made.
         dsid: The dataset's UUID, which ``rerun`` reads.
         runtime: The run's execution world. A containerized run lists its
@@ -1078,40 +1178,21 @@ def _graph(
     return graph, environment, full
 
 
-def _owned(task: Task) -> list[str]:
-    """Every path one result owns, as git pathspecs.
-
-    A glob for the payload rather than its literal path: it covers
-    whatever format the *previous* run wrote, so a re-declared
-    serialization stages the old file's deletion instead of leaving it
-    behind untracked.
-
-    Never the parent directory: siblings share it, and under Dask they are
-    in flight — ``git clean`` on it would delete a running task's bytes.
-    """
-    owned = []
-    for place in task.result.places:
-        folder = posixpath.dirname(place.file_path)
-        owned += [f":(glob){folder}/{plan.name(place)}.*", place.record_path]
-    return owned
-
-
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
     """The refusal, split by what the right remedy actually is.
 
     Two path classes, because they call for opposite actions: work the
-    researcher owns has to be committed, and anything under ``results/``
-    or ``.astra/`` is lc's to write, so a change there is wreckage to
-    discard rather than a contribution to keep.
+    researcher owns has to be committed, and what is in a ``results/`` or
+    ``.astra/`` folder is lc's to write, so a change there is wreckage to
+    discard rather than a contribution to keep. The commands name the
+    very paths, so each does what it says on the tree as it is.
     """
-    written = ("results/", ".astra/")
-    theirs = [c for c in changes if not c[1].startswith(written)]
-    ours = [c for c in changes if c[1].startswith(written)]
+    ours = [c for c in changes if re.search(r"(^|/)(results|\.astra)/", c[1])]
+    theirs = [c for c in changes if c not in ours]
 
     lines = [
-        f"uncommitted changes in {root} — every materialization is committed "
-        "with the code that produced it, so a run cannot start from a tree "
-        "that does not say what that code is.",
+        f"uncommitted changes in {root} — a run builds the commit, in a checkout "
+        "of its own, so a change that is not committed would be no part of it.",
     ]
     if theirs:
         lines += [
@@ -1120,13 +1201,11 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
             *(f"      {code.strip() or '??'} {path}" for code, path in theirs),
         ]
     if ours:
-        where = " ".join(sorted({path.partition("/")[0] + "/" for _, path in ours}))
-        lines += [
-            "",
-            "  if a cluster run was interrupted, stop its allocation first:",
-            "      lc compute down <cluster-id>",
-            "  confirm its recipes have stopped, then discard these (lc writes them):",
-            f"      git restore --staged --worktree {where} && git clean -fd {where}",
-            *(f"      {code.strip() or '??'} {path}" for code, path in ours),
-        ]
+        untracked = [path for code, path in ours if code == "??"]
+        tracked = [path for code, path in ours if code != "??"]
+        lines += ["", "  lc writes these, so discard them rather than commit them:"]
+        if tracked:
+            lines.append(f"      git restore --staged --worktree -- {shlex.join(tracked)}")
+        if untracked:
+            lines.append(f"      git clean -f -- {shlex.join(untracked)}")
     return "\n".join(lines)

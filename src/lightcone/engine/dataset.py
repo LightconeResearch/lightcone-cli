@@ -18,7 +18,10 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import posixpath
+import subprocess
+import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,12 +161,23 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
+def status(
+    directory: Path,
+    *,
+    untracked_files: bool = False,
+    also: Sequence[str] = (),
+    config: Sequence[str] = (),
+) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
     ``results/`` do, which is the point — inputs are committed before
     anything computes on them.
+
+    A submodule counts as changed whenever its commit, its files or its
+    untracked files differ, whatever ``.gitmodules`` asks git to ignore:
+    a recipe that reads from it would otherwise run on bytes the commit
+    does not name.
 
     Scoped to *directory* and reported relative to it, both deliberately.
     A project can sit inside a larger repository — ``lc init subdir/``
@@ -173,11 +187,19 @@ def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str,
     and lc's own writes would arrive as ``subdir/results/…``, which no
     caller sorting by path class can recognise.
 
+    Read NUL-separated and with renames off, so each entry is one path as
+    it is on disk: git otherwise quotes a name holding a space or an
+    accent, and pairs a renamed file with where it came from.
+
     Args:
         directory: The project to inspect.
         untracked_files: List each untracked file, where git otherwise
             names only the outermost untracked folder — for a caller that
             sorts changes by where they are.
+        also: More pathspecs to cover, from *directory*: the folder of an
+            analysis the project declares beside itself, or an exclusion.
+        config: ``-c`` settings for the command, for a caller that keeps
+            a filter from running.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -187,10 +209,14 @@ def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str,
     """
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
     each = ["--untracked-files=all"] if untracked_files else []
-    lines = _git(["status", "--porcelain", *each, "--", "."], cwd=directory).splitlines()
-    return [
-        (line[:2], line[3:].removeprefix(prefix) or ".") for line in lines if line.strip()
-    ]
+    argv = ["status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none"]
+    listed = _git([*config, *argv, *each, "--", ".", *also], cwd=directory)
+    changes = []
+    for entry in filter(None, listed.split("\0")):
+        path = posixpath.relpath(entry[3:], prefix or ".")
+        # An untracked folder keeps the slash that says it is one.
+        changes.append((entry[:2], f"{path}/" if entry.endswith("/") and path != "." else path))
+    return changes
 
 
 def require_committer(directory: Path) -> None:
@@ -199,8 +225,8 @@ def require_committer(directory: Path) -> None:
     git needs an identity to commit, and a fresh container or CI image has
     none — the case this CLI is most often run in. Asked at the start of a
     run rather than discovered at the first save, because by then a recipe
-    has already run and its work is about to be restored away over a
-    setting that takes one command to fix.
+    has already run and its result would be reported made but not
+    recorded, over a setting that takes one command to fix.
 
     Asked as ``git var``, which is the question a commit itself asks:
     an identity can come from ``user.email``, ``EMAIL``, the author and
@@ -370,6 +396,151 @@ def tracked_records(directory: Path) -> list[str]:
     return [name for name in listed.split("\0") if name]
 
 
+def annex_objects(directory: Path, keys: Sequence[str]) -> dict[str, Path]:
+    """Find where the annex keeps the content of each of *keys*.
+
+    One process for any number of keys. The store's layout is git-annex's
+    own, so it is asked and never computed.
+
+    Args:
+        directory: A directory inside the repository.
+        keys: git-annex keys.
+
+    Returns:
+        ``{key: object}`` for each key whose content this clone holds.
+
+    Raises:
+        ProjectError: If git-annex cannot be asked.
+    """
+    if not keys:
+        return {}
+    asked = project._run(
+        ["git", "annex", "contentlocation", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{key}\n" for key in keys),
+    )
+    if asked.returncode != 0:
+        raise project.ProjectError(
+            f"`git annex contentlocation` failed:\n{asked.stderr.strip()}"
+        )
+    # One line per key, empty for content that is elsewhere.
+    answers = asked.stdout.splitlines()
+    return {key: directory / where for key, where in zip(keys, answers, strict=True) if where}
+
+
+def annex_get(directory: Path, keys: Sequence[str]) -> str:
+    """Fetch into this clone the content of each of *keys* it lacks.
+
+    By key and not by path, so it is the content a commit names that is
+    fetched, whatever the working tree holds by now. Content already here
+    costs nothing.
+
+    Args:
+        directory: A directory inside the repository.
+        keys: git-annex keys.
+
+    Returns:
+        Empty when every key's content is here now. Otherwise git-annex's
+        own account of what it could not get: a fetch that fails is the
+        caller's to report, never an error.
+    """
+    if not keys:
+        return ""
+    got = project._run(
+        ["git", "annex", "get", "--batch-keys"],
+        cwd=directory,
+        stdin="".join(f"{key}\n" for key in keys),
+    )
+    if got.returncode == 0:
+        return ""
+    # git-annex says why on stdout, and only how many failed on stderr.
+    return "\n".join(filter(None, (got.stdout.strip(), got.stderr.strip())))
+
+
+def is_ancestor(directory: Path, commit: str) -> bool:
+    """Whether ``HEAD`` is *commit* or descends from it.
+
+    Args:
+        directory: The repository to ask in.
+        commit: A commit id.
+
+    Returns:
+        True where *commit* is in the history ``HEAD`` is on.
+    """
+    return _git_ok(["merge-base", "--is-ancestor", commit, "HEAD"], cwd=directory)
+
+
+def branch(directory: Path) -> str:
+    """Name the branch ``HEAD`` is on.
+
+    Args:
+        directory: The repository to ask in.
+
+    Returns:
+        The full ref (``refs/heads/main``), or empty where ``HEAD`` is
+        detached.
+    """
+    return (_ask(["symbolic-ref", "-q", "HEAD"], cwd=directory) or "").strip()
+
+
+def busy(directory: Path) -> str:
+    """Say what a commit made now would run into, or nothing.
+
+    A merge, rebase, cherry-pick or revert that has not been concluded:
+    each leaves a file in the git directory while it lasts, and git says
+    where — a linked worktree keeps its own. A partial commit is refused
+    during the first and the third, after its ``add`` has already staged
+    into them; during a rebase or a revert it succeeds, onto a history
+    that is about to be rewritten or abandoned (measured). Another git
+    command at work on the index is no such state: it is over in a
+    moment, and every command here waits it out (:func:`_run`).
+
+    Args:
+        directory: The repository to ask in.
+
+    Returns:
+        What is under way, in a few words; empty when nothing is.
+    """
+    states = {
+        "MERGE_HEAD": "a merge is under way",
+        "CHERRY_PICK_HEAD": "a cherry-pick is under way",
+        "REVERT_HEAD": "a revert is under way",
+        "rebase-merge": "a rebase is under way",
+        "rebase-apply": "a rebase is under way",
+    }
+    asked = [flag for state in states for flag in ("--git-path", state)]
+    where = _git(["rev-parse", *asked], cwd=directory).splitlines()
+    return next(
+        (why for why, path in zip(states.values(), where, strict=True)
+         if (directory / path).exists()),
+        "",
+    )
+
+
+def index_held(directory: Path) -> str:
+    """Find an index lock that does not go away.
+
+    A git command holds ``index.lock`` while it writes, and one that was
+    killed leaves it for good: every commit after that fails, which for a
+    run is every result, after its recipe has run. Asked before a run,
+    with the patience a live command deserves.
+
+    Args:
+        directory: The repository to ask in.
+
+    Returns:
+        The lock's path while it is still there after :data:`_PATIENCE`
+        seconds; empty once it is gone.
+    """
+    lock = directory / _git(["rev-parse", "--git-path", "index.lock"], cwd=directory).strip()
+    deadline = time.monotonic() + _PATIENCE
+    while lock.exists():
+        if time.monotonic() > deadline:
+            return str(lock)
+        time.sleep(0.25)
+    return ""
+
+
 def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     """Commit *paths*.
 
@@ -377,15 +548,16 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     own add routes content to the annex and everything else into git. lc
     runs no annex command here for the same reason it asks nobody else to.
 
-    ``annex.thin`` is set for this add alone, so a result is hard-linked to
-    its annex object rather than copied — one copy on disk instead of two.
-    It is safe precisely here: thin's hazard is editing a file in place,
-    which rewrites the object under the key that names it, and lc never
-    does — the worker removes an output directory before rebuilding it, and
-    an unlink leaves the object untouched. Setting it repository-wide would
-    reach declared inputs instead, which a researcher adds with their own
-    `git add` and whose tools very much do open files for update, so it is
-    passed per-add and never written to the repository's config.
+    ``annex.thin`` is set for this add alone, so a file with one name —
+    the image archive — is hard-linked to its annex object rather than
+    copied. A landed result has a second name, in the run's checkout, and
+    git-annex stores such a file by copy; ``checkout.land`` then makes the
+    project's file a link to the stored object. Thin's hazard is editing a
+    file in place, which rewrites the object under the key that names it,
+    and lc never does. Setting it repository-wide would reach declared
+    inputs instead, which a researcher adds with their own `git add` and
+    whose tools very much do open files for update, so it is passed
+    per-add and never written to the repository's config.
 
     ``annex.dotfiles`` is set for the same reason ``annex.thin`` is:
     without it, git-annex routes any file under a dot-directory to git
@@ -403,8 +575,11 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     leaves anything else in the index staged and untouched. Without the
     pathspec, ``git commit`` commits the whole index — so a file the
     user staged while a graph was running would be swept, silently,
-    into whichever save landed next. The end-of-run warning names such
-    edits; this is what keeps lc's commits from eating them.
+    into whichever save landed next.
+
+    The project's tree is in use while a run saves into it, and git
+    refuses a second writer of the index rather than wait: every git
+    command here waits that out (:func:`_run`).
 
     Args:
         directory: The repository root.
@@ -431,10 +606,12 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
 def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     """Put *paths* back the way the last commit had them.
 
-    ``clean`` first for what a run wrote, then ``checkout`` for what it
-    deleted or truncated — through ``_git_ok``, because a first
-    materialization has nothing to go back to and ``checkout`` exits
-    nonzero on a pathspec it cannot match.
+    ``reset`` first for what an interrupted save had staged, since
+    ``clean`` leaves anything the index holds; ``clean`` for what was
+    written; then ``checkout`` for what was deleted or replaced — through
+    ``_git_ok``, because a path that was never committed has nothing to
+    go back to and ``checkout`` exits nonzero on a pathspec it cannot
+    match.
 
     No guard in front of it: a pathspec may be a glob, and nothing cheap
     answers "is this in HEAD" for one. ``cat-file -e`` takes a single
@@ -451,6 +628,7 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     """
     for path in paths:
         rel = _rel(directory, path)
+        _git_ok(["reset", "-q", "--", rel], cwd=directory)
         _git(["clean", "-qfdx", "--", rel], cwd=directory)
         _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
 
@@ -458,6 +636,31 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
 # =============================================================================
 # Running git
 # =============================================================================
+
+
+#: How long a git command waits for another to let go of the index. A
+#: plain ``git add`` of a file of a few gigabytes holds it for ten
+#: seconds and more while the annex filter hashes it (measured).
+_PATIENCE = 60.0
+
+
+def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run git, waiting out another git command's hold on the index.
+
+    git refuses a second writer of the index at once, and the project's
+    tree is one the researcher, their editor and a run all use. Past
+    :data:`_PATIENCE` seconds, git's own refusal is the answer.
+    """
+    deadline = time.monotonic() + _PATIENCE
+    while True:
+        proc = project._run(["git", *argv], cwd=cwd)
+        if (
+            proc.returncode == 0
+            or "index.lock" not in (proc.stderr or "")
+            or time.monotonic() > deadline
+        ):
+            return proc
+        time.sleep(0.25)
 
 
 def _ask(argv: list[str], *, cwd: Path) -> str | None:
@@ -471,7 +674,7 @@ def _ask(argv: list[str], *, cwd: Path) -> str | None:
         git's stdout, or ``None`` when git cannot answer.
     """
     try:
-        proc = project._run(["git", *argv], cwd=cwd)
+        proc = _run(argv, cwd=cwd)
     except OSError:
         return None
     if proc.returncode != 0:
@@ -481,7 +684,7 @@ def _ask(argv: list[str], *, cwd: Path) -> str | None:
 
 def _git(argv: list[str], *, cwd: Path) -> str:
     """Run git in *cwd*, returning its stdout; a nonzero exit raises."""
-    proc = project._run(["git", *argv], cwd=cwd)
+    proc = _run(argv, cwd=cwd)
     if proc.returncode != 0:
         raise project.ProjectError(f"`git {' '.join(argv)}` failed:\n{proc.stderr.strip()}")
     return str(proc.stdout or "")
@@ -489,7 +692,7 @@ def _git(argv: list[str], *, cwd: Path) -> str:
 
 def _git_ok(argv: list[str], *, cwd: Path) -> bool:
     """Run git as a yes/no probe: exit status is the answer, not a failure."""
-    return bool(project._run(["git", *argv], cwd=cwd).returncode == 0)
+    return bool(_run(argv, cwd=cwd).returncode == 0)
 
 
 def _rel(directory: Path, path: Path | str) -> str:

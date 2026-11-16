@@ -215,7 +215,9 @@ def exec_policy(
     builder for both, so a probe still gets what a recipe gets per mode.
 
     Args:
-        project: The project root, granted read.
+        project: The root the command is given, granted read: the project
+            root for a probe, the same folder inside the run's checkout
+            for a recipe.
         read_paths: Declared inputs outside the tree.
         env_dir: The project environment prefix; defaults to the host
             ``.venv``.

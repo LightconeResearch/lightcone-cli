@@ -43,6 +43,12 @@ _ANNEX_OBJECTS = "/annex/objects/"
 _POINTER_PREFIX = _ANNEX_OBJECTS.encode()
 _POINTER_MAX_BYTES = 32 * 1024
 
+#: The first line of the file Git LFS leaves in place of content it has
+#: not fetched. ASTRA reads one as a stand-in too; hashing it would give
+#: a well-formed digest of the wrong bytes exactly as an annex pointer's
+#: would.
+_LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
+
 
 class ContentNotFetchedError(ProjectError):
     """An annexed file whose content is not in this clone."""
@@ -91,14 +97,22 @@ def require_fetched(path: Path) -> None:
     the content. A *locked* file is a symlink into the object store, which
     without the content simply dangles.
 
+    Git LFS leaves a third shape, a small text file naming the content,
+    which is refused the same way: a recipe handed that file would read a
+    few lines of text for its data. lc fetches nothing from LFS, so that
+    refusal names the command that does; annexed content lc fetches
+    itself, and nobody is told to.
+
     Args:
         path: A file whose bytes are about to be used.
 
     Raises:
-        ContentNotFetchedError: If *path* is either shape without its
-            content. Loud, because both alternatives are silent: hashing a
-            pointer yields a well-formed digest of the wrong bytes, and a
-            dangling symlink drops out of a directory's digest entirely.
+        ContentNotFetchedError: If *path* is one of these shapes without
+            its content. Loud, because the alternatives are silent:
+            hashing a pointer yields a well-formed digest of the wrong
+            bytes, and a dangling symlink drops out of a directory's
+            digest entirely.
+        OSError: If *path* cannot be read at all.
     """
     if path.is_symlink() and not path.exists():
         unfetched = _ANNEX_OBJECTS in path.readlink().as_posix()
@@ -107,8 +121,55 @@ def require_fetched(path: Path) -> None:
     if unfetched:
         raise ContentNotFetchedError(
             f"{path}: the content is not in this clone — git-annex holds a "
-            f"reference to it, not the data. Fetch it with `git annex get {path}`."
+            "reference to it, not the data."
         )
+    if lfs_pointer(path):
+        raise ContentNotFetchedError(
+            f"{path}: the content is not in this clone — Git LFS holds a "
+            "reference to it, not the data. Fetch it with `git lfs pull`."
+        )
+
+
+def lfs_pointer(path: Path) -> bool:
+    """Test whether a file is what Git LFS leaves in place of content.
+
+    Args:
+        path: A path, which need not exist.
+
+    Returns:
+        True for a small regular file that opens with the LFS pointer line.
+    """
+    if not path.is_file() or path.stat().st_size > _POINTER_MAX_BYTES:
+        return False
+    with path.open("rb") as stream:
+        return stream.read(len(_LFS_POINTER)) == _LFS_POINTER
+
+
+def stamp(path: Path) -> tuple[int, int, int]:
+    """What changes when a file is written or replaced: its inode, its
+    size and its modification time. A second name for the same bytes
+    changes none of them."""
+    found = path.stat()
+    return found.st_ino, found.st_size, found.st_mtime_ns
+
+
+def annex_key(path: Path) -> str:
+    """Read which annexed content a file stands for.
+
+    Args:
+        path: A file as git checked it out.
+
+    Returns:
+        The key, for either shape of an annexed file: a pointer file, or
+        a link into an object store, present or not. Empty for a file git
+        itself carries, and for an annexed file that holds its content.
+    """
+    if path.is_symlink():
+        target = path.readlink().as_posix()
+        return target.rpartition("/")[2] if _ANNEX_OBJECTS in target else ""
+    if path.is_file() and is_pointer(path):
+        return path.read_text().split("\n", 1)[0].rpartition("/")[2]
+    return ""
 
 
 def digest_file(path: Path) -> Digest:

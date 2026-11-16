@@ -55,7 +55,7 @@ def _backend(root: Path, runtime: str = "podman") -> OCIBackend:
     return OCIBackend(
         runtime=runtime,  # type: ignore[arg-type]
         image_id=_IMAGE_ID,
-        root=root,
+        workdir=root,
         user_flags=flags,
     )
 
@@ -100,6 +100,14 @@ def test_wrap_is_pure(root: Path, policy: Policy, tmp_path: Path) -> None:
     backend = _backend(root)
     assert backend.wrap(policy, ["true"]) == backend.wrap(policy, ["true"])
     assert set(tmp_path.rglob("*")) == before
+
+
+def test_the_command_starts_in_the_folder_it_is_given(root: Path, policy: Policy) -> None:
+    """A driven analysis's recipe runs in that analysis's folder, and in a
+    container it is the runtime that decides where a command starts."""
+    argv = _backend(root / "stage").wrap(policy, ["true"])
+
+    assert argv[argv.index("--workdir") + 1] == str(root / "stage")
 
 
 def test_reads_mount_ro_and_writes_mount_rw(root: Path, policy: Policy) -> None:

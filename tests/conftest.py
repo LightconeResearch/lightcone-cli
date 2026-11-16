@@ -179,6 +179,9 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
+    #: An allocation nothing can show ended, as a live one is.
+    allocation = CLUSTER_ID
+
     def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
         return {task.key: {} for task in tasks}

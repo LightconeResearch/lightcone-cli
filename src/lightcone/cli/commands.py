@@ -200,7 +200,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     sys.exit(128 - code if code < 0 else code)
 
 
-def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
+def _interrupted(cluster_id: str, still: str) -> None:
     """Say what an interrupt leaves behind: the allocation outlives the client.
 
     A name can be reused once its allocation ends, so the remedy asks for
@@ -208,7 +208,7 @@ def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
     """
     target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
     click.echo(
-        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`{then}.",
+        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`.",
         err=True,
     )
     if target != cluster_id:
@@ -379,8 +379,9 @@ def materialize(
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
         except KeyboardInterrupt:
             _interrupted(
-                cluster_id, "remote recipes may still be writing results",
-                " and confirm they have stopped before cleaning results/",
+                cluster_id,
+                "recipes that had started may still be writing in the run's checkout, "
+                "which then stays out of use until the allocation ends",
             )
             raise
 

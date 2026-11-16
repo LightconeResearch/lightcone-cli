@@ -557,3 +557,76 @@ def test_a_result_owned_by_a_repository_of_its_own_is_refused(tmp_path: Path) ->
     assert "`stage:mask#v` belongs to the analysis in stage" in str(raised.value)
 
 
+# ---- what a task owns, and where the graph was read -------------------------
+
+
+def test_a_task_owns_its_record_and_the_files_named_after_it(tmp_path: Path) -> None:
+    """The name, not the declared path: the payload a previous format left
+    is the result's too, and a sibling's never is."""
+    task = plan.build(_project(tmp_path)).tasks["fit#baseline"]
+
+    assert task.owns("results/baseline/fit.json")
+    assert task.owns("results/baseline/fit.npy")
+    assert task.owns(".astra/records/baseline/fit.json")
+    assert not task.owns("results/baseline/fitting.json")
+    assert not task.owns("results/baseline/summary.csv")
+    assert not task.owns("results/alternative/fit.json")
+    assert not task.owns("src/fit.py")
+
+
+def test_the_graph_names_the_commit_astra_read_it_at(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+
+    assert plan.build(root).head == (dataset._ask(["rev-parse", "HEAD"], cwd=root) or "").strip()
+
+
+def test_an_address_means_the_result_it_is_an_address_of(
+    analysis: Callable[..., Path],
+) -> None:
+    """A result with two names is one task, and either address finds it."""
+    root = analysis(
+        """
+        spec_version: "0.1.0"
+        analyses:
+          stage: {path: stage}
+          inner: {path: stage/inner}
+        outputs:
+          report:
+            type: report
+            format: txt
+            inputs: [inner.fit, stage.inner.fit]
+            recipe:
+              command: cat {inputs} > {output}
+        universes:
+          u1: {decisions: {inner.method: alpha}}
+          u2: {decisions: {stage.inner.method: beta}}
+        """,
+        {
+            "stage/astra.yaml": """
+                spec_version: "0.1.0"
+                analyses:
+                  inner: {path: inner}
+                """,
+            "stage/inner/astra.yaml": """
+                spec_version: "0.1.0"
+                decisions:
+                  method:
+                    options: {alpha: {}, beta: {}}
+                outputs:
+                  fit:
+                    type: metric
+                    format: txt
+                    decisions: [method]
+                    recipe:
+                      command: echo {decisions.method} > {output}
+                """,
+        },
+    )
+    graph = plan.build(root)
+    paired = [t for t in graph.tasks.values() if len(t.result.places) == 2]
+
+    assert paired
+    for task in paired:
+        for place in task.result.places:
+            assert graph.resolve([place.address]) == [task.key]
+

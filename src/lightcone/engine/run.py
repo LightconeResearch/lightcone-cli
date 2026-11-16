@@ -1,9 +1,10 @@
 """``lc run`` executes a command inside the reproducible environment.
 
-Byte-for-byte the environment recipes will get — the same lock, the same
-converged ``.venv`` — under the same sandbox. That equivalence is the
-point: if a probe works, the recipe will, and if a probe
-is denied, the recipe would have been.
+The environment recipes get — the same lock, converged the same way,
+under the same sandbox. That equivalence is the point: if a probe works,
+the recipe will, and if a probe is denied, the recipe would have been. A
+probe runs in the project's own tree, where a recipe runs in a checkout
+of the commit: a probe sees an uncommitted edit, a recipe does not.
 
 What the boundary catches is a reach *outside* the declared set — a
 tool, a library, or a data file that is on this machine and would not be
@@ -91,7 +92,7 @@ def _probe(
     built = container.policy_for(runtime, paths, use_gpus=use_gpus)
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
-            container.backend(runtime), policy, command, cwd=runtime.root,
+            container.backend(runtime, runtime.root), policy, command, cwd=runtime.root,
             prefix=uv_prefix(runtime.root), env=child_env(), output=output,
         )
     return outcome
