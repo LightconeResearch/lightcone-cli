@@ -159,10 +159,10 @@ class ProjectContents(AsyncLargeFileManager):
         if model["type"] != "directory":
             root = Path(self.root_dir)
             target = resolved_path(root, root / model["path"])
-            model["watchPaths"] = [
-                target.relative_to(root).as_posix(),
-                assets.manifest_path(Path(model["path"])).as_posix(),
-            ]
+            model["watchPaths"] = [target.relative_to(root).as_posix()]
+            # A result's record too: a run rewrites it beside the bytes.
+            if record := assets.record_path(model["path"]):
+                model["watchPaths"].append(record)
         return model
 
     async def _dir_model(self, path: str, content: bool = True) -> dict[str, Any]:

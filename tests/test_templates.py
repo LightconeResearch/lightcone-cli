@@ -123,7 +123,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
     assert entries[0] == "* annex.largefiles=nothing"
     assert "results/** annex.largefiles=anything" in entries
     assert "data/** annex.largefiles=anything" in entries
-    assert "results/**/.*.manifest.json annex.largefiles=nothing" in entries
+    assert entries[-1] == ".astra/** annex.largefiles=nothing"
 
 
 def test_gitattributes_exceptions_come_after_the_default() -> None:

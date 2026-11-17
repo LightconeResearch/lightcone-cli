@@ -68,8 +68,6 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
-    #: The architecture the archive was built for.
-    arch: str = ""
 
     @property
     def supports_gpus(self) -> bool:
@@ -84,19 +82,6 @@ class Runtime:
         ``extra_inputs`` names. Derived through :func:`image.archive_path`
         so this cannot become a second spelling of the layout."""
         return image.archive_path(self.root, self.image_tag).relative_to(self.root).as_posix()
-
-    def manifest_image(self) -> dict[str, str] | None:
-        """This world as the manifest's ``image`` field; ``None`` on the
-        host. Beside the data, so a field added here cannot be forgotten
-        at the write site — the ``asdict(attestation)`` discipline."""
-        if self.mode == "direct":
-            return None
-        return {
-            "tag": self.image_tag,
-            "id": self.image_id,
-            "archive": self.archive,
-            "arch": self.arch,
-        }
 
 
 def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runtime:
@@ -178,7 +163,6 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
         image_tag=tag,
         image_id=image_id,
         store_id=store_id,
-        arch=arch,
     )
 
 

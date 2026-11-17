@@ -11,7 +11,7 @@ This project is driven by two CLIs — use them rather than improvising:
 - `lc` (lightcone-cli) is the execution layer:
     - `lc materialize <cluster_id>` makes every output the spec declares, running each
       recipe in dependency order and committing each result to git as it
-      lands, together with a provenance manifest. It refuses to start on
+      lands, together with its provenance record. It refuses to start on
       a dirty tree: commit your own edits first, with plain `git add` and
       `git commit` — the project's git-annex filter handles large files
       transparently, so never run a git-annex command yourself.
@@ -30,11 +30,11 @@ This project is driven by two CLIs — use them rather than improvising:
       `uv run`: `lc run <cluster_id> -- python scripts/fit.py --output /tmp/x`, never a
       single quoted shell string; for shell syntax use
       `lc run <cluster_id> -- bash -c '...'`.
-    - Outputs land in `results/baseline/<output_id>.<format>`, each with a
-      `.<output_id>.manifest.json` manifest beside it, written and
-      committed by the engine. Never write into `results/` yourself: a
-      hand-placed file has no run record, and the engine detects the
-      foreign write and remakes the output.
+    - Outputs land in `results/baseline/<output_id>.<format>`, each with
+      its record at `.astra/records/baseline/<output_id>.json`, written
+      and committed by the engine. Never write into `results/` or
+      `.astra/` yourself: a hand-placed file has no run record, and the
+      engine detects the foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
 

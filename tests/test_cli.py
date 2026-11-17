@@ -427,7 +427,7 @@ def test_check_exits_nonzero_when_something_would_run(
     answer off the exit status."""
     from lightcone.engine.materialize import MaterializeReport
 
-    _stub(monkeypatch, check=MaterializeReport(planned={"fit#baseline": "no manifest"}))
+    _stub(monkeypatch, check=MaterializeReport(planned={"fit#baseline": "no record"}))
 
     result = runner.invoke(main, ["materialize", "--check"])
 
@@ -570,21 +570,28 @@ def _status_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> None:
     monkeypatch.setattr(engine, "status", lambda root: report)
 
 
+_ENV = "urn:lightcone:env:sha256:now"
+
+
 def _report() -> object:
     from lightcone.engine.materialize import OutputStatus, StatusReport
 
     return StatusReport(
         outputs=[
-            OutputStatus("first#baseline", "current", "", "3f2a1c8ffff", "sha256:one"),
+            OutputStatus(
+                "first#baseline", "current", "", "3f2a1c8ffff", "sha256:one", _ENV
+            ),
             OutputStatus(
                 "second#baseline",
                 "behind",
                 "made under an earlier environment",
                 "3f2a1c8ffff",
                 "sha256:two",
+                "urn:lightcone:env:sha256:old",
             ),
-            OutputStatus("third#baseline", "stale", "the input `first` changed", "", ""),
-        ]
+            OutputStatus("third#baseline", "stale", "no record is at the place", "", "", ""),
+        ],
+        environment=_ENV,
     )
 
 
@@ -667,7 +674,7 @@ def test_status_renders_a_foreign_write_as_a_stale_output(
 
     message = (
         'last changed by 8d31f00 ("tweak colors", Ada, 2026-08-19) rather '
-        "than its run record, so the manifest no longer describes these "
+        "than its own run, so the record no longer describes these "
         "bytes — the next run remakes it; inspect first with `git show 8d31f00`"
     )
     report = StatusReport(
@@ -678,6 +685,7 @@ def test_status_renders_a_foreign_write_as_a_stale_output(
                 message,
                 "3f2a1c8ffff",
                 "sha256:one",
+                _ENV,
                 foreign_write="8d31f00" + "0" * 33,
             ),
         ]
@@ -713,6 +721,7 @@ def test_status_json_is_machine_readable(
         "mode": "direct",
         "image": None,
         "sandbox": "",
+        "environment": _ENV,
         "crate": "",
         "counts": {"current": 1, "behind": 1, "stale": 1},
         "outputs": [
@@ -721,7 +730,8 @@ def test_status_json_is_machine_readable(
                 "status": "current",
                 "why": "",
                 "git_sha": "3f2a1c8ffff",
-                "data_version": "sha256:one",
+                "content_hash": "sha256:one",
+                "environment": _ENV,
                 "foreign_write": "",
             },
             {
@@ -729,15 +739,17 @@ def test_status_json_is_machine_readable(
                 "status": "behind",
                 "why": "made under an earlier environment",
                 "git_sha": "3f2a1c8ffff",
-                "data_version": "sha256:two",
+                "content_hash": "sha256:two",
+                "environment": "urn:lightcone:env:sha256:old",
                 "foreign_write": "",
             },
             {
                 "output": "third#baseline",
                 "status": "stale",
-                "why": "the input `first` changed",
+                "why": "no record is at the place",
                 "git_sha": "",
-                "data_version": "",
+                "content_hash": "",
+                "environment": "",
                 "foreign_write": "",
             },
         ],

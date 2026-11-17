@@ -69,19 +69,21 @@ def _annexed(repo: Path, path: Path) -> bool:
 # ---- what git-annex stores, and what git carries ---------------------------
 
 
-def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path) -> None:
-    """The whole storage policy, exercised end to end. The manifest has to
-    stay a plain git blob: `lc` reads it on clones that have fetched no
+def test_save_puts_result_bytes_in_the_annex_and_the_record_in_git(repo: Path) -> None:
+    """The whole storage policy, exercised end to end. The record has to
+    stay a plain git blob: ASTRA reads it on clones that have fetched no
     annex content at all."""
     results = repo / "results" / "baseline"
     results.mkdir(parents=True)
     (results / "best_fit.csv").write_text("a,b\n1,2\n")
-    (results / ".best_fit.manifest.json").write_text('{"data_version": "abc"}\n')
+    record = repo / ".astra" / "records" / "baseline" / "best_fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('{"content_hash": "sha256:abc"}\n')
 
-    assert dataset.save(repo, [results], "materialize best_fit")
+    assert dataset.save(repo, [results, record], "materialize best_fit")
 
     assert _annexed(repo, results / "best_fit.csv")
-    assert not _annexed(repo, results / ".best_fit.manifest.json")
+    assert not _annexed(repo, record)
     assert not dataset.status(repo)
 
 
@@ -105,7 +107,7 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     writes into results/, would land as a full blob in git, silently,
     and every clone would carry the bytes forever. `save` opts in
     unconditionally, so the attributes alone decide: archives and dot
-    outputs reach the annex, dot-named manifests keep their exemption.
+    outputs reach the annex, records under `.astra/` keep their exemption.
     The mutation check is a *plain* `git add` of the same shape, which
     keeps git-annex's stock dotfile behavior."""
     archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
@@ -114,13 +116,15 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     output = repo / "results" / "baseline"
     output.mkdir(parents=True)
     (output / ".cache.h5").write_bytes(b"intermediate\n" * 64)
-    (output / ".fit.manifest.json").write_text("{}\n")
+    record = repo / ".astra" / "records" / "baseline" / "fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{}\n" * 64)
 
-    dataset.save(repo, [archive.parent, output], "routed")
+    dataset.save(repo, [archive.parent, output, record], "routed")
 
     assert _annexed(repo, archive)
     assert _annexed(repo, output / ".cache.h5")
-    assert not _annexed(repo, output / ".fit.manifest.json")
+    assert not _annexed(repo, record)
 
     plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
     plain.parent.mkdir(parents=True)
@@ -208,8 +212,8 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
 
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
-        with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-            assets.data_version(output / name)
+        with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
+            assets.require_fetched(output / name)
 
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
@@ -225,8 +229,8 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        assets.data_version(output / "fit.csv")
+    with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
+        assets.require_fetched(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------
@@ -288,19 +292,18 @@ def test_save_stages_what_a_rebuild_deleted(repo: Path) -> None:
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
-def test_tracked_manifests_are_only_the_ones_under_results(repo: Path) -> None:
-    """`results/` is the only place lc writes one; elsewhere the name is
-    the user's to use, and handing such a file to `assets.read` would ask
-    it to parse something that was never a manifest."""
-    ours = repo / "results" / "baseline" / ".fit.manifest.json"
+def test_tracked_records_are_only_the_ones_under_astra_records(repo: Path) -> None:
+    """`.astra/records/` is the only place a record is; a JSON file
+    elsewhere is the user's own, whatever it is called."""
+    ours = repo / ".astra" / "records" / "baseline" / "fit.json"
     ours.parent.mkdir(parents=True)
     ours.write_text("{}\n")
-    theirs = repo / "data" / ".vendor.manifest.json"
+    theirs = repo / "data" / "records" / "baseline" / "fit.json"
     theirs.parent.mkdir(parents=True, exist_ok=True)
     theirs.write_text("[1, 2, 3]\n")
-    dataset.save(repo, [repo / "results", repo / "data"], "both")
+    dataset.save(repo, [repo / ".astra", repo / "data"], "both")
 
-    assert dataset.tracked_manifests(repo) == [ours]
+    assert dataset.tracked_records(repo) == [".astra/records/baseline/fit.json"]
 
 
 def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:

@@ -4,7 +4,7 @@ Storage follows the DataLad model — git carries the pointers and the
 history, git-annex carries the bytes — reached through ordinary ``git``
 and ``git annex`` commands. ``.gitattributes`` routes content: the default
 is ``annex.largefiles=nothing``, and outputs and declared inputs opt out
-of it, so manifests and analysis code stay in git while results and data
+of it, so records and analysis code stay in git while results and data
 go to the annex.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
@@ -161,7 +161,7 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(directory: Path) -> list[tuple[str, str]]:
+def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
@@ -193,6 +193,9 @@ def status(directory: Path) -> list[tuple[str, str]]:
 
     Args:
         directory: The project to inspect.
+        untracked_files: List each untracked file, where git otherwise
+            names only the outermost untracked folder — for a caller that
+            sorts changes by whose files they are.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -204,7 +207,7 @@ def status(directory: Path) -> list[tuple[str, str]]:
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
     listed = _git(
         [
-            "-c", "status.showUntrackedFiles=normal",
+            "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
             "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
             "--", ".",
         ],
@@ -249,24 +252,16 @@ def require_committer(directory: Path) -> None:
         )
 
 
-def head(directory: Path) -> tuple[str, str]:
-    """Read the commit ``HEAD`` is at and the ``origin`` URL.
-
-    Both are reads and neither takes the index lock.
+def head(directory: Path) -> str:
+    """Read the commit ``HEAD`` is at.
 
     Args:
         directory: The repository to read.
 
     Returns:
-        ``(commit sha, origin URL)``. The URL is empty rather than absent
-        when the repository has no remote — a manifest field that is
-        sometimes missing reads worse than one that is sometimes blank.
+        The commit's sha.
     """
-    remote = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
-    return (
-        _git(["rev-parse", "HEAD"], cwd=directory).strip(),
-        remote.stdout.strip() if remote.returncode == 0 else "",
-    )
+    return _git(["rev-parse", "HEAD"], cwd=directory).strip()
 
 
 def dataset_id(directory: Path) -> str:
@@ -302,10 +297,10 @@ def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
     ``.git``, or a host without git — states such projects are actually
     in.
 
-    Several paths, because an output is a file *and* a manifest and a
-    hand edit to either contradicts the record: the payload alone would
-    miss a doctored manifest, and the manifest alone would miss the forged
-    result that is the whole reason to ask. The manifest also carries the
+    Several paths, because a result is a file *and* its record and a
+    hand edit to either contradicts the other: the payload alone would
+    miss a doctored record, and the record alone would miss the forged
+    result that is the whole reason to ask. The record also carries the
     history across a re-declared format, where the payload's path is new.
 
     Args:
@@ -360,29 +355,40 @@ def annex_keys(directory: Path) -> dict[str, str]:
     return keys
 
 
-def tracked_manifests(directory: Path) -> list[Path]:
-    """Every manifest sidecar git is tracking, anywhere in the tree.
+def untracked(directory: Path, paths: Iterable[str]) -> list[str]:
+    """Find which of *paths* git is not tracking.
 
-    From the index rather than a directory walk: it is exact, it costs one
-    process, and it never descends into ``.git`` or ``.venv``. Scoped to
-    ``results/``, which is the only place lc writes one — elsewhere the
-    name is the user's to use. Untracked strays are the dirty check's
-    business, not this one's.
+    Asked of the index rather than of ``status``, because an ignored file
+    is neither tracked nor a change: a tree can be clean without holding
+    it.
 
     Args:
-        directory: The repository root.
+        directory: The project root.
+        paths: Files, from the project root.
 
     Returns:
-        Absolute paths, unordered.
+        Those the index does not hold, in the order given.
     """
-    # Imported here, not at module scope: `assets` reaches this module
-    # through `project`, so the name has to be fetched after both exist.
-    from lightcone.engine.assets import MANIFEST_SUFFIX
+    paths = list(paths)
+    listed = _git(["ls-files", "-z", "--", *paths], cwd=directory).split("\0")
+    return [path for path in paths if path not in listed]
 
-    listed = _git(
-        ["ls-files", "-z", "--", f":(glob)results/**/*{MANIFEST_SUFFIX}"], cwd=directory
-    )
-    return [directory / name for name in listed.split("\0") if name]
+
+def tracked_records(directory: Path) -> list[str]:
+    """Every record git is tracking under the project's ``.astra/``.
+
+    From the index rather than a directory walk: it is exact and it costs
+    one process. Untracked strays are the dirty check's business, not
+    this one's.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        Paths from the project root, unordered.
+    """
+    listed = _git(["ls-files", "-z", "--", ":(glob).astra/records/**/*.json"], cwd=directory)
+    return [name for name in listed.split("\0") if name]
 
 
 def require_free_index(directory: Path) -> None:
@@ -437,7 +443,7 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     silently, with every test green, and every clone would carry the
     bytes forever. With it, ``annex.largefiles`` alone decides — which is
     the storage policy the ``.gitattributes`` template already states,
-    dot-named manifests staying in git through their own exemption.
+    records under ``.astra/`` staying in git through their own line.
     Per-add and never written to the repository's config, so a user's
     own ``git add`` keeps git-annex's stock behavior.
 

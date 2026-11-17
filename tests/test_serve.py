@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
@@ -175,48 +176,98 @@ def served(state: Path, project: Path, papers: None) -> tuple[str, str]:
     return f"{url.scheme}://{url.netloc}", token
 
 
-def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project: Path) -> None:
-    """Read by lc's own manifest reader, so the page parses no lc format and
-    the Contents API never has to serve a dotfile."""
+def _record(address: str) -> dict[str, Any]:
+    """A record as its file holds it: ASTRA's own JSON, which the server
+    reads as written."""
+    return {
+        "spec_version": "0.1.0",
+        "address": address,
+        "content_hash": "sha256:x",
+        "size": 2,
+        "generated_by": {
+            "commit": "abc123",
+            "environment": {"iri": "urn:lightcone:env:sha256:e"},
+            "runner": {"id": "lightcone-cli", "version": "0.5.0"},
+            "inputs": [{"entry": "catalog", "content_hash": "sha256:c", "size": 4}],
+            "started": "2026-10-31T08:59:00Z",
+            "finished": "2026-10-31T09:00:00Z",
+        },
+    }
+
+
+_RUN = {
+    "finishedAt": "2026-10-31T09:00:00Z",
+    "gitRevision": "abc123",
+    "environment": "urn:lightcone:env:sha256:e",
+    "cliVersion": "0.5.0",
+    "inputVersions": {"catalog": "sha256:c"},
+}
+
+
+def _recorded(project: Path, path: str, address: str) -> Path:
+    """Write the result at *path* and the record a run of lc leaves of it."""
+    (project / path).parent.mkdir(parents=True, exist_ok=True)
+    (project / path).write_text("{}")
+    record = project / assets.record_path(path)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(_record(address)))
+    return record
+
+
+def test_a_results_run_comes_from_its_record(served: tuple[str, str], project: Path) -> None:
+    """Read by the server, so the page never parses the format and the
+    Contents API never has to serve a dotfile."""
     base, token = served
-    output = project / "results" / "baseline" / "best_fit.json"
-    output.parent.mkdir(parents=True)
-    output.write_text("{}")
-    manifest = assets.Manifest(
-        output_id="best_fit",
-        universe_id="baseline",
-        recipe="python fit.py",
-        definition_version="sha256:d",
-        env_version="sha256:e",
-        data_version="sha256:x",
-        decisions={},
-        input_versions={"catalog": "sha256:c"},
-        git_sha="abc123",
-        git_remote="",
-        lc_version="0.5.0",
-        hermeticity={},
-        finished_at="2026-10-31T09:00:00.000Z",
-    )
-    assets.write(assets.manifest_path(output), manifest)
+    _recorded(project, "results/baseline/best_fit.json", "best_fit#baseline")
     api = f"{base}/lightcone/api/run?token={token}&path="
     status, body = _request(f"{api}results/baseline/best_fit.json")
     assert status == 200
-    assert json.loads(body)["run"] == {
-        "finishedAt": "2026-10-31T09:00:00.000Z",
-        "gitRevision": "abc123",
-        "recipe": "python fit.py",
-        "environment": "sha256:e",
-        "cliVersion": "0.5.0",
-        "inputVersions": {"catalog": "sha256:c"},
-    }
-    (output.parent / "unrecorded.json").write_text("{}")
+    assert json.loads(body)["run"] == _RUN
+    (project / "results" / "baseline" / "unrecorded.json").write_text("{}")
     assert json.loads(_request(f"{api}results/baseline/unrecorded.json")[1]) == {"run": None}
     # Not a file in the project: what the Contents API would refuse is refused.
     for path in ("results/baseline/absent.json", "../outside.json", "", "results/baseline"):
         assert _request(f"{api}{path}")[0] in (400, 404), path
-    # The manifest stays a dotfile to everything else.
-    hidden = f"{base}/api/contents/results/baseline/.best_fit.manifest.json?token={token}"
-    assert _request(hidden)[0] == 404
+    # The record stays a dotfile to everything else.
+    hidden = ".astra/records/baseline/best_fit.json"
+    assert _request(f"{base}/api/contents/{hidden}?token={token}")[0] == 404
+
+
+def test_the_run_of_a_result_built_once_is_found_too(
+    served: tuple[str, str], project: Path
+) -> None:
+    base, token = served
+    _recorded(project, "results/summary.tar.gz", "summary")
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/summary.tar.gz")
+    assert json.loads(body)["run"] == _RUN
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{}", "not json", "[]", '{"generated_by": {"commit": "abc123"}}', '{"generated_by": 1}'],
+    ids=["empty", "unparsable", "a list", "half a run", "no run"],
+)
+def test_a_record_that_does_not_parse_is_no_run(
+    served: tuple[str, str], project: Path, text: str
+) -> None:
+    """The file is read as plain JSON in ASTRA's shape, and one that is
+    not that shape says nothing — never a traceback, never half a run."""
+    base, token = served
+    _recorded(project, "results/best_fit.json", "best_fit").write_text(text)
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
+    assert json.loads(body) == {"run": None}
+
+
+def test_a_record_may_leave_out_what_a_record_may(served: tuple[str, str], project: Path) -> None:
+    """A record's times and its `inputs` are optional in ASTRA's schema,
+    so their absence is still a run."""
+    base, token = served
+    record = _record("best_fit")
+    for field in ("inputs", "started", "finished"):
+        del record["generated_by"][field]
+    _recorded(project, "results/best_fit.json", "best_fit").write_text(json.dumps(record))
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/best_fit.json")
+    assert json.loads(body)["run"] == {**_RUN, "finishedAt": "", "inputVersions": {}}
 
 
 def test_an_outputs_state_is_the_engines(
@@ -247,16 +298,25 @@ def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) 
     assert _request(f"{base}/lightcone/api/status?token={token}")[0] == 422
 
 
-def test_a_run_record_beyond_a_symlink_is_not_read(
+def test_a_record_beyond_a_symlink_is_not_read(
     served: tuple[str, str], project: Path, tmp_path: Path
 ) -> None:
-    """The contents manager follows symlinks, so the sidecar the route would
-    read is checked where it really is."""
+    """The contents manager follows symlinks, so the record the route would
+    read is checked where it really is: one reached through a link out of
+    the project is no run, and a result reached that way is refused."""
     base, token = served
     elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
+    (elsewhere / "records").mkdir(parents=True)
+    (elsewhere / "records" / "fit.json").write_text(json.dumps(_record("fit")))
+    (project / ".astra").symlink_to(elsewhere)
+    (project / "results").mkdir()
+    (project / "results" / "fit.json").write_text("{}")
+    _, body = _request(f"{base}/lightcone/api/run?token={token}&path=results/fit.json")
+    assert json.loads(body) == {"run": None}
+
+    (project / "results" / "fit.json").unlink()
+    (project / "results").rmdir()
     (elsewhere / "fit.json").write_text("{}")
-    (elsewhere / ".fit.manifest.json").write_text("{}")
     (project / "results").symlink_to(elsewhere)
     status, _ = _request(f"{base}/lightcone/api/run?token={token}&path=results/fit.json")
     assert status == 404
@@ -560,15 +620,21 @@ def test_metadata_hash_requests_never_read_artifact_bytes(project: Path) -> None
 
     from lightcone.app.files import ProjectContents
 
-    artifact = project / "large.json"
+    artifact = project / "results" / "baseline" / "large.json"
+    artifact.parent.mkdir(parents=True)
     with artifact.open("wb") as file:
         file.truncate(3 * 1024**3)
     manager = ProjectContents(root_dir=str(project))
     with patch.object(manager, "open", side_effect=AssertionError("artifact was read")):
-        model = asyncio.run(manager.get("large.json", content=False, require_hash=True))
+        model = asyncio.run(
+            manager.get("results/baseline/large.json", content=False, require_hash=True)
+        )
     assert model["size"] == 3 * 1024**3
     assert model["hash"] is None
-    assert model["watchPaths"] == ["large.json", ".large.manifest.json"]
+    assert model["watchPaths"] == [
+        "results/baseline/large.json",
+        ".astra/records/baseline/large.json",
+    ]
 
 
 def test_confined_open_refuses_a_directory_swap(project: Path, tmp_path: Path) -> None:
@@ -616,14 +682,16 @@ def test_late_run_record_is_announced_without_changing_the_artifact(
 ) -> None:
     from tornado.websocket import websocket_connect
 
-    artifact = project / "metric.json"
+    artifact = project / "results" / "metric.json"
+    artifact.parent.mkdir()
     artifact.write_text("{}")
+    (project / ".astra" / "records").mkdir(parents=True)
     before = artifact.stat()
     url = urlsplit(engine.serve(project).url)
     base = f"{url.scheme}://{url.netloc}"
-    _, body = _request(f"{base}/api/contents/metric.json?{url.query}")
+    _, body = _request(f"{base}/api/contents/results/metric.json?{url.query}")
     watch_path = json.loads(body)["watchPaths"][1]
-    assert watch_path == assets.manifest_path(artifact).relative_to(project).as_posix()
+    assert watch_path == ".astra/records/metric.json"
 
     async def write_run() -> dict[str, object]:
         socket = await websocket_connect(f"ws://{url.netloc}/api/live-content/ws?{url.query}")
@@ -653,7 +721,7 @@ def test_symlink_metadata_describes_the_target(project: Path) -> None:
     before = asyncio.run(manager.get("alias.json", content=False))
     assert before["path"] == "alias.json"
     assert before["size"] == 2_500_000
-    assert before["watchPaths"] == ["target.json", ".alias.manifest.json"]
+    assert before["watchPaths"] == ["target.json"]
     os.utime(target, (1_700_000_000, 1_700_000_000))
     after = asyncio.run(manager.get("alias.json", content=False))
     assert after["last_modified"] != before["last_modified"]

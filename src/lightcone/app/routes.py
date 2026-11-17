@@ -1,8 +1,8 @@
 """The app's own routes: what the page needs and the Contents API cannot give.
 
-An output's recorded run, read by lc's own manifest reader, so the page
-never parses lc's format and the server never has to open dotfiles to it;
-every output's state, classified by the engine exactly as ``lc status``
+A result's recorded run, read from its ASTRA record, so the page never
+parses that format and the server never has to open dotfiles to it;
+every result's state, classified by the engine exactly as ``lc status``
 does, so the page holds no copy of that rule; and the cited papers in
 astra's paper cache, which lies outside the
 project (``astra paper add`` fills it, and quotes are verified against it).
@@ -16,6 +16,7 @@ writes the cache. Every route needs the token, like the rest of the server.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -75,11 +76,11 @@ class PaperFileHandler(ProjectFileHandler):
 
 
 class RunHandler(APIHandler):
-    """The run lc recorded for one output, or ``null`` when there is none."""
+    """The run recorded for one result, or ``null`` when there is none."""
 
     @web.authenticated
     async def get(self) -> None:
-        """Read the manifest beside the output the ``path`` argument names."""
+        """Read the record of the result the ``path`` argument names."""
         # Whether the path is a file in the project is the contents manager's
         # to say, as it does for /files/: outside the root, hidden, absent or
         # a directory is refused before anything is read.
@@ -88,25 +89,30 @@ class RunHandler(APIHandler):
         if not cm.allow_hidden and await ensure_async(cm.is_hidden(path)):
             raise web.HTTPError(404)
         model = await ensure_async(cm.get(path, type="file", content=False))
-        # The sidecar is hidden, but uses the same confined opener as artifacts.
         root = Path(cm.root_dir).resolve()
-        sidecar = assets.manifest_path(root / model["path"])
-        try:
-            with open_fd(root, sidecar, hidden=True) as fd:
-                with os.fdopen(fd, "r", closefd=False) as file:
-                    manifest = assets.loads(file.read())
-        except (web.HTTPError, UnicodeDecodeError):
-            manifest = None
         run: dict[str, Any] | None = None
-        if manifest is not None:
-            run = {
-                "finishedAt": manifest.finished_at,
-                "gitRevision": manifest.git_sha,
-                "recipe": manifest.recipe,
-                "environment": manifest.env_version,
-                "cliVersion": manifest.lc_version,
-                "inputVersions": manifest.input_versions,
-            }
+        if record := assets.record_path(model["path"]):
+            # A record is plain JSON in ASTRA's own shape, read as written:
+            # whether it still holds is the checker's to say, not this
+            # page's. It is hidden, but uses the same confined opener as
+            # artifacts.
+            try:
+                with (
+                    open_fd(root, root / record, hidden=True) as fd,
+                    os.fdopen(fd, "r", closefd=False) as file,
+                ):
+                    made = json.load(file)["generated_by"]
+                run = {
+                    "finishedAt": made.get("finished", ""),
+                    "gitRevision": made["commit"],
+                    "environment": made["environment"]["iri"],
+                    "cliVersion": made["runner"]["version"],
+                    "inputVersions": {
+                        item["entry"]: item["content_hash"] for item in made.get("inputs", [])
+                    },
+                }
+            except (web.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+                run = None
         self.set_header("Cache-Control", "private, no-store")
         self.finish({"run": run})
 
@@ -125,8 +131,7 @@ class StatusHandler(APIHandler):
             raise web.HTTPError(422, str(error)) from error
         outputs = {o.output: {"state": o.status, "detail": o.why} for o in report.outputs}
         self.set_header("Cache-Control", "private, no-store")
-        # The warnings qualify the verdicts — an unfetched input reads as
-        # "changed" without the line saying it is merely not in this clone.
+        # The warnings qualify the verdicts, so they travel with them.
         self.finish({"outputs": outputs, "warnings": report.warnings})
 
 

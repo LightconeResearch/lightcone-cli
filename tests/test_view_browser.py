@@ -6,13 +6,14 @@ other UI smoke tests, LC_UI_TESTS_REQUIRED=1 makes missing prerequisites fail.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import Browser, Error, expect, sync_playwright
-from test_serve import _gate
+from test_serve import _gate, _record
 from test_serve import project as project
 from test_serve import state as state
 
@@ -101,22 +102,11 @@ outputs:
     expect(page.get_by_text("second-value", exact=True).first).to_be_visible()
     expect(provenance).to_contain_text("No recorded run yet.")
     before = artifact.stat().st_mtime_ns
-    manifest = assets.Manifest(
-        output_id="metric",
-        universe_id="baseline",
-        recipe="python metric.py",
-        definition_version="sha256:d",
-        env_version="sha256:e",
-        data_version="sha256:x",
-        decisions={"decisions.binning": "coarse"},
-        input_versions={},
-        git_sha="abc12345",
-        git_remote="",
-        lc_version="0.5.0",
-        hermeticity={},
-        finished_at="2026-10-31T09:00:00.000Z",
-    )
-    assets.write(assets.manifest_path(artifact), manifest)
+    made = _record("metric#baseline")
+    made["generated_by"]["commit"] = "abc12345"
+    record = project / assets.record_path(wanted)
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps(made))
     expect(provenance).to_contain_text("abc12345")
     assert artifact.stat().st_mtime_ns == before
     spec.write_text(spec.read_text().replace("Viewer regression", "Updated analysis"))

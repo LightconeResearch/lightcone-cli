@@ -64,9 +64,9 @@ def test_a_recipe_is_narrowed_to_the_directory_its_output_lands_in(tmp_path: Pat
     """An output is one file, and a mechanism can only grant *creating* it
     through the directory that will hold it — so the scope is that
     directory, and outputs declared side by side are mutually writable.
-    Recorded rather than papered over: `data_version` is what answers
-    whether an output's bytes are its own. What the scope does still
-    exclude is every other universe."""
+    Recorded rather than papered over: the hash a result's record gives
+    is what answers whether its bytes are its own. What the scope does
+    still exclude is every other universe."""
     project = tmp_path / "proj"
     own = project / "results" / "baseline"
     elsewhere = project / "results" / "robust"
@@ -517,9 +517,8 @@ def test_nonexistent_paths_are_dropped(built: policy_module.Policy) -> None:
 
 
 def test_the_allowlist_version_reaches_the_attestation(built: policy_module.Policy) -> None:
-    """The exec allowlist is a maintained surface; an output stays
-    interpretable after it grows only because the version rode along into
-    the manifest."""
+    """The exec allowlist is a maintained surface, so what a boundary
+    attests names the version of it that was enforced."""
     from lightcone.engine.sandbox.landlock import LandlockBackend
     from lightcone.engine.sandbox.model import Capability
 

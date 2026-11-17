@@ -2,9 +2,10 @@
 
 What the analysis *means* is ASTRA's and is tested there. What is pinned
 here is what lc adds: that each planned result becomes one task, keyed by
-ASTRA's id for it, with the file each entry reads, the options it is made
-with and its `definition_version`; and that everything lc cannot build,
-or a target that matches nothing, is an error rather than a guess.
+ASTRA's id for it, with the file each entry reads and the options it is
+made with, beside what ASTRA's checker found of it; and that everything lc
+cannot build, or a target that matches nothing, is an error rather than a
+guess.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from astra import api
 
 from lightcone.engine import plan
 from lightcone.engine.plan import Graph
@@ -97,25 +99,6 @@ def test_every_universe_gets_its_own_task(tmp_path: Path) -> None:
     }
 
 
-def test_a_decision_that_differs_gives_a_different_definition_version(tmp_path: Path) -> None:
-    """The whole point of a universe: the same output, made differently, is
-    a different thing."""
-    graph = _build(_project(tmp_path, _TWO))
-    assert (
-        graph.tasks["fit#baseline"].definition_version
-        != graph.tasks["fit#alternative"].definition_version
-    )
-
-
-def test_an_output_that_ignores_a_decision_is_not_moved_by_it(tmp_path: Path) -> None:
-    """`definition_version` hashes the decisions the output *declares*, so an
-    unrelated choice does not stale it. `summary` reads `fit` pinned to
-    `baseline`, which the alternative universe leaves alone."""
-    a = _build(_project(tmp_path, _SPEC))
-    b = _build(_project(tmp_path, _TWO))
-    assert a.tasks["summary"].definition_version == b.tasks["summary"].definition_version
-
-
 def test_the_options_a_result_is_made_with_are_its_universes(tmp_path: Path) -> None:
     graph = _build(_project(tmp_path, _TWO))
     assert graph.tasks["fit#alternative"].decisions == {"decisions.method": "nested"}
@@ -125,17 +108,17 @@ def test_the_options_a_result_is_made_with_are_its_universes(tmp_path: Path) -> 
 def test_a_result_is_at_the_place_astra_gives_it(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks["fit#baseline"]
     assert task.output_path == tmp_path / "results" / "baseline" / "fit.json"
-    assert task.manifest_path == tmp_path / "results" / "baseline" / ".fit.manifest.json"
+    assert task.records == (tmp_path / ".astra" / "records" / "baseline" / "fit.json",)
     assert "results/baseline/fit.json" in task.recipe
 
 
 def test_a_result_built_once_has_no_universe_folder(tmp_path: Path) -> None:
-    """And a format holding a dot still leaves the manifest named after the
+    """And a format holding a dot still leaves the record named after the
     result alone."""
     task = _build(_project(tmp_path)).tasks["summary"]
     assert (task.name, task.universe) == ("summary", "")
     assert task.output_path == tmp_path / "results" / "summary.tar.gz"
-    assert task.manifest_path == tmp_path / "results" / ".summary.manifest.json"
+    assert task.records == (tmp_path / ".astra" / "records" / "summary.json",)
 
 
 def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
@@ -299,3 +282,66 @@ def test_an_analysis_with_no_universe_builds_what_is_built_once(tmp_path: Path) 
     """
     graph = _build(_project(tmp_path, spec))
     assert list(graph.tasks) == ["hello"]
+
+
+# ---- what ASTRA's checker found, kept beside the tasks ---------------------
+
+
+def test_every_task_has_what_the_checker_found_of_it(tmp_path: Path) -> None:
+    """One status per task, in the tasks' order: the state a run starts
+    from, read once and handed to whoever classifies. Before any run that
+    is ASTRA's `missing`, with the rule broken said in its own words."""
+    graph = _build(_project(tmp_path))
+    assert list(graph.found) == list(graph.tasks)
+    for found in graph.found.values():
+        assert (found.state, found.record) == ("missing", None)
+        assert [broken.code for broken in found.why] == ["MISSING_RECORD"]
+
+
+def test_the_graph_asks_astra_for_the_analysis_and_its_status_once_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the results are and how each stands are two answers, each asked
+    once: validity comes with either, so nothing asks for it."""
+    asked: list[str] = []
+    resolve, status = api.resolve, api.status
+
+    def resolved(path: Path) -> api.ResolvedAnalysis:
+        asked.append("resolve")
+        return resolve(path)
+
+    def checked(path: Path) -> api.StatusReport:
+        asked.append("status")
+        return status(path)
+
+    def refused(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the graph is read through `resolve` and `status` alone")
+
+    monkeypatch.setattr(api, "resolve", resolved)
+    monkeypatch.setattr(api, "status", checked)
+    monkeypatch.setattr(api, "validate", refused)
+    root = _project(tmp_path)
+
+    assert _build(root).tasks
+    assert asked == ["resolve", "status"]
+
+
+def test_statuses_read_at_another_commit_than_the_analysis_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer names the commit it was read at: where a commit landed
+    between the two, the statuses are not of the results resolved."""
+    from dataclasses import replace
+
+    status = api.status
+    monkeypatch.setattr(api, "status", lambda path: replace(status(path), head="0" * 40))
+
+    with pytest.raises(ProjectError, match="moved from .* while lc was reading"):
+        _build(_project(tmp_path))
+
+
+def test_narrowing_keeps_what_was_found_of_what_is_left(tmp_path: Path) -> None:
+    graph = _build(_project(tmp_path))
+    closure = graph.closure(["summary"])
+    assert list(closure.found) == list(closure.tasks) == ["fit#baseline", "summary"]
+    assert closure.found["fit#baseline"] == graph.found["fit#baseline"]

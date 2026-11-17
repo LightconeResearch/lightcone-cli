@@ -39,10 +39,11 @@ _VALIDATOR = importlib.util.find_spec("rocrate_validator") is not None
 
 #: The checks the crate cannot truthfully satisfy, by check identifier.
 _FLOOR = {
+    # an application's address would be the repository's, which nothing
+    # committed gives: a clone's `origin` is its own, and differs by clone
+    "process-run-crate-0.5_3.2",
     # the workflow's id is its path in the crate, and the shape wants http
     "process-run-crate-0.5_5.1",
-    # the image is bytes in the annex; there is no registry to name
-    "process-run-crate-0.5_13.2",
     # lc knows no publishing organization and no author affiliation
     "ro-crate-1.1_22.3",
     "ro-crate-1.1_30.2",
@@ -124,9 +125,7 @@ def test_a_materialized_crate_validates_against_the_provenance_profile(
     )
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
-    # A remote gives the tools http ids; the manifests record origin.
-    dataset._git(["remote", "add", "origin", "https://github.com/example/analysis.git"], cwd=root)
-    dataset.save(root, [root], "license and remote")
+    dataset.save(root, [root], "license")
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert report.ok and (root / "ro-crate-metadata.json").is_file()

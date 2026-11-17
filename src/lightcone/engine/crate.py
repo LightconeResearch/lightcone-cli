@@ -2,49 +2,53 @@
 
 The project *is* the crate. ``ro-crate-metadata.json`` sits at the root
 and describes what the repository already holds — the spec, the lock,
-each materialized result and the run that made it — so a
-deposit is ``git archive`` on the repository, not an export step that
-copies bytes. lc's manifests stay the canonical record; the crate is the
-same facts in schema.org vocabulary, readable by archives and viewers
-that will never run ``lc``.
+each materialized result and the run that made it — so a deposit is
+``git archive`` on the repository, not an export step that copies bytes.
+ASTRA's records stay the canonical account; the crate is the same facts
+in schema.org vocabulary, readable by archives and viewers that will
+never run ``lc``.
 
 The document is a pure function of repository state: :func:`render`
 takes the graph, the license, and a way to ask git who last wrote each
-output, and returns bytes that are identical when nothing changed. That
+result, and returns bytes that are identical when nothing changed. A
+clone's own configuration is not repository state, so nothing is read
+from it: two clones of one commit render one document. That
 is what lets ``lc materialize`` converge the file the way it converges
 ``uv.lock`` — compare, and commit only a difference — with no verb for a
 human to remember.
 
 Profiles targeted: Process, Workflow and Provenance Run Crate 0.5, plus
 Workflow RO-Crate 1.0. The Provenance layer is structural, not claimed:
-one ``lc materialize`` invocation is one ``OrganizeAction`` (outputs of a
-run share their manifests' ``git_sha``, because the driver reads HEAD
-once and hands it down), each output's execution is a ``CreateAction``
+one ``lc materialize`` invocation is one ``OrganizeAction`` (results of a
+run share their records' ``commit``, because the driver reads HEAD
+once and hands it down), each result's execution is a ``CreateAction``
 steered by a ``ControlAction``, and the spec's outputs are the
 workflow's ``HowToStep`` s.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rocrate.model import ContextEntity
 from rocrate.model.computerlanguage import ComputerLanguage
 from rocrate.rocrate import ROCrate
 
-from lightcone.engine import assets, plan
+from lightcone.engine import assets, identity, plan
 from lightcone.engine.dataset import LastWrite
 from lightcone.engine.plan import Graph, Key
 from lightcone.engine.project import SPEC_FILENAME
 
+if TYPE_CHECKING:
+    from astra.api import ProvenanceRecord
+
 #: The vocabulary the run-level facts come from. Without it in the
-#: ``@context``, terms like ``containerImage`` and ``sha256`` are
+#: ``@context``, terms like ``sha256`` are
 #: undefined and silently dropped on JSON-LD expansion — typed but inert.
 _WORKFLOW_RUN_CONTEXT = "https://w3id.org/ro/terms/workflow-run"
 
@@ -65,10 +69,6 @@ _PROFILES = (
     ("https://w3id.org/workflowhub/workflow-ro-crate/1.0", "Workflow RO-Crate", "1.0"),
 )
 
-#: The files that pin what a run installed — one spelling, so the crate's
-#: data entities and every action's ``object`` list cannot drift apart.
-_ENVIRONMENT = ("pyproject.toml", "uv.lock", ".python-version")
-
 #: A SHA-256-backed annex key: ``SHA256E-s<size>--<64 hex><ext>`` (the E
 #: backend keeps the extension). The hex *is* the raw sha256 of the
 #: content, which is what makes a checksum publishable with none of the
@@ -83,6 +83,7 @@ _KEY_SIZE = re.compile(r"^\w+-s(\d+)")
 def render(
     root: Path,
     graph: Graph,
+    made: Mapping[Key, ProvenanceRecord],
     *,
     license: str,
     dsid: str,
@@ -93,12 +94,15 @@ def render(
 
     Pure given its arguments: reads the tree, runs nothing, and returns
     identical bytes for identical repository state — timestamps come from
-    manifests and commits, never from the clock, and entities are built
+    records and commits, never from the clock, and entities are built
     in sorted order. The writer is asked about each path at most once.
 
     Args:
         root: The project root.
-        graph: The full task graph — every universe, every output.
+        graph: The full task graph — every planned result.
+        made: The record of each result described as made: those the
+            project still bears out, as the driver decides it. Any other
+            is described as a step of the workflow only.
         license: The declared license, from :func:`project.license_of`.
         dsid: The dataset UUID, the namespace absolute entity ids are
             minted under so they are stable across clones.
@@ -113,7 +117,7 @@ def render(
     Returns:
         The ``ro-crate-metadata.json`` text, trailing newline included.
     """
-    build = _Builder(root, graph, license, dsid, writer, keys)
+    build = _Builder(root, graph, made, license, dsid, writer, keys)
     return build.document()
 
 
@@ -129,6 +133,12 @@ def _titled(task: plan.Task) -> str:
     return f"`{task.name}`"
 
 
+def _offset(stamp: str) -> str:
+    """A record's UTC instant with a numeric offset: the Run Crate shapes
+    read ``startTime`` and ``endTime`` with ``+hh:mm``, never ``Z``."""
+    return stamp.removesuffix("Z") + "+00:00"
+
+
 class _Builder:
     """One render: accumulates entities into a ``ROCrate``, in one order."""
 
@@ -136,6 +146,7 @@ class _Builder:
         self,
         root: Path,
         graph: Graph,
+        made: Mapping[Key, ProvenanceRecord],
         license: str,
         dsid: str,
         writer: Callable[..., LastWrite],
@@ -148,40 +159,33 @@ class _Builder:
         self.keys = dict(keys)
         self.crate = ROCrate(version=_RO_CRATE_VERSION)
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
-        #: Every materialized task, sorted: the one iteration order.
-        self.made: list[tuple[Key, assets.Manifest]] = sorted(
-            (
-                (key, manifest)
-                for key, task in graph.tasks.items()
-                if (manifest := assets.read(task.manifest_path)) is not None
-            ),
-            key=lambda pair: pair[0],
-        )
+        #: Every result described as made, sorted, with its record. The
+        #: command and the options below are the spec's as it now stands,
+        #: which is what made a result only while it is not stale.
+        self.made: list[tuple[Key, ProvenanceRecord]] = sorted(made.items())
         self.made_keys = {key for key, _ in self.made}
         self.persons: dict[str, str] = {}  # email/name → @id
         self.agents: dict[Key, str] = {}  # each action's Person @id, or ""
-        self.images: set[str] = set()  # archive paths already added
         self.engines: set[str] = set()  # engine @ids already added
         self.actions: list[str] = []  # action @ids, for the root's mentions
         #: Loop invariants, asked once: the uuid5 namespace every minted
-        #: id lives under, the project's one recorded remote, the spec's
-        #: last commit, and which decisions it declares.
+        #: id lives under, and the spec's header and last commit.
         self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
-        remotes = {m.git_remote for _, m in self.made if m.git_remote}
-        self.remote = remotes.pop() if len(remotes) == 1 else ""
         self.title = graph.label or root.name
         self.spec_write = writer(root / SPEC_FILENAME)
-        self.parameters = {d for t in graph.tasks.values() for d in t.decisions}
+        #: The files a record's environment is named by — what every run
+        #: consumed, in the one spelling the IRI has.
+        self.environment = [name for name in identity.files(root) if (root / name).is_file()]
 
     def document(self) -> str:
         """Assemble the graph and serialize it, deterministically."""
         workflow = self._workflow()
         self._steps_and_tools(workflow)
         self._environment_files()
-        for key, manifest in self.made:
-            self._dataset(key, manifest)
-        for key, manifest in self.made:
-            self._control(key, self._action(key, manifest))
+        for key, record in self.made:
+            self._dataset(key, record)
+        for key, record in self.made:
+            self._control(key, self._action(key, record))
         self._runs(workflow)
         self._root()
         document = self.crate.metadata.generate()
@@ -231,8 +235,6 @@ class _Builder:
             "@id": "https://bioschemas.org/profiles/ComputationalWorkflow/1.0-RELEASE"
         }
         workflow["license"] = self._license_ref()
-        if self.remote:
-            workflow["url"] = self.remote
         if self.spec_write:
             # The spec's version is the commit that last changed it — the
             # only version an astra.yaml actually has.
@@ -241,7 +243,7 @@ class _Builder:
             workflow["creator"] = {
                 "@id": self._person(self.spec_write.author, self.spec_write.email)
             }
-        for decision in sorted(self.parameters):
+        for decision in sorted({d for t in self.graph.tasks.values() for d in t.decisions}):
             parameter = ContextEntity(
                 self.crate,
                 f"#param-{decision}",
@@ -268,8 +270,6 @@ class _Builder:
                     "description": f"the recipe of output `{output_id}`",
                 },
             )
-            if self.remote:
-                tool["url"] = self.remote
             if self.spec_write:
                 tool["softwareVersion"] = self.spec_write.sha[:7]
             self.crate.add(tool)
@@ -289,20 +289,15 @@ class _Builder:
             workflow.append_to("hasPart", tool)
 
     def _tool_id(self, output_id: str) -> str:
-        """An id for one output's recipe — under the project's own
-        repository URL when it has one (an http URI, which is what the
-        profiles prefer for an application), a ``urn:uuid`` otherwise."""
-        if self.remote:
-            return f"{self.remote}#tool/{output_id}"
+        """An id for one output's recipe."""
         return self._uri(f"tool/{output_id}")
 
     # ----- the data entities -----
 
     def _environment_files(self) -> None:
         """The lock and its companions — what every run consumed."""
-        for name in _ENVIRONMENT:
-            if (self.root / name).is_file():
-                self._file(name)
+        for name in self.environment:
+            self._file(name)
         if (self.root / "README.md").is_file():
             readme = self._file("README.md")
             readme["about"] = {"@id": "./"}
@@ -332,7 +327,8 @@ class _Builder:
         repository whenever git-annex cannot answer at all, and a
         pointer file reads perfectly well — so without the guard, one
         failed ``git annex find`` would publish a well-formed digest of
-        the pointer text for every annexed file, silently.
+        the pointer text for every annexed file, silently. A file Git LFS
+        stands in for is the same case, with no key to answer from.
         """
         if key := self.keys.get(name):
             if digest := _SHA256_KEY.match(key):
@@ -342,69 +338,65 @@ class _Builder:
             return {}
         path = self.root / name
         try:
-            if path.is_symlink() or assets.is_pointer(path):
+            if path.is_symlink() or assets.is_pointer(path) or assets.lfs_pointer(path):
                 return {}
-            data = path.read_bytes()
+            content_hash, length = assets.digest_file(path)
         except OSError:
             return {}
-        return {"contentSize": str(len(data)), "sha256": hashlib.sha256(data).hexdigest()}
+        return {"contentSize": str(length), "sha256": content_hash.removeprefix("sha256:")}
 
     def _dataset_id(self, key: Key) -> str:
-        """One output's crate id — :func:`plan.declared_path`'s answer,
+        """One result's crate id — :func:`plan.declared_path`'s answer,
         never a second spelling of the results layout. No trailing slash:
-        an output is one file, so the entity is a ``File``."""
+        a result is one file, so the entity is a ``File``."""
         return plan.declared_path(self.root, self.graph.tasks[key].output_path)
 
-    def _dataset(self, key: Key, manifest: assets.Manifest) -> None:
+    def _dataset(self, key: Key, record: ProvenanceRecord) -> None:
         task = self.graph.tasks[key]
-        # A `File`, not a `Dataset` with parts: an output is one file, so
+        # A `File`, not a `Dataset` with parts: a result is one file, so
         # there is one annex key to look up by name and one checksum to
-        # publish. `data_version` is that same digest — the manifest and
-        # the crate no longer carry two numbers for the same bytes.
+        # publish — the same digest its record gives.
         entity = self._file(self._dataset_id(key))
         entity["name"] = f"{task.name} (universe {task.universe})" if task.universe else task.name
         entity["description"] = f"output {_titled(task)}, materialized"
-        entity["version"] = manifest.data_version
-        manifest_file = self._file(plan.declared_path(self.root, task.manifest_path))
-        manifest_file["about"] = {"@id": entity.id}
-        entity["subjectOf"] = {"@id": manifest_file.id}
+        entity["version"] = record.content_hash
+        described = self._file(plan.declared_path(self.root, task.records[0]))
+        described["about"] = {"@id": entity.id}
+        entity["subjectOf"] = {"@id": described.id}
 
     # ----- the runs -----
 
-    def _action(self, key: Key, manifest: assets.Manifest) -> str:
+    def _action(self, key: Key, record: ProvenanceRecord) -> str:
         task = self.graph.tasks[key]
-        write = self.writer(task.output_path, task.manifest_path)
+        write = self.writer(task.output_path, *task.records)
+        made = record.generated_by
         self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {
             "@type": "CreateAction",
             "name": f"run of {_titled(task)}",
-            # The *recorded* recipe, not the graph's: the action states
-            # what ran, and the spec may have moved since — the manifest
-            # is the canonical record of the execution.
-            "description": manifest.recipe,
+            # The command as the spec now stands, like the decisions below:
+            # a record holds neither, and one made from another command is
+            # stale, so this is what a current result ran.
+            "description": task.recipe,
             "instrument": {"@id": self._tool_id(task.name)},
             "result": [{"@id": self._dataset_id(key)}],
             "actionStatus": "http://schema.org/CompletedActionStatus",
-            "object": self._objects(key, manifest),
+            "object": self._objects(key),
         }
-        if manifest.started_at:
-            properties["startTime"] = manifest.started_at
-        if manifest.finished_at:
-            properties["endTime"] = manifest.finished_at
+        if made.started:
+            properties["startTime"] = _offset(made.started)
+        if made.finished:
+            properties["endTime"] = _offset(made.finished)
         if self.agents[key]:
             properties["agent"] = {"@id": self.agents[key]}
-        if manifest.image is not None:
-            properties["containerImage"] = {"@id": self._image(manifest.image)}
-        action = ContextEntity(
-            self.crate, self._uri(f"action/{key}"), properties
-        )
+        action = ContextEntity(self.crate, self._uri(f"action/{key}"), properties)
         self.crate.add(action)
         self.actions.append(str(action.id))
         return str(action.id)
 
-    def _objects(self, key: Key, manifest: assets.Manifest) -> list[dict[str, str]]:
+    def _objects(self, key: Key) -> list[dict[str, str]]:
         task = self.graph.tasks[key]
-        refs = [{"@id": name} for name in _ENVIRONMENT if (self.root / name).is_file()]
+        refs = [{"@id": name} for name in self.environment]
         for name in sorted(task.inputs):
             upstream = task.produced_by.get(name)
             if upstream is not None:
@@ -412,18 +404,16 @@ class _Builder:
                     refs.append({"@id": self._dataset_id(upstream)})
                 continue
             refs.append({"@id": self._external(name, task.inputs[name])})
-        # The *recorded* decisions: the values the recipe actually ran
-        # under, whatever the spec says today. A decision the workflow no
-        # longer declares gets no exampleOfWork — there is no parameter
-        # for it to exemplify.
-        for decision in sorted(manifest.decisions):
+        # The options the task's decisions select as the spec now stands:
+        # a record holds none, and one that names another selection is
+        # stale, so these are what a current result ran under.
+        for decision in sorted(task.decisions):
             properties: dict[str, Any] = {
                 "@type": "PropertyValue",
                 "name": decision,
-                "value": manifest.decisions[decision],
+                "value": task.decisions[decision],
+                "exampleOfWork": {"@id": f"#param-{decision}"},
             }
-            if decision in self.parameters:
-                properties["exampleOfWork"] = {"@id": f"#param-{decision}"}
             value = ContextEntity(self.crate, f"#value-{_slug(task)}-{decision}", properties)
             self.crate.add(value)
             refs.append({"@id": value.id})
@@ -435,9 +425,9 @@ class _Builder:
         Its checksum comes from its annex key, like every other file: a
         ``File`` entity's ``sha256`` describes the *deposit* — the bytes a
         ``git archive`` carries — never what any particular run consumed,
-        so manifests disagreeing about a shared input (a half-rebuilt
+        so records disagreeing about a shared input (a half-rebuilt
         project) do not suppress it; which bytes a run consumed is its own
-        manifest's ``input_versions``.
+        record's ``inputs``.
         """
         declared = plan.declared_path(self.root, path)
         if self.crate.dereference(declared) is not None:
@@ -465,11 +455,12 @@ class _Builder:
         )
 
     def _runs(self, workflow: Any) -> None:
-        """One ``OrganizeAction`` per run — outputs sharing a ``git_sha``
-        were made by one ``lc materialize``, the driver's one HEAD read."""
-        runs: dict[str, list[tuple[Key, assets.Manifest]]] = {}
-        for key, manifest in self.made:
-            runs.setdefault(manifest.git_sha, []).append((key, manifest))
+        """One ``OrganizeAction`` per run — results whose records name one
+        commit were made by one ``lc materialize``, the driver's one HEAD
+        read."""
+        runs: dict[str, list[tuple[Key, ProvenanceRecord]]] = {}
+        for key, record in self.made:
+            runs.setdefault(record.generated_by.commit, []).append((key, record))
         for sha in sorted(runs):
             group = runs[sha]
             # The engine *that run* recorded, never the one installed
@@ -477,36 +468,39 @@ class _Builder:
             # or two collaborators on different lc versions re-commit
             # the crate at each other forever — and an lc upgrade is
             # recorded as moving nothing. One run has one engine by
-            # construction; every manifest of the group agrees.
-            engine = self._engine(group[0][1].lc_version)
-            times = sorted(t for _, m in group for t in (m.started_at, m.finished_at) if t)
+            # construction; every record of the group agrees.
+            engine = self._engine(group[0][1].generated_by.runner.version)
+            times = sorted(
+                moment
+                for _, record in group
+                for moment in (record.generated_by.started, record.generated_by.finished)
+                if moment
+            )
             run_action = ContextEntity(
                 self.crate,
                 self._uri(f"run/{sha}"),
                 properties={
                     "@type": "CreateAction",
-                    "name": f"lc materialize at {sha[:7] or 'unknown commit'}",
-                    "description": (
-                        f"one materialization run, starting from commit {sha or '(unrecorded)'}"
-                    ),
+                    "name": f"lc materialize at {sha[:7]}",
+                    "description": f"one materialization run, starting from commit {sha}",
                     "instrument": {"@id": workflow.id},
                     "result": [{"@id": self._dataset_id(key)} for key, _ in group],
                     "actionStatus": "http://schema.org/CompletedActionStatus",
                 },
             )
             if times:
-                run_action["startTime"] = times[0]
-                run_action["endTime"] = times[-1]
+                run_action["startTime"] = _offset(times[0])
+                run_action["endTime"] = _offset(times[-1])
             if agent := self.agents.get(group[0][0], ""):
                 run_action["agent"] = {"@id": agent}
             self.crate.add(run_action)
             self.actions.append(str(run_action.id))
             organize = ContextEntity(
                 self.crate,
-                f"#organize-{sha[:7] or 'unknown'}",
+                f"#organize-{sha[:7]}",
                 properties={
                     "@type": "OrganizeAction",
-                    "name": f"scheduling of the run at {sha[:7] or 'unknown commit'}",
+                    "name": f"scheduling of the run at {sha[:7]}",
                     "instrument": {"@id": engine},
                     "object": [
                         {"@id": f"#control-{_slug(self.graph.tasks[key])}"} for key, _ in group
@@ -517,7 +511,7 @@ class _Builder:
             self.crate.add(organize)
 
     def _engine(self, version: str) -> str:
-        """The engine one run's manifests attest, added once per version.
+        """The engine one run's records name, added once per version.
 
         Its release page is both the id and the ``url`` — the one address
         derivable from repository state alone; anything read off the
@@ -539,25 +533,6 @@ class _Builder:
             self.crate.add(ContextEntity(self.crate, engine_id, properties))
             self.engines.add(engine_id)
         return engine_id
-
-    def _image(self, image: dict[str, Any]) -> str:
-        """The committed archive: identity and payload as one entity."""
-        archive = str(image.get("archive") or "")
-        if archive not in self.images:
-            properties: dict[str, Any] = {
-                "@type": ["File", "ContainerImage"],
-                "name": str(image.get("tag") or archive),
-                "tag": str(image.get("tag") or ""),
-                "encodingFormat": "application/x-tar",
-                # The archive is `docker-archive` format wherever it runs —
-                # podman, docker and podman-hpc all consume it as one.
-                "additionalType": {"@id": "https://w3id.org/ro/terms/workflow-run#DockerImage"},
-            }
-            if str(image.get("id") or "").startswith("sha256:"):
-                properties["sha256"] = str(image["id"]).removeprefix("sha256:")
-            self.crate.add_file(self.root / archive, archive, properties=properties)
-            self.images.add(archive)
-        return archive
 
     # ----- shared entities and the root -----
 
@@ -586,8 +561,8 @@ class _Builder:
         # The newest recorded instant, never the clock: the document must
         # be a pure function of repository state, or every render is a
         # fresh diff and convergence commits forever.
-        stamps = sorted(m.finished_at for _, m in self.made if m.finished_at)
-        root["datePublished"] = stamps[-1] if stamps else (self.spec_write.date or "1970-01-01")
+        stamps = [finished for _, r in self.made if (finished := r.generated_by.finished)]
+        root["datePublished"] = max(stamps) if stamps else (self.spec_write.date or "1970-01-01")
         root["conformsTo"] = [{"@id": profile_id} for profile_id, _, _ in _PROFILES]
         for profile_id, name, version in _PROFILES:
             self.crate.add(
