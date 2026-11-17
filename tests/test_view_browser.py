@@ -38,20 +38,24 @@ def test_open_dialog_follows_artifacts_and_late_provenance(
     browser: Browser, state: Path, project: Path
 ) -> None:
     (project / "astra.yaml").write_text("""\
-version: "0.0.14"
-name: Viewer regression
+spec_version: "0.1.0"
+label: Viewer regression
 description: Live viewer regression
-inputs: []
-decisions: {}
+decisions:
+  binning:
+    options: {coarse: {}, fine: {}}
+universes:
+  baseline:
+    decisions: {binning: coarse}
 outputs:
-  - id: metric
+  metric:
     type: metric
     format: json
     description: A changing metric
+    decisions: [binning]
+    recipe:
+      command: python metric.py '{decisions.binning}' '{output}'
 """)
-    universes = project / "universes"
-    universes.mkdir()
-    (universes / "baseline.yaml").write_text("id: baseline\ndecisions: {}\n")
     # A project-local link must follow edits to the target, too.
     spec = project / "specs" / "main.yaml"
     spec.parent.mkdir()
@@ -104,7 +108,7 @@ outputs:
         definition_version="sha256:d",
         env_version="sha256:e",
         data_version="sha256:x",
-        decisions={},
+        decisions={"decisions.binning": "coarse"},
         input_versions={},
         git_sha="abc12345",
         git_remote="",

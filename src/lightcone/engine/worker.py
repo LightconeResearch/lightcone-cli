@@ -2,7 +2,7 @@
 
 Also an entry point:
 
-    python -m lightcone.engine.worker <universe>/<output_id>
+    python -m lightcone.engine.worker <task>
 
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
 commit names, behind an engine-pinning ``uv run --no-project --with …`` —
@@ -166,8 +166,9 @@ def _materialize(
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
-        names = ", ".join(f"{u}/{o}" for u, o in absent)
-        return TaskResult(task.key, "blocked", reason=f"upstream did not finish: {names}")
+        return TaskResult(
+            task.key, "blocked", reason=f"upstream did not finish: {', '.join(absent)}"
+        )
 
     live = {key: u.data_version for key, u in reported.items()}
     inputs = {
@@ -234,12 +235,12 @@ def execute(
 
     # Never the parent directory: siblings share it now, and under Dask
     # they are being written concurrently. What this output owns is its
-    # manifest and any file named after its id — the glob rather than the
-    # one declared path, so a spec that re-declares the output in another
-    # format leaves no stale payload behind. `<output_id>.` needs a literal
-    # dot straight after the whole id, and an id cannot contain one, so it
-    # cannot reach a sibling, a longer id, another output's sidecar, or a
-    # scope directory of the same name.
+    # manifest and any file named after it — the glob rather than the one
+    # declared path, so a spec that re-declares the output in another
+    # format leaves no stale payload behind. `<name>.` needs a literal dot
+    # straight after the whole name, and a name cannot contain one, so it
+    # cannot reach a sibling, a longer name, another output's sidecar, or a
+    # directory of the same name.
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
@@ -249,7 +250,7 @@ def execute(
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing outputs.
         task.manifest_path.unlink(missing_ok=True)
-        for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
+        for stale in task.output_path.parent.glob(f"{task.name}.*"):
             if stale.is_file() or stale.is_symlink():
                 stale.unlink()
         started_at = _now()
@@ -278,10 +279,8 @@ def execute(
     # two failures deserve different words: "your recipe failed" and "your
     # recipe worked and we could not record it" are different problems.
     if not task.output_path.is_file():
-        # `data_version` would answer for a directory — the `dir:` branch
-        # hashes it happily — so a recipe that ran `mkdir` on its output,
-        # or wrote some other name, would commit a well-formed digest of
-        # something that is not the output at all.
+        # A recipe that ran `mkdir` on its output, or wrote some other
+        # name, made something that is not the output at all.
         found = "a directory" if task.output_path.is_dir() else "nothing"
         return TaskResult(
             task.key,
@@ -299,8 +298,8 @@ def execute(
         assets.write(
             task.manifest_path,
             assets.Manifest(
-                output_id=task.output_id,
-                universe_id=task.universe_id,
+                output_id=task.name,
+                universe_id=task.universe,
                 recipe=task.recipe,
                 definition_version=task.definition_version,
                 env_version=context.env_version,
@@ -376,7 +375,7 @@ def lc_version() -> str:
 def main(argv: list[str]) -> int:
     """Run one task from the command line, unconditionally.
 
-    ``python -m lightcone.engine.worker <universe>/<output_id>`` — what the
+    ``python -m lightcone.engine.worker <task>`` — what the
     ``[DATALAD RUNCMD]`` record in every materialization commit names. A
     thin wrapper over :func:`execute`, so this is an entry point rather
     than a second implementation. Nothing is classified: a rerun is a rerun.
@@ -394,24 +393,23 @@ def main(argv: list[str]) -> int:
     commit, which nothing here makes.
 
     Args:
-        argv: One argument, ``<universe>/<output_id>``.
+        argv: One argument, the task as lc names it (``fit#baseline``).
 
     Returns:
         0 on success, 1 if the task failed, 2 on a bad argument or an
         unreadable project.
     """
-    if len(argv) != 1 or "/" not in argv[0]:
-        print("usage: python -m lightcone.engine.worker <universe>/<output_id>", file=sys.stderr)
+    if len(argv) != 1:
+        print("usage: python -m lightcone.engine.worker <task>", file=sys.stderr)
         return 2
 
-    universe_id, _, output_id = argv[0].partition("/")
     try:
         root = declared_project()
         # The graph — and with it the task lookup — before any converge:
         # a typo'd target must cost nothing and mask nothing, and a
         # failing sync must not bury "no output `x`" under its own error.
         graph = plan.build(root)
-        if (task := graph.tasks.get((universe_id, output_id))) is None:
+        if (task := graph.tasks.get(argv[0])) is None:
             print(f"no output `{argv[0]}` in this project", file=sys.stderr)
             return 2
         # This one-task run resolves its own runtime and HEAD, because it

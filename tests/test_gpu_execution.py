@@ -18,11 +18,9 @@ from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
-inputs: []
+spec_version: "0.1.0"
 outputs:
-  - id: visibility
+  visibility:
     type: metric
     format: txt
     recipe:
@@ -33,7 +31,7 @@ outputs:
 @pytest.fixture
 def project(analysis: Callable[..., Path]) -> tuple[Path, plan.Task, worker.RunContext]:
     root = analysis(_SPEC)
-    task = plan.build(root).tasks[("baseline", "visibility")]
+    task = plan.build(root).tasks["visibility"]
     context = worker.RunContext(
         env_version=identity.env_version(root),
         head=("0123456789abcdef", "https://example/analysis.git"),
@@ -189,7 +187,7 @@ def test_gpu_rerun_missing_mask_explains_how_to_select_local_devices(
     ))
     monkeypatch.chdir(root)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    assert worker.main(["baseline/visibility"]) == 2
+    assert worker.main(["visibility"]) == 2
     error = capsys.readouterr().err
     assert "CUDA_VISIBLE_DEVICES=0 datalad rerun" in error
     assert "Slurm sets it" in error

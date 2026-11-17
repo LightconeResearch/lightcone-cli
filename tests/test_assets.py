@@ -24,8 +24,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import assets, dataset
-from lightcone.engine.assets import Manifest, classify, data_version, output_path
-from lightcone.engine.project import ProjectError
+from lightcone.engine.assets import Manifest, classify, data_version
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -47,50 +46,29 @@ def _manifest(**overrides: object) -> Manifest:
     return Manifest(**{**base, **overrides})  # type: ignore[arg-type]
 
 
-# ---- where an asset lives --------------------------------------------------
-
-
-def test_an_asset_is_addressed_by_its_path(tmp_path: Path) -> None:
-    """The path in a rendered recipe is the path on disk — no staging, no
-    scratch, no relocation."""
-    assert output_path(tmp_path, "baseline", "best_fit", "csv") == (
-        tmp_path / "results/baseline/best_fit.csv"
-    )
-
-
 # ---- content identity ------------------------------------------------------
 
 
 def test_the_same_bytes_hash_the_same(tmp_path: Path) -> None:
     for name in ("a", "b"):
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "fit.csv").write_text("x,y\n1,2\n")
+        (tmp_path / name).write_text("x,y\n1,2\n")
     assert data_version(tmp_path / "a") == data_version(tmp_path / "b")
 
 
 def test_changed_bytes_move_it(tmp_path: Path) -> None:
     (tmp_path / "fit.csv").write_text("x,y\n1,2\n")
-    before = data_version(tmp_path)
+    before = data_version(tmp_path / "fit.csv")
     (tmp_path / "fit.csv").write_text("x,y\n1,3\n")
-    assert data_version(tmp_path) != before
-
-
-def test_a_rename_moves_it(tmp_path: Path) -> None:
-    """The path goes into the hash beside the bytes: the same content under
-    a different name is a different output."""
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path)
-    (tmp_path / "fit.csv").rename(tmp_path / "result.csv")
-    assert data_version(tmp_path) != before
+    assert data_version(tmp_path / "fit.csv") != before
 
 
 def test_touching_a_file_does_not_move_it(tmp_path: Path) -> None:
     """Content, never mtime. A file restored from history carries an old
     timestamp and must not look changed because of it."""
     (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path)
+    before = data_version(tmp_path / "fit.csv")
     (tmp_path / "fit.csv").touch()
-    assert data_version(tmp_path) == before
+    assert data_version(tmp_path / "fit.csv") == before
 
 
 def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
@@ -104,52 +82,12 @@ def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
     assert data_version(output) == before
 
 
-def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None:
-    """A declared input can be either, and the two must never collide.
-    Only the directory side is framed now — enough to keep them apart,
-    while a file's digest stays a plain sha256 of its own bytes."""
-    (tmp_path / "one").mkdir()
-    (tmp_path / "one" / "fit.csv").write_text("x,y\n")
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    assert data_version(tmp_path / "one") != data_version(tmp_path / "fit.csv")
-
-
-@pytest.mark.parametrize("bad", ["", "/", "..", ".", "a/b", "results/../.."])
-def test_output_path_refuses_a_part_that_is_not_one_path_component(
-    tmp_path: Path, bad: str
-) -> None:
-    """The path is composed, so a part carrying a separator would put an
-    output outside the tree every guard above it checked."""
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, bad, "best_fit", "csv")
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", bad, "csv")
-
-
-@pytest.mark.parametrize("bad", ["", "/", "a/b", ".hidden"])
-def test_output_path_refuses_a_format_that_cannot_be_an_extension(
-    tmp_path: Path, bad: str
-) -> None:
-    """A leading dot would make the output look like its own sidecar; a
-    separator would move it entirely."""
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", "best_fit", bad)
-
-
-def test_output_path_refuses_an_id_carrying_a_dot(tmp_path: Path) -> None:
-    """The sidecar is the id with a leading dot and `.manifest.json` after
-    it, recovered by partitioning on the first dot — so an id carrying one
-    of its own would name a manifest for something else."""
-    with pytest.raises(ProjectError, match="dot"):
-        assets.output_path(tmp_path, "baseline", "fit.plot", "png")
-
-
-def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
+def test_the_manifest_is_named_from_the_name_never_the_format(tmp_path: Path) -> None:
     """A format may contain dots, and `Path.stem` would answer `x.tar` for
-    `x.tar.gz`. Naming the sidecar from the id alone also keeps its path —
+    `x.tar.gz`. Naming the sidecar from the name alone also keeps its path —
     and so its history — across a re-declared serialization."""
-    packed = assets.output_path(tmp_path, "baseline", "chain", "tar.gz")
-    plain = assets.output_path(tmp_path, "baseline", "chain", "npz")
+    packed = tmp_path / "results/baseline/chain.tar.gz"
+    plain = tmp_path / "results/baseline/chain.npz"
     assert assets.manifest_path(packed).name == ".chain.manifest.json"
     assert assets.manifest_path(packed) == assets.manifest_path(plain)
 
@@ -177,16 +115,6 @@ def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None
         data_version(pointer)
 
 
-def test_a_directory_holding_an_unfetched_file_is_refused_too(tmp_path: Path) -> None:
-    """An output directory is hashed as a whole, so one absent file must
-    not be quietly folded in as its pointer."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
-    (tmp_path / "big.bin").write_text("/annex/objects/SHA256E-s9--abc.bin\n")
-
-    with pytest.raises(assets.ContentNotFetchedError):
-        data_version(tmp_path)
-
-
 def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
     tmp_path: Path,
 ) -> None:
@@ -201,28 +129,13 @@ def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
         data_version(locked)
 
 
-def test_a_directory_holding_an_unfetched_locked_file_is_refused_too(
-    tmp_path: Path,
-) -> None:
-    """The quiet one. A dangling symlink answers False to `is_file()`, so
-    filtering a directory walk on that alone drops the absent file from the
-    digest without a word — reporting a hash of the subset that happens to
-    be present, which is a worse lie than the pointer's."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
-    (tmp_path / "big.bin").symlink_to("../.git/annex/objects/xx/yy/SHA256E-s9--abc.bin")
-
-    with pytest.raises(assets.ContentNotFetchedError):
-        data_version(tmp_path)
-
-
 def test_a_broken_symlink_that_is_not_annexed_is_still_loud(tmp_path: Path) -> None:
-    """Not git-annex's doing, so not `git annex get`'s to fix — but it may
-    not vanish from the digest either."""
-    (tmp_path / "fit.csv").write_text("a,b\n")
+    """Not git-annex's doing, so not `git annex get`'s to fix — but never a
+    digest either."""
     (tmp_path / "scratch.dat").symlink_to("/tmp/gone-with-the-scratch-dir")
 
     with pytest.raises(FileNotFoundError):
-        data_version(tmp_path)
+        data_version(tmp_path / "scratch.dat")
 
 
 def test_a_file_that_merely_mentions_the_prefix_is_still_hashed(tmp_path: Path) -> None:

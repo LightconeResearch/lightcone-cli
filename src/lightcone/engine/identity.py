@@ -123,8 +123,9 @@ def definition_version(*, recipe: str, decisions: Mapping[str, str], fmt: str) -
     on describing an output at a path that no longer exists.
 
     Args:
-        recipe: The rendered recipe command.
-        decisions: The decisions this output declares, as id → option.
+        recipe: The recipe's command as it runs, as ASTRA renders it.
+        decisions: The decisions this output declares, as ASTRA's ref →
+            the option selected.
         fmt: The declared serialization.
 
     Returns:

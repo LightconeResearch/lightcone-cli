@@ -1,12 +1,14 @@
 """What a materialized output *is*: where it lives, what it records, and
 whether it is still current.
 
-An asset is a single file — ``results/<universe>/<output_id>.<format>`` —
-with a manifest sidecar beside it, ``.<output_id>.manifest.json``. The
-format comes from the spec, so the path is derived rather than chosen by
-the recipe, and one output can only ever be one file. The manifest is the
-only part lc writes itself, and it is kept out of the annex so it stays
-readable on a clone that has fetched no content at all.
+An asset is a single file at the place ASTRA gives its result —
+``results/<universe>/<name>.<format>``, or ``results/<name>.<format>``
+for an output built once — with a manifest sidecar beside it,
+``.<name>.manifest.json``. The place is ASTRA's, so the path is derived
+rather than chosen by the recipe, and one result can only ever be one
+file. The manifest is the only part lc writes itself, and it is kept out
+of the annex so it stays readable on a clone that has fetched no content
+at all.
 
 The rule that classifies an output — ``current``, ``behind`` or
 ``stale`` — lives here too, next to the manifest it reads and the hashes
@@ -49,58 +51,17 @@ class ContentNotFetchedError(ProjectError):
     """An annexed file whose content is not in this clone."""
 
 
-def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
-    """Locate the file one output is materialized to.
-
-    ``<root>/results/<universe_id>/<output_id>.<fmt>``. Path-addressed:
-    this is the path a rendered recipe writes to, with no staging, scratch
-    or relocation in between.
-
-    Args:
-        root: The project root.
-        universe_id: The universe the output is made under.
-        output_id: The output's id.
-        fmt: The declared serialization, without a leading dot.
-
-    Returns:
-        The output's path.
-
-    Raises:
-        ProjectError: If either id cannot name a single path component, or
-            the format could not be an extension. The path is *composed*,
-            so an unchecked part would place a file outside the tree the
-            caller checked — and an id carrying a dot would make
-            :func:`manifest_path` recover the wrong name.
-    """
-    for label, value in (("universe", universe_id), ("output", output_id)):
-        if not value or "/" in value or "\\" in value or value in {".", ".."}:
-            raise ProjectError(
-                f"{label} id {value!r} is not a single path component, so it "
-                f"cannot name a directory under results/."
-            )
-    if "." in output_id:
-        raise ProjectError(
-            f"output id {output_id!r} contains a dot, so the manifest beside it "
-            f"could not be told from the output's own name."
-        )
-    if not fmt or "/" in fmt or "\\" in fmt or fmt.startswith("."):
-        raise ProjectError(
-            f"output `{output_id}` declares the format {fmt!r}, which cannot name a "
-            f"file extension, so the output has nowhere to be written."
-        )
-    return root / "results" / universe_id / f"{output_id}.{fmt}"
-
-
 def manifest_path(output: Path) -> Path:
     """The manifest sidecar beside *output*.
 
-    ``.<output_id>.manifest.json``, named from the output's id alone and
+    ``.<name>.manifest.json``, named from the result's name alone and
     never its format — so the manifest keeps its path, and therefore its
     history, when a spec re-declares the output in another serialization.
 
-    An id carries no dot (:func:`output_path` refuses one) while a format
-    may (``tar.gz``), so the id is recovered by partitioning on the
-    **first** dot. ``Path.stem`` would answer ``x.tar`` for ``x.tar.gz``.
+    A name is an output's id, which ASTRA's grammar keeps free of dots,
+    while a format may hold one (``tar.gz``), so the name is recovered by
+    partitioning on the **first** dot. ``Path.stem`` would answer ``x.tar``
+    for ``x.tar.gz``.
 
     Args:
         output: The output's own path.
@@ -117,22 +78,17 @@ def manifest_path(output: Path) -> Path:
 
 
 def data_version(path: Path) -> str:
-    """Hash *path*'s content — its bytes, and nothing else about it.
+    """Hash a file's content — its bytes, and nothing else about it.
 
-    A directory hashes each file in sorted relative-path order with the
-    relative path fed in beside the bytes, so a rename moves the digest. A
-    file hashes its own bytes, unframed — so the digest is a plain sha256
-    an outsider reproduces with ``sha256sum``, and the manifest agrees with
-    what the crate publishes for the same file. Only the directory side is
-    framed, which is enough to keep a directory holding one file from
-    colliding with that file alone.
-
-    Never mtime or size: a content hash is what lets a byte-identical
-    rebuild stop cascading, and what stops a file restored with an old
-    timestamp passing as unchanged.
+    Unframed, so the digest is a plain sha256 an outsider reproduces with
+    ``sha256sum``, and the manifest agrees with what the crate publishes
+    for the same file. Never mtime or size: a content hash is what lets a
+    byte-identical rebuild stop cascading, and what stops a file restored
+    with an old timestamp passing as unchanged.
 
     Args:
-        path: A file or directory.
+        path: A file: an input, or a result, each of which ASTRA makes one
+            file.
 
     Returns:
         The digest, as ``sha256:<hex>``.
@@ -140,38 +96,16 @@ def data_version(path: Path) -> str:
     Raises:
         FileNotFoundError: If *path* does not exist. Never a constant
             digest, which would silently disable the staleness chain.
-        ContentNotFetchedError: If any file is annexed without its content
+        ContentNotFetchedError: If the file is annexed without its content
             being in this clone, in either of the shapes that takes.
     """
     if path.is_symlink() and not path.exists():
         require_fetched(path)
     if not path.exists():
         raise FileNotFoundError(path)
+    require_fetched(path)
     h = hashlib.sha256()
-    if path.is_file():
-        require_fetched(path)
-        _feed(h, path)
-        return f"sha256:{h.hexdigest()}"
-
-    h.update(b"dir:")
-    # A dangling symlink is an unfetched *locked* file, and ``is_file()``
-    # answers False for one — so filtering on that alone would drop it from
-    # the digest without a word, reporting a hash of the subset that happens
-    # to be present. Only dangling ones are added back: a symlink that
-    # resolves to a file is already a file, and one that resolves to a
-    # directory is not content.
-    files = [
-        p
-        for p in path.rglob("*")
-        if p.is_file() or (p.is_symlink() and not p.exists())
-    ]
-    for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
-        require_fetched(p)
-        h.update(b"path:")
-        h.update(p.relative_to(path).as_posix().encode())
-        h.update(b"\0data:")
-        _feed(h, p)
-        h.update(b"\0")
+    _feed(h, path)
     return f"sha256:{h.hexdigest()}"
 
 
@@ -198,7 +132,7 @@ class Versions:
         """Return *path*'s content identity, hashing it at most once.
 
         Args:
-            path: A declared input, file or directory.
+            path: A declared input.
 
         Returns:
             The digest, as ``sha256:<hex>``.
@@ -225,9 +159,8 @@ def require_fetched(path: Path) -> None:
 
     Raises:
         ContentNotFetchedError: If *path* is either shape without its
-            content. Loud, because both alternatives are silent: hashing a
-            pointer yields a well-formed digest of the wrong bytes, and a
-            dangling symlink drops out of a directory's digest entirely.
+            content. Loud, because the alternative is silent: hashing a
+            pointer yields a well-formed digest of the wrong bytes.
     """
     if path.is_symlink() and not path.exists():
         unfetched = _ANNEX_OBJECTS in path.readlink().as_posix()
@@ -287,6 +220,7 @@ class Manifest:
     """
 
     output_id: str
+    #: Empty for a result built once.
     universe_id: str
     recipe: str
     #: What the spec says this output is: its recipe and decisions. The
