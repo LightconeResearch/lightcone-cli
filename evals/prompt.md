@@ -5,7 +5,7 @@ Build the analysis specified in `astra.yaml` for universe `baseline`.
 This project is driven by two CLIs — use them rather than improvising:
 
 - `astra` is the spec layer. `astra info` summarizes `astra.yaml`;
-  `astra validate astra.yaml` checks it against the schema. If an `astra`
+  `astra validate` checks it against the specification's rules. If an `astra`
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
 - `lc` (lightcone-cli) is the execution layer:
@@ -15,7 +15,7 @@ This project is driven by two CLIs — use them rather than improvising:
       a dirty tree: commit your own edits first, with plain `git add` and
       `git commit` — the project's git-annex filter handles large files
       transparently, so never run a git-annex command yourself.
-    - `lc materialize <cluster_id> <output_id>` (or `<universe>/<output_id>`) narrows
+    - `lc materialize <cluster_id> <output_id>` (or `<output_id>#<universe>`) narrows
       a run to one output and whatever it depends on. Re-running is
       idempotent: only what is stale gets remade — an output the spec now
       defines differently, or one whose declared inputs changed.
@@ -80,7 +80,7 @@ placeholders before invoking it:
   else: an output is one file. The engine creates the directory; a recipe
   that writes a directory there, or writes some other name, fails.
 - `{inputs.<id>}` — the named input's resolved path: an analysis-level
-  `Input`'s `source` (e.g. a file under `data/`), or, for an upstream
+  input's `path` (e.g. a file under `data/`), or, for an upstream
   output, that output's own file — so your script opens it directly.
 - `{inputs}` — space-separated paths of all declared inputs, in
   declaration order.
@@ -118,21 +118,16 @@ executable.
 
 `astra.yaml` is the single source of truth: inputs, outputs, recipes, and
 methodological decisions all live there — read it first. The seed spec is
-deliberately incomplete: outputs declare no `format:`, recipe commands do
-not yet pass their inputs, decisions, or output path, and outputs may be
-missing entries in their `inputs:` / `decisions:` contracts. Completing the spec is part of
-the task. For each output:
+complete: each output declares its `format:`, its `inputs:` and
+`decisions:`, and the `command` that makes it. What it leaves to you is
+everything the commands name. For each output:
 
-1. Declare the output's `format:` — the file extension its artifact is
-   written with, without the leading dot (`png`, `csv`, `json`, …). lc
-   names the file from it and refuses a spec that omits it.
-2. Complete the recipe `command` so it references `{output}` and the
-   `{inputs.<id>}` / `{decisions.<id>}` the computation needs, and
-   declare everything it references in that output's `inputs:` /
-   `decisions:` lists.
-3. Write the script at the path the command names, parameterizing every
-   decision via argparse — never hardcode option values.
-4. Commit your edits, then run `lc materialize <cluster_id>` (or
+1. Write the script at the path its command names, taking its arguments
+   in the order the command passes them and parameterizing every decision
+   via argparse — never hardcode option values. It writes exactly the
+   file `{output}` names.
+2. Declare what the script imports (`uv add`).
+3. Commit your edits, then run `lc materialize <cluster_id>` (or
    `lc materialize <cluster_id> <output_id>`) to build through the engine.
 
 Build iteratively from upstream outputs to downstream. `lc status` shows

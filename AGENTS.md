@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 ## What this is
 
-**lightcone-cli** ships `lc`, the execution layer for ASTRA (`astra.yaml` analysis specs). The split is enforced in code: `astra-tools` (pinned exactly in `pyproject.toml`) owns what a spec *means* — validation, scoping, `from:` references, `when:`, universe resolution, the recipe placeholder grammar. `lc` owns execution: scaffolding, environments, sandboxing, running recipes, committing results with provenance. If something about spec meaning looks wrong, the fix is a PR to astra-tools, not a second implementation here.
+**lightcone-cli** ships `lc`, the execution layer for ASTRA 0.1 (`astra.yaml` analysis specs). The split is enforced in code: `astra-tools` owns what a spec *means* — validation, universes and their selections, what each result reads, where it goes, and its command as it runs. `lc` asks for it with `astra.api.resolve` and never re-derives any of it. `lc` owns execution: scaffolding, environments, sandboxing, running recipes, committing results with provenance. lc imports astra through `astra.api` alone; if something about spec meaning looks wrong, or `astra.api` lacks what lc needs, the fix is a PR to astra-tools, not a second implementation or a reach into its internals here.
 
 User documentation lives in a separate repository (LightconeResearch/docs), not here.
 
@@ -47,10 +47,10 @@ The `uv-floor` CI job reruns the uv-touching suites against uv 0.7.0. That versi
 
 ### The model
 
-A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml` + `universes/*.yaml`, in a git repository with git-annex. uv is the only environment substrate. The current directory is the project root; nothing walks up.
+A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml`, in a git repository with git-annex. uv is the only environment substrate. The current directory is the project root; nothing walks up.
 
 - **Convergence** (`project.py`, `lc init`): every item is created if missing and repaired if wrong; rerunning is always safe. Scaffolded file content lives as real files in `engine/templates/files/*.tmpl`.
-- **Graph** (`plan.py`): one task per `(universe, output)` with a recipe. An output is exactly one file, `results/<universe>/<output_id>.<format>`, with the manifest sidecar `.<output_id>.manifest.json` beside it. The path is composed from the spec, never chosen by the recipe. `build` validates through astra before resolving anything.
+- **Graph** (`plan.py`): one task per result the analysis plans, keyed by ASTRA's id for it (`fit#baseline`; `fit` for an output built once), in ASTRA's order: each after every result it reads. A result is exactly one file at the place ASTRA gives it, `results/<universe>/<name>.<format>`, with the manifest sidecar `.<name>.manifest.json` beside it. A `Task` is ASTRA's own `Result` with what a run needs looked up once: the file each entry reads, the options it is made with, what its recipe asks for. ASTRA renders the command and gives every path; lc composes neither. lc builds a single analysis: one that declares another is refused.
 - **Identity** (`identity.py`): two hashes, kept separate on purpose. `definition_version` (rendered recipe, decisions, format) is the rebuild trigger. `env_version` (raw `uv.lock` bytes, `.python-version`, a closed list of uv install settings, the image declaration) is not part of it.
 - **Classification** (`assets.py`): one `classify()` yields `current`, `behind` or `stale`, shared by `lc status`, `materialize --check`, `materialize` and the viewer. A changed definition or changed input content is `stale` and is remade. A changed environment is only `behind`: reported, and remade only with `--refresh`. The rule compares content hashes, never mtimes.
 - **Execution** (`materialize.py` drives, `worker.py` makes one output): the driver refuses a dirty tree, hands the graph to Dask, and **owns git alone**, committing each output as its result arrives. Workers never raise and never write git; a failed task returns a result saying so. Each commit carries a DataLad run record that names `python -m lightcone.engine.worker <universe>/<output>`, so `datalad rerun` reproduces it.
@@ -92,7 +92,7 @@ These came out of review and apply to every change.
 - Tests mirror `src/`. Pure suites (`test_identity`, `test_assets`, `test_plan`, `test_image`, `test_crate`, `test_sandbox_policy`, `test_sandbox_wrap`, `test_sandbox_denial`, `test_sandbox_oci`) spawn nothing and run on any OS.
 - `test_dataset`, `test_worker` and `test_materialize` run real git, git-annex and uv on purpose. Whether bytes land in the annex and whether the tree ends clean are questions a stub cannot answer.
 - `materialize.cluster_for_run` is the monkeypatch point for graph tests that should not launch a real cluster.
-- `test_plan.py` tests what lc adds (paths, edges, `definition_version`, the validation gate), not what a spec means. Every fixture spec must pass `astra validate`.
+- `test_plan.py` tests what lc adds (which results are tasks, what each task looks up, edges, `definition_version`, the refusals), not what a spec means. Every fixture spec must pass `astra validate`.
 - Identity tests check sensitivity both ways: what must move the hash and what must not.
 - `test_sandbox_enforcement.py` runs the real `exec_policy` against the real kernel mechanism, with one suite for both Landlock and Seatbelt. **Mutation-check every new denial test**: run the same command through `Unavailable()` and confirm it succeeds, otherwise the test proves nothing.
 - `test_cli.py` covers the CLI surface only. Rich wraps at terminal width, so assert on short fragments.
@@ -103,7 +103,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 
 ### CLI and convergence
 
-- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. The one module-scope astra import is `astra.scaffold` in `project.py`, which is stdlib-only; `astra.validation` and `astra.resolve` must stay lazy.
+- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. `astra.api` loads the whole library, so the engine imports it inside the functions that use it, `project.converge` included; only the viewer's server, which the CLI never imports, has it at module scope.
 - `converge(write=False)` is check mode: the same decision path with side effects off. Everything routes through `_Converger.item` / `.file` / `.blocked`. A *warning* never affects `converged`; a *blocked* item does.
 - Convergence only appends to files the user owns. `.gitignore` and `.gitattributes` converge entry by entry, never by a marker. **A new managed `.gitattributes` line goes at the end of the template**, because the file is last-match-wins and the disorder check judges against template order.
 - Only what git can carry is converged (no empty directories), so a fresh clone needs nothing but `.venv` and `git annex init`.
@@ -139,7 +139,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 - A skip returns the recorded digest, never a recomputed one, so bytes-free clones classify correctly.
 - `--refresh` widens a run by exactly one state. There is no flag that suppresses remaking a stale output.
 - `lc status` always exits 0 and tolerates a dirty tree; `materialize --check` is the gate. `up_to_date` ignores `behind` and is false for a failed run.
-- Output and universe ids must be single path components and output ids carry no dot: the sidecar is recovered by splitting the filename on the first dot. Two universe files with the same id are refused.
+- A result's name is its output's id, which ASTRA's grammar keeps free of dots, while a format may hold one (`tar.gz`): the sidecar is recovered by splitting the filename on the first dot.
 
 ### Execution
 
@@ -229,9 +229,8 @@ Do not reintroduce these without a new reason.
 - **Pinning the annex filter or hooks to the engine's executable.** It writes durable state pointing into a prunable `uvx` cache.
 - **Launching Slurm workers through `uv run --with`.** It re-resolves Dask away from the driver's and needs an index on compute nodes.
 - **Catalog `connections`, `lc compute --config`, and a separate local settings block.** Offers name their provider, and local offers are ordinary offers.
-- **Migrations.** Outputs from older engine layouts are invisible; the remedy is `git rm -r results/` and a re-materialize.
+- **Migrations.** ASTRA 0.0.x specs and their `universes/*.yaml` are not read, and outputs from older engine layouts are invisible; the remedy is `git rm -r results/` and a re-materialize.
 - **Scaffolding an `AGENTS.md` into projects.** A test pins its absence.
-- **Acting on ASTRA's `container:` key.** It is ignored entirely.
 - **Records as dock tabs or a JupyterLab shell in the viewer.** Both were built and dropped to stay on released astra-ui.
 
 ## Contributing

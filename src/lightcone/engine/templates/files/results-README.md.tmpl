@@ -1,9 +1,11 @@
 # results/
 
-Materialized outputs land here, one file per universe and output, named
-from the output's id and the `format:` its spec declares:
+Materialized outputs land here, one file per result, at the place ASTRA
+gives it: named from the output's id and the `format` its spec declares,
+in a folder for the universe it is built in.
 
     results/<universe>/<output_id>.<format>
+    results/<output_id>.<format>        (an output built once)
 
 Beside each one is a `.<output_id>.manifest.json` recording how it was
 made.

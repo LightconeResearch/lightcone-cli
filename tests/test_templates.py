@@ -211,7 +211,9 @@ def test_index_md_renders_the_title_and_references_no_element() -> None:
 def test_results_readme_explains_the_output_layout() -> None:
     """`results/` starts empty and git carries no empty directories, so the
     README is the only thing a clone shows for it."""
-    assert "results/<universe>/<output_id>.<format>" in templates.read("results-README.md.tmpl")
+    text = templates.read("results-README.md.tmpl")
+    assert "results/<universe>/<output_id>.<format>" in text
+    assert "results/<output_id>.<format>" in text
 
 
 def test_data_readme_explains_where_declared_inputs_go() -> None:
