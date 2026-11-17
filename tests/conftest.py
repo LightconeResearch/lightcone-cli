@@ -69,6 +69,13 @@ def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def astra_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ASTRA's cache — file hashes, papers — out of the developer's
+    own, so no test reads what another run left there."""
+    monkeypatch.setenv("ASTRA_CACHE_DIR", str(tmp_path_factory.mktemp("astra-cache")))
+
+
+@pytest.fixture(autouse=True)
 def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Blind the suite to the host's machine-level uv configuration.
 
@@ -248,13 +255,9 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     and `uv sync` together cost milliseconds.
     """
 
-    def build(
-        spec: str,
-        files: dict[str, str] | None = None,
-        universes: dict[str, str] | None = None,
-    ) -> Path:
+    def build(spec: str, files: dict[str, str] | None = None) -> Path:
         root = tmp_path / "analysis"
-        for name in ("universes", "results", "data"):
+        for name in ("results", "data"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
         (root / "pyproject.toml").write_text(
@@ -265,8 +268,6 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
         (root / ".gitattributes").write_text(templates.read("gitattributes.tmpl"))
         (root / ".gitignore").write_text(templates.read("gitignore.tmpl"))
         (root / "astra.yaml").write_text(textwrap.dedent(spec))
-        for name, text in (universes or {"baseline": "id: baseline\ndecisions: {}\n"}).items():
-            (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))
         for name, text in (files or {}).items():
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)

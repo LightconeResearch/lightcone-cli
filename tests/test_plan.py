@@ -1,14 +1,15 @@
-"""Tests for `lightcone.engine.plan` — the spec, read as a graph.
+"""Tests for `lightcone.engine.plan` — the analysis, read as a graph.
 
-Two things are being pinned here. That the graph says what the spec meant
-— which outputs exist, what each depends on, and what its recipe came out
-as — and that everything ambiguous is an error rather than a guess: a
-placeholder nothing declares, a target nothing matches, a nesting depth
-the addressing scheme cannot express.
+What the analysis *means* is ASTRA's and is tested there. What is pinned
+here is what lc adds: that each planned result becomes one task, keyed by
+ASTRA's id for it, with the file each entry reads, the options it is made
+with and its `definition_version`; and that everything lc cannot build,
+or a target that matches nothing, is an error rather than a guess.
 """
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -19,16 +20,20 @@ from lightcone.engine.plan import Graph
 from lightcone.engine.project import ProjectError
 
 _SPEC = """
-version: "0.0.13"
-name: demo
+spec_version: "0.1.0"
+label: demo
 
 inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
+  catalog: {path: data/catalog.fits}
+
+decisions:
+  method:
+    options:
+      mcmc: {}
+      nested: {}
 
 outputs:
-  - id: fit
+  fit:
     type: metric
     format: json
     inputs: [catalog]
@@ -36,32 +41,37 @@ outputs:
     recipe:
       command: python src/fit.py {inputs.catalog} --method {decisions.method} {output}
 
-  - id: report
+  report:
     type: report
     format: md
     inputs: [fit]
     recipe:
       command: python src/report.py {inputs.fit} {output}
 
-  - id: reexport
-    type: metric
+  summary:
+    type: table
+    format: tar.gz
+    inputs: [fit#baseline]
+    recipe:
+      command: python src/summary.py {inputs} {output}
 
-decisions:
-  method:
-    label: Method
-    default: mcmc
-    options:
-      mcmc: {label: MCMC}
-      nested: {label: Nested}
+universes:
+  baseline: {decisions: {method: mcmc}}
 """
 
+#: A second universe, selecting the other option.
+_TWO = _SPEC + "  alternative: {decisions: {method: nested}}\n"
 
-def _project(root: Path, spec: str = _SPEC, **universes: str) -> Path:
+
+def _project(root: Path, spec: str = _SPEC) -> Path:
+    """Write the analysis into a repository, its input tracked: ASTRA reads
+    an analysis in a git working tree, and an input git does not track
+    is no input."""
+    (root / "data").mkdir(exist_ok=True)
     (root / "astra.yaml").write_text(textwrap.dedent(spec))
-    (root / "universes").mkdir(exist_ok=True)
-    declared = universes or {"baseline": "id: baseline\ndecisions:\n  method: mcmc\n"}
-    for name, text in declared.items():
-        (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))
+    (root / "data" / "catalog.fits").write_text("catalog\n")
+    for argv in (["init", "-q"], ["add", "."]):
+        subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
     return root
 
 
@@ -72,54 +82,60 @@ def _build(root: Path) -> Graph:
 # ---- what the graph contains -----------------------------------------------
 
 
-def test_one_task_per_universe_and_output_with_a_recipe(tmp_path: Path) -> None:
-    """A re-export declares no recipe, so it produces no bytes and there is
-    nothing to schedule for it."""
+def test_one_task_per_planned_result_keyed_by_its_id(tmp_path: Path) -> None:
+    """Per universe, or once for an output that reads only what is pinned.
+    The key is ASTRA's id for the result, never a second naming of lc's."""
     graph = _build(_project(tmp_path))
-    assert sorted(graph.tasks) == [("baseline", "fit"), ("baseline", "report")]
+    assert sorted(graph.tasks) == ["fit#baseline", "report#baseline", "summary"]
 
 
 def test_every_universe_gets_its_own_task(tmp_path: Path) -> None:
-    graph = _build(
-        _project(
-            tmp_path,
-            baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-            alternative="id: alternative\ndecisions:\n  method: nested\n",
-        )
-    )
-    assert {u for u, _ in graph.tasks} == {"baseline", "alternative"}
+    graph = _build(_project(tmp_path, _TWO))
+    assert {task.universe for task in graph.tasks.values() if task.name == "fit"} == {
+        "baseline",
+        "alternative",
+    }
 
 
 def test_a_decision_that_differs_gives_a_different_definition_version(tmp_path: Path) -> None:
     """The whole point of a universe: the same output, made differently, is
     a different thing."""
-    graph = _build(
-        _project(
-            tmp_path,
-            baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-            alternative="id: alternative\ndecisions:\n  method: nested\n",
-        )
-    )
+    graph = _build(_project(tmp_path, _TWO))
     assert (
-        graph.tasks[("baseline", "fit")].definition_version
-        != graph.tasks[("alternative", "fit")].definition_version
+        graph.tasks["fit#baseline"].definition_version
+        != graph.tasks["fit#alternative"].definition_version
     )
 
 
 def test_an_output_that_ignores_a_decision_is_not_moved_by_it(tmp_path: Path) -> None:
     """`definition_version` hashes the decisions the output *declares*, so an
-    unrelated choice does not stale it."""
-    a = _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: mcmc\n"))
-    b = _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: nested\n"))
-    key = ("baseline", "report")
-    assert a.tasks[key].definition_version == b.tasks[key].definition_version
+    unrelated choice does not stale it. `summary` reads `fit` pinned to
+    `baseline`, which the alternative universe leaves alone."""
+    a = _build(_project(tmp_path, _SPEC))
+    b = _build(_project(tmp_path, _TWO))
+    assert a.tasks["summary"].definition_version == b.tasks["summary"].definition_version
 
 
-def test_an_output_addresses_its_own_file(tmp_path: Path) -> None:
-    task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
+def test_the_options_a_result_is_made_with_are_its_universes(tmp_path: Path) -> None:
+    graph = _build(_project(tmp_path, _TWO))
+    assert graph.tasks["fit#alternative"].decisions == {"decisions.method": "nested"}
+    assert graph.tasks["report#alternative"].decisions == {}
+
+
+def test_a_result_is_at_the_place_astra_gives_it(tmp_path: Path) -> None:
+    task = _build(_project(tmp_path)).tasks["fit#baseline"]
     assert task.output_path == tmp_path / "results" / "baseline" / "fit.json"
     assert task.manifest_path == tmp_path / "results" / "baseline" / ".fit.manifest.json"
     assert "results/baseline/fit.json" in task.recipe
+
+
+def test_a_result_built_once_has_no_universe_folder(tmp_path: Path) -> None:
+    """And a format holding a dot still leaves the manifest named after the
+    result alone."""
+    task = _build(_project(tmp_path)).tasks["summary"]
+    assert (task.name, task.universe) == ("summary", "")
+    assert task.output_path == tmp_path / "results" / "summary.tar.gz"
+    assert task.manifest_path == tmp_path / "results" / ".summary.manifest.json"
 
 
 def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
@@ -129,9 +145,12 @@ def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
         "      command: python src/fit.py",
     )
     graph = _build(_project(tmp_path, spec))
-    task = graph.tasks[("baseline", "fit")]
-    assert task.resources == {"cpus": 4, "memory": "6Gi", "time_limit": "1h30m"}
-    assert graph.tasks[("baseline", "report")].resources == {}
+    assert graph.tasks["fit#baseline"].resources == {
+        "cpus": 4,
+        "memory": "6Gi",
+        "time_limit": "1h30m",
+    }
+    assert graph.tasks["report#baseline"].resources == {}
 
 
 @pytest.mark.parametrize(
@@ -141,7 +160,6 @@ def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
         ("disk: 10Gi", {"disk": "10Gi"}),
         ("cpus: 0.5", {"cpus": 0.5}),
         ("cpus: 0", {"cpus": 0}),
-        ("memory: null", {"memory": None}),
     ],
 )
 def test_execution_support_does_not_limit_graph_construction(
@@ -151,165 +169,133 @@ def test_execution_support_does_not_limit_graph_construction(
         "command: python src/fit.py",
         f"resources: {{{declaration}}}\n      command: python src/fit.py",
     )
-    task = _build(_project(tmp_path, spec)).tasks[("baseline", "fit")]
+    task = _build(_project(tmp_path, spec)).tasks["fit#baseline"]
     assert task.resources == expected
 
 
-def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
-    task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
+def test_a_declared_input_resolves_to_its_path(tmp_path: Path) -> None:
+    task = _build(_project(tmp_path)).tasks["fit#baseline"]
     assert task.inputs == {"catalog": tmp_path / "data" / "catalog.fits"}
     assert task.produced_by == {}
     assert "data/catalog.fits" in task.recipe
 
 
-def test_a_declared_input_outside_the_project_keeps_its_absolute_path(
-    tmp_path: Path,
-) -> None:
-    """A path in a recipe *is* the path on disk, and one outside the tree
-    has no project-relative spelling to fall back on. It used to be
-    rendered by `relative_to`, which raised a bare ValueError."""
-    outside = tmp_path.parent / "shared" / "catalog.fits"
-    root = _project(tmp_path, _SPEC.replace("source: data/catalog.fits", f"source: {outside}"))
-
-    task = _build(root).tasks[("baseline", "fit")]
-    assert task.inputs == {"catalog": outside}
-    assert str(outside) in task.recipe
-
-
 def test_an_input_another_output_produces_becomes_an_edge(tmp_path: Path) -> None:
-    task = _build(_project(tmp_path)).tasks[("baseline", "report")]
-    assert task.produced_by == {"fit": ("baseline", "fit")}
-    assert task.depends_on == (("baseline", "fit"),)
-    assert "results/baseline/fit" in task.recipe
+    task = _build(_project(tmp_path)).tasks["report#baseline"]
+    assert task.produced_by == {"fit": "fit#baseline"}
+    assert task.depends_on == ("fit#baseline",)
+    assert task.inputs == {"fit": tmp_path / "results" / "baseline" / "fit.json"}
+    assert "results/baseline/fit.json" in task.recipe
+
+
+def test_a_pinned_input_is_an_edge_to_that_universe(tmp_path: Path) -> None:
+    """The entry is named as the output writes it, pin and all."""
+    task = _build(_project(tmp_path, _TWO)).tasks["summary"]
+    assert task.produced_by == {"fit#baseline": "fit#baseline"}
 
 
 def test_an_input_nothing_provides_is_an_error(tmp_path: Path) -> None:
-    """Caught by ASTRA rather than by us: resolution answers what a valid
-    spec means, so `build` asks whether it is one first — and the error
-    names the line at fault instead of the run that tripped over it."""
+    """Caught by ASTRA rather than by lc, in ASTRA's words, naming the line
+    at fault instead of the run that tripped over it."""
     spec = _SPEC.replace("inputs: [catalog]", "inputs: [missing]").replace(
         "{inputs.catalog}", "{inputs.missing}"
     )
-    with pytest.raises(ProjectError, match="does not validate"):
+    with pytest.raises(ProjectError, match="(?s)does not validate.*UNRESOLVED_ADDRESS"):
         _build(_project(tmp_path, spec))
 
 
-def test_a_spec_astra_rejects_never_reaches_a_recipe(tmp_path: Path) -> None:
-    """The gate exists because the resolver assumes validity: without it an
-    invalid spec surfaces as a missing decision or an unresolvable input,
-    blaming the run for a fault in the file."""
-    spec = _SPEC.replace('name: demo', "")
-    with pytest.raises(ProjectError, match="MISSING_ROOT_FIELD"):
+def test_an_output_without_a_format_is_refused_by_astra(tmp_path: Path) -> None:
+    """lc places a result from its format, so ASTRA's refusal comes before
+    anything runs — every offender at once."""
+    spec = _SPEC.replace("    format: json\n", "").replace("    format: md\n", "")
+    with pytest.raises(ProjectError, match="MISSING_FIELD") as raised:
         _build(_project(tmp_path, spec))
+    assert "fit" in str(raised.value) and "report" in str(raised.value)
+
+
+def test_a_cycle_is_refused_by_astra(tmp_path: Path) -> None:
+    spec = _SPEC.replace("    inputs: [catalog]", "    inputs: [report]").replace(
+        "{inputs.catalog}", "{inputs.report}"
+    )
+    with pytest.raises(ProjectError, match="OUTPUT_CYCLE"):
+        _build(_project(tmp_path, spec))
+
+
+def test_what_astra_notes_is_kept_for_the_run_to_report(tmp_path: Path) -> None:
+    """A command that runs code from outside its analysis breaks no rule,
+    and a run would otherwise live with it silently."""
+    spec = _SPEC.replace("python src/report.py", "python ../elsewhere/report.py")
+    notes = _build(_project(tmp_path, spec)).notes
+    assert any("elsewhere" in note for note in notes)
+
+
+def test_the_analysis_label_and_description_are_kept(tmp_path: Path) -> None:
+    spec = _SPEC.replace("label: demo", "label: demo\ndescription: A test.")
+    graph = _build(_project(tmp_path, spec))
+    assert (graph.label, graph.description) == ("demo", "A test.")
 
 
 # ---- ordering, closure, targets --------------------------------------------
 
 
-def test_order_puts_dependencies_first(tmp_path: Path) -> None:
-    order = _build(_project(tmp_path)).order()
-    assert order.index(("baseline", "fit")) < order.index(("baseline", "report"))
-
-
-def test_a_cycle_is_a_clean_error(tmp_path: Path) -> None:
-    spec = _SPEC.replace("  - id: reexport\n    type: metric\n", "")
-    spec = spec.replace("    inputs: [catalog]", "    inputs: [report]")
-    spec = spec.replace("{inputs.catalog}", "{inputs.report}")
-    with pytest.raises(ProjectError, match="cycle"):
-        _build(_project(tmp_path, spec)).order()
+def test_each_task_comes_after_the_tasks_it_reads(tmp_path: Path) -> None:
+    order = list(_build(_project(tmp_path)).tasks)
+    assert order.index("fit#baseline") < order.index("report#baseline")
+    assert order.index("fit#baseline") < order.index("summary")
 
 
 def test_asking_for_an_output_asks_for_what_it_is_made_of(tmp_path: Path) -> None:
     graph = _build(_project(tmp_path))
     closure = graph.closure(graph.resolve(["report"]))
-    assert sorted(closure.tasks) == [("baseline", "fit"), ("baseline", "report")]
+    assert list(closure.tasks) == ["fit#baseline", "report#baseline"]
 
 
 def test_a_bare_target_means_every_universe(tmp_path: Path) -> None:
-    graph = _build(
-        _project(
-            tmp_path,
-            baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-            alternative="id: alternative\ndecisions:\n  method: nested\n",
-        )
-    )
-    assert sorted(graph.resolve(["fit"])) == [("alternative", "fit"), ("baseline", "fit")]
+    graph = _build(_project(tmp_path, _TWO))
+    assert sorted(graph.resolve(["fit"])) == ["fit#alternative", "fit#baseline"]
 
 
-def test_a_qualified_target_means_exactly_one(tmp_path: Path) -> None:
-    graph = _build(
-        _project(
-            tmp_path,
-            baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-            alternative="id: alternative\ndecisions:\n  method: nested\n",
-        )
-    )
-    assert graph.resolve(["baseline/fit"]) == [("baseline", "fit")]
+def test_a_task_target_means_exactly_one(tmp_path: Path) -> None:
+    graph = _build(_project(tmp_path, _TWO))
+    assert graph.resolve(["fit#baseline"]) == ["fit#baseline"]
 
 
 def test_an_unknown_target_is_an_error_not_an_empty_run(tmp_path: Path) -> None:
     """Quietly making nothing is the least useful thing a build tool can
     do, so the message lists what there was."""
     graph = _build(_project(tmp_path))
-    with pytest.raises(ProjectError, match="no output matches `typo`.*baseline/fit"):
+    with pytest.raises(ProjectError, match="no output matches `typo`.*fit#baseline"):
         graph.resolve(["typo"])
 
 
 # ---- refusals --------------------------------------------------------------
 
 
-def test_two_universes_cannot_claim_one_id(tmp_path: Path) -> None:
-    """They would materialize into one directory, and the second simply
-    replaced the first — so a universe went missing with nothing said. The
-    natural way to reach it is copying a universe file and forgetting to
-    change the id inside."""
-    root = _project(
-        tmp_path,
-        baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-        copy="id: baseline\ndecisions:\n  method: nested\n",
-    )
-    with pytest.raises(ProjectError, match="both declare the universe `baseline`"):
-        _build(root)
-
-
-def test_universes_are_told_apart_by_their_id_not_their_filename(tmp_path: Path) -> None:
-    root = _project(
-        tmp_path,
-        baseline="id: baseline\ndecisions:\n  method: mcmc\n",
-        alternative="id: alternative\ndecisions:\n  method: nested\n",
-    )
-    assert {u for u, _ in _build(root).tasks} == {"baseline", "alternative"}
-
-
 def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:
-    (tmp_path / "universes").mkdir()
     with pytest.raises(ProjectError, match="no astra.yaml"):
         _build(tmp_path)
 
 
-def test_no_universe_is_a_clean_error(tmp_path: Path) -> None:
-    (tmp_path / "astra.yaml").write_text(textwrap.dedent(_SPEC))
-    with pytest.raises(ProjectError, match="declares no universe"):
-        _build(tmp_path)
+def test_an_analysis_that_declares_another_is_refused_by_name(tmp_path: Path) -> None:
+    """Its results would run in another folder, under names lc does not
+    place — refused whole rather than run in part."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    spec = _SPEC.replace('label: demo', "label: demo\nanalyses:\n  stage: {path: stage}")
+    with pytest.raises(ProjectError, match="declares another analysis \\(`stage`\\)"):
+        _build(_project(tmp_path, spec))
 
 
-def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
-    """lc names the file from it, so there is nowhere to write the output.
-    Every offender at once: a spec is fixed in one pass, not one run per
-    missing key."""
-    root = _project(tmp_path)
-    (root / "astra.yaml").write_text(
-        textwrap.dedent(_SPEC).replace("    format: json\n", "").replace("    format: md\n", "")
-    )
-    with pytest.raises(ProjectError, match="format") as raised:
-        _build(root)
-    assert "fit" in str(raised.value) and "report" in str(raised.value)
-
-
-# ---- rendering a recipe ----------------------------------------------------
-
-
-
-
-
-
+def test_an_analysis_with_no_universe_builds_what_is_built_once(tmp_path: Path) -> None:
+    spec = """
+    spec_version: "0.1.0"
+    outputs:
+      hello:
+        type: report
+        format: txt
+        recipe:
+          command: echo hello > {output}
+    """
+    graph = _build(_project(tmp_path, spec))
+    assert list(graph.tasks) == ["hello"]

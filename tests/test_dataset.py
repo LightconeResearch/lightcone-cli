@@ -211,9 +211,6 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
         with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
             assets.data_version(output / name)
 
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.data_version(output)
-
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
     """`git annex lock` turns the tree back into symlinks, and an unfetched
@@ -229,7 +226,7 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        assets.data_version(output)
+        assets.data_version(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------

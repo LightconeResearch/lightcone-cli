@@ -6,6 +6,7 @@ forwarding. Sandbox enforcement is tested in `test_sandbox_*`.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,18 +22,18 @@ from lightcone.engine.project import (
 )
 
 SPEC = """\
-title: Test
+spec_version: "0.1.0"
 inputs:
-  - id: local
-    type: data
-    source: data/local.csv
-  - id: remote
-    type: data
-    source: https://example.org/nope.csv
-outputs:
-  - id: best_fit
-    type: metric
+  local: {path: data/local.csv}
 """
+
+
+def _tracked(root: Path) -> None:
+    """Make *root* a repository tracking what is in it: ASTRA reads an
+    analysis in a git working tree, and an input git does not track is no
+    input."""
+    for argv in (["init", "-q"], ["add", "."]):
+        subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
 
 
 @pytest.fixture
@@ -44,6 +45,7 @@ def project(tmp_path: Path) -> Path:
     (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
     (root / "uv.lock").write_text("version = 1\n")
     (root / ".venv").mkdir()
+    _tracked(root)
     return root
 
 
@@ -128,54 +130,31 @@ def test_a_declared_project_still_needs_the_lock(project: Path) -> None:
     assert "missing uv.lock" in str(raised.value)
 
 
-def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:
+def test_a_missing_spec_declares_no_input(project: Path) -> None:
     (project / "astra.yaml").unlink()
-    assert engine_run.read_spec(project) == {}
-    assert engine_run.input_paths(project, {}) == []
+    assert engine_run.input_paths(project) == []
 
 
 # ---- declared inputs ------------------------------------------------------
 
 
 def test_declared_file_inputs_become_read_paths(project: Path) -> None:
-    spec = engine_run.read_spec(project)
-    assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
-
-
-def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
-    """A denial the researcher cannot act on is worse than the access it
-    withheld: the file *is* declared, just not at the top of the tree."""
-    (project / "data" / "stage.csv").write_text("x\n")
-    spec = {
-        "inputs": [{"id": "local", "source": "data/local.csv"}],
-        "analyses": {"stage": {"inputs": [{"id": "sub", "source": "data/stage.csv"}]}},
-    }
-    assert engine_run.input_paths(project, spec) == [
-        (project / "data" / "local.csv").resolve(),
-        (project / "data" / "stage.csv").resolve(),
-    ]
-
-
-def test_a_source_that_is_not_a_path_is_left_alone(project: Path) -> None:
-    """ASTRA's `source` is free-form — a URI, a dotted name, a path — so
-    "is this a path" is answered by whether it resolves to something that
-    exists, not by parsing."""
-    spec = engine_run.read_spec(project)
-    assert not any("example.org" in str(p) for p in engine_run.input_paths(project, spec))
+    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
 def test_a_spec_with_no_inputs_is_fine(tmp_path: Path) -> None:
     root = tmp_path / "bare"
     root.mkdir()
-    (root / "astra.yaml").write_text("title: Bare\n")
-    assert engine_run.input_paths(root, engine_run.read_spec(root)) == []
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    _tracked(root)
+    assert engine_run.input_paths(root) == []
 
 
-def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) -> None:
-    """A probe exists to debug a project, and a spec whose sub-analysis
-    references are stale is exactly when someone reaches for one."""
-    (project / "astra.yaml").write_text(SPEC + "analyses:\n  - id: sub\n    path: ../gone\n")
-    assert engine_run.read_spec(project)["inputs"]
+def test_an_analysis_astra_cannot_resolve_grants_nothing(project: Path) -> None:
+    """A probe exists to debug a project, and an invalid analysis is
+    exactly when someone reaches for one — so that is no refusal."""
+    (project / "astra.yaml").write_text(SPEC + "analyses:\n  sub: {path: ../gone}\n")
+    assert engine_run.input_paths(project) == []
 
 
 # ---- the uv hop -----------------------------------------------------------

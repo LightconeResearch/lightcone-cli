@@ -23,8 +23,13 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
+# astra-tools 0.3 is the first release with `astra.api`, the one surface lc
+# reads an analysis through. astra-spec is a direct dependency only for its
+# specifier: 0.1 is a release candidate, which a resolver takes for a
+# package it is asked for by such a version.
 dependencies = [
-    "astra-tools==0.2.18",
+    "astra-tools>=0.3.0rc3",
+    "astra-spec>=0.1.0rc1,<0.2",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",
@@ -105,7 +110,7 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["astra.*", "rocrate.*"]
+module = ["rocrate.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 

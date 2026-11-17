@@ -1,69 +1,98 @@
-"""The spec, read as a graph of tasks.
+"""The analysis, read as a graph of tasks.
 
-``astra.yaml`` × ``universes/*.yaml`` gives one task per
-``(universe, output)`` pair that has a recipe. A task carries everything
-executing it needs and nothing about *how* it will be executed: the
-rendered command, where its bytes go, what it reads, which decisions it
-was made under, and its ``definition_version``.
+What an analysis *means* is ASTRA's to say: ``astra.api.resolve`` gives
+every result the analysis plans, each with the place its bytes go, what
+each entry of its output's ``inputs`` reads, and its command as it runs,
+with every path from the project root. None of that is re-derived here.
+A task is ASTRA's account of one result, with the few facts a run needs
+looked up once: the file each entry reads, the options it is made with,
+what its recipe asks for, and its ``definition_version``.
 
-What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
-universe's decisions, resolves every output's inputs to what supplies
-them, drops the outputs whose ``when:`` does not hold, and renders the
-recipe grammar — so scoping, ``from:`` references and sub-analysis
-nesting are read here rather than re-derived.
+lc builds the results of one analysis. One that declares others is
+refused: their results would be made with recipes that run in another
+folder, under names this engine does not place.
 
-Where an output lands is composed, never chosen: an output is the single
-file ``results/<universe>/<id>.<format>``, and the format comes from the
-spec — so the whole contents of ``results/`` are a pure function of it.
-
-Nothing here schedules anything. Ordering is Dask's job at execution time
-and a topological walk's job in ``--check``; this module only says which
-task depends on which.
+Nothing here schedules anything. ASTRA lists each result after every
+result it reads, and the graph keeps that order, which is all ``--check``
+needs; at execution time ordering is Dask's job.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from graphlib import CycleError, TopologicalSorter
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lightcone.engine import assets, identity
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
-#: A task's identity within a run: which universe, which output.
-Key = tuple[str, str]
+if TYPE_CHECKING:
+    from astra.api import Result
+
+#: A task's identity within a run: its result's id, as ASTRA gives it —
+#: ``fit#baseline``, or ``fit`` for an output built once.
+Key = str
+
+#: Of what ASTRA notes for an author, the two a run would silently live
+#: with: an output nothing plans, and a command that runs code from
+#: outside its analysis.
+_NOTED = ("UNPLANNED_OUTPUT", "CODE_OUTSIDE_ANALYSIS")
 
 
 @dataclass(frozen=True)
 class Task:
-    """One output, in one universe: everything needed to make it."""
+    """One planned result: everything needed to make it."""
 
-    universe_id: str
-    output_id: str
-    #: The single file this output is.
+    #: ASTRA's account of the result: its id, the place its bytes go, what
+    #: each entry of its output's ``inputs`` reads, and its command.
+    result: Result
+    #: The single file this result is.
     output_path: Path
-    #: The recipe with its placeholders substituted — a shell command.
-    recipe: str
-    #: Declared input name → the path it resolves to. Upstream outputs are
-    #: their files; everything else is whatever ``source`` named.
+    #: Each entry of the output's ``inputs``, as written → the file it
+    #: reads: an input's own, or the file of the result it reads.
     inputs: dict[str, Path]
-    #: The subset of ``inputs`` another task produces, and which one.
-    produced_by: dict[str, Key]
+    #: Each decision the result is made with, by ASTRA's ref → the option
+    #: its universe selects.
     decisions: dict[str, str]
     definition_version: str
     #: ASTRA's declaration; executor support is checked only when executing.
     resources: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def manifest_path(self) -> Path:
-        """This output's manifest sidecar."""
-        return assets.manifest_path(self.output_path)
-
-    @property
     def key(self) -> Key:
         """This task's identity within a run."""
-        return (self.universe_id, self.output_id)
+        return self.result.id
+
+    @property
+    def name(self) -> str:
+        """The result's name — its output's id — which its files are
+        named after."""
+        return self.result.places[0].address.partition("#")[0]
+
+    @property
+    def universe(self) -> str:
+        """The id of the universe the result is built in; empty for a
+        result built once."""
+        return self.result.places[0].address.partition("#")[2]
+
+    @property
+    def recipe(self) -> str:
+        """The recipe as it runs — a shell command, run in the project
+        root."""
+        assert self.result.command is not None  # `build` refuses a result with none
+        return self.result.command
+
+    @property
+    def produced_by(self) -> dict[str, Key]:
+        """The entries of ``inputs`` another task produces, and which one."""
+        return {s.entry: s.result for s in self.result.inputs if s.result is not None}
+
+    @property
+    def manifest_path(self) -> Path:
+        """This result's manifest sidecar."""
+        return assets.manifest_path(self.output_path)
 
     @property
     def depends_on(self) -> tuple[Key, ...]:
@@ -73,28 +102,16 @@ class Task:
 
 @dataclass(frozen=True)
 class Graph:
-    """Every task a run could make, and how they relate."""
+    """Every task a run could make, each after the tasks it reads."""
 
     tasks: dict[Key, Task]
-
-    def order(self) -> list[Key]:
-        """Return the tasks in dependency order.
-
-        Only ``--check`` needs this, to classify a task after everything
-        upstream of it. Execution never calls it: Dask derives the same
-        order from the futures it is handed.
-
-        Returns:
-            Every task key, dependencies first.
-
-        Raises:
-            ProjectError: If the outputs depend on each other in a cycle.
-        """
-        sorter = TopologicalSorter({k: set(t.depends_on) for k, t in self.tasks.items()})
-        try:
-            return list(sorter.static_order())
-        except CycleError as e:
-            raise ProjectError(f"the outputs depend on each other in a cycle: {e.args[1]}") from e
+    #: What ASTRA notes about the analysis that a run would silently live
+    #: with.
+    notes: tuple[str, ...] = ()
+    #: The analysis's ``label`` and ``description``, as its file writes
+    #: them: what a publication of its results is titled with.
+    label: str = ""
+    description: str = ""
 
     def closure(self, targets: list[Key]) -> Graph:
         """Narrow the graph to *targets* and what they depend on.
@@ -106,7 +123,8 @@ class Graph:
             targets: The task keys asked for.
 
         Returns:
-            A graph holding *targets* plus their transitive dependencies.
+            A graph holding *targets* plus their transitive dependencies,
+            in the same order.
         """
         wanted: set[Key] = set()
         pending = list(targets)
@@ -116,14 +134,20 @@ class Graph:
                 continue
             wanted.add(key)
             pending.extend(self.tasks[key].depends_on)
-        return Graph(tasks={k: t for k, t in self.tasks.items() if k in wanted})
+        return Graph(
+            tasks={k: t for k, t in self.tasks.items() if k in wanted},
+            notes=self.notes,
+            label=self.label,
+            description=self.description,
+        )
 
     def resolve(self, targets: list[str]) -> list[Key]:
         """Turn what a user typed into task keys.
 
         Args:
-            targets: Each an output id — matching every universe that has
-                it — or ``<universe>/<output_id>`` for exactly one.
+            targets: Each a task as lc names it (``fit#baseline``), or a
+                result's name alone (``fit``) — matching it in every
+                universe that builds it.
 
         Returns:
             The matching task keys, in the order given.
@@ -134,12 +158,9 @@ class Graph:
         """
         keys: list[Key] = []
         for target in targets:
-            universe, _, output = target.rpartition("/")
-            matched = [
-                key for key in self.tasks if key[1] == output and universe in ("", key[0])
-            ]
+            matched = [key for key, task in self.tasks.items() if target in (key, task.name)]
             if not matched:
-                known = ", ".join(sorted(f"{u}/{o}" for u, o in self.tasks)) or "none"
+                known = ", ".join(sorted(self.tasks)) or "none"
                 raise ProjectError(f"no output matches `{target}`. Available: {known}")
             keys.extend(matched)
         return keys
@@ -151,64 +172,109 @@ class Graph:
 
 
 def build(root: Path) -> Graph:
-    """Read a project's spec and universes into a graph of tasks.
+    """Read a project's analysis into a graph of tasks.
 
     Args:
         root: The project root.
 
     Returns:
-        One task per ``(universe, output)`` pair that has a recipe and is
-        active in that universe.
+        One task per result the analysis plans, with the notes a run
+        reports.
 
     Raises:
-        ProjectError: If the spec is missing, declares no universe, gives
-            two universes the same id, or names an input nothing provides.
+        ProjectError: If there is no analysis, ASTRA finds it invalid, or
+            it declares another analysis.
     """
-    from astra.helpers import load_yaml, resolve_analysis_tree
+    from astra import api
 
-    spec_path = root / SPEC_FILENAME
-    if not spec_path.is_file():
+    with asking_astra(root):
+        analysis = api.resolve(root)
+    driving = analysis.analyses[0]
+    if driving.declares:
+        declared = ", ".join(f"`{each}`" for each in driving.declares)
         raise ProjectError(
-            f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize."
+            f"{root / SPEC_FILENAME} declares another analysis ({declared}), and lc builds "
+            "the results of a single analysis. Remove the declaration to build this one."
         )
-    universes = sorted((root / "universes").glob("*.yaml"))
-    if not universes:
-        raise ProjectError(
-            f"{root}/universes/ declares no universe — a run needs at least one "
-            "set of decisions to make outputs under."
-        )
-    _validate(spec_path, universes)
-    spec = dict(resolve_analysis_tree(load_yaml(spec_path), root))
+    inputs = {each.ref: each.path for each in driving.inputs}
+    outputs = {each.ref: each for each in driving.outputs}
+    selections = {each.ref: each.selection for each in driving.universes}
+    made_at = {result.id: result.places[0].file_path for result in analysis.results}
 
     tasks: dict[Key, Task] = {}
-    declared_in: dict[str, Path] = {}
-    for path in universes:
-        universe = load_yaml(path)
-        universe_id = str(universe.get("id") or path.stem)
-        # A universe id names a directory under results/, so two files
-        # claiming one would write to the same place — and since the second
-        # simply replaces the first here, the outputs of one of them would
-        # go missing with nothing said.
-        if (first := declared_in.get(universe_id)) is not None:
-            raise ProjectError(
-                f"{first.name} and {path.name} both declare the universe "
-                f"`{universe_id}`, so both would materialize into "
-                f"results/{universe_id}/. Give each universe its own id."
-            )
-        declared_in[universe_id] = path
-        for task in _tasks(root, universe_id, spec, universe):
-            tasks[task.key] = task
+    for result in analysis.results:
+        # Only a result of an analysis read at a commit has no command, and
+        # there is no other analysis here.
+        assert result.command is not None
+        output = outputs[result.output]
+        selection = selections[result.universe] if result.universe else {}
+        decisions = {ref: selection[ref] for ref in output.decisions}
+        tasks[result.id] = Task(
+            result=result,
+            output_path=root / result.places[0].file_path,
+            inputs={
+                source.entry: root / made_at[source.result]
+                if source.result is not None
+                else root / inputs[source.input or ""]
+                for source in result.inputs
+            },
+            decisions=decisions,
+            definition_version=identity.definition_version(
+                recipe=result.command, decisions=decisions, fmt=output.format
+            ),
+            resources=(
+                {k: v for k, v in asdict(output.resources).items() if v is not None}
+                if output.resources
+                else {}
+            ),
+        )
+    return Graph(
+        tasks=tasks,
+        notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
+        label=driving.label or "",
+        description=driving.description or "",
+    )
 
-    return Graph(tasks=tasks)
+
+@contextmanager
+def asking_astra(root: Path) -> Iterator[None]:
+    """Turn what ASTRA raises about a project into a ``ProjectError``.
+
+    One place, because every question lc puts to ASTRA can fail the same
+    ways, and each must reach the user as the same clean refusal rather
+    than as another package's traceback.
+
+    Args:
+        root: The project root, for naming a missing analysis.
+
+    Raises:
+        ProjectError: If there is no analysis, ASTRA finds it invalid, or
+            git or ASTRA's cache cannot be used.
+    """
+    from astra import api
+
+    if not (root / SPEC_FILENAME).is_file():
+        raise ProjectError(f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize.")
+    try:
+        yield
+    except api.InvalidAnalysisError as e:
+        # In ASTRA's own words: one line per broken rule, placed in its file.
+        listed = "\n".join(
+            f"  {d.location.file}:{d.location.line or 0}:{d.location.column or 0} "
+            f"{d.code} {d.message}"
+            for d in e.report.diagnostics
+            if d.level == "error"
+        )
+        raise ProjectError(
+            f"{root / SPEC_FILENAME} does not validate, so there is nothing to materialize "
+            f"from it:\n{listed}"
+        ) from e
+    except (api.NoAnalysisError, api.GitError, api.CacheError, OSError) as e:
+        raise ProjectError(str(e)) from e
 
 
 def declared_path(root: Path, path: Path) -> str:
-    """Name *path* the way the analysis declared it.
-
-    Project-relative inside the tree, absolute outside it — the two forms a
-    recipe, a manifest and a ``[DATALAD RUNCMD]`` record all want, and the
-    reason a declared input with an absolute ``source:`` has somewhere to
-    be written down rather than being a crash.
+    """Name *path* the way the analysis declared it: from the project root.
 
     Deliberately **not** resolved. Every declared input under ``data/`` is
     an annex symlink, so resolving would name
@@ -217,138 +283,9 @@ def declared_path(root: Path, path: Path) -> str:
 
     Args:
         root: The project root.
-        path: What to name.
+        path: A file of the project.
 
     Returns:
-        A POSIX path, relative to *root* where it is under it.
+        A POSIX path, relative to *root*.
     """
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def _validate(spec_path: Path, universes: list[Path]) -> None:
-    """Refuse a spec ASTRA rejects, before anything is resolved.
-
-    Resolution answers what a valid spec *means*; it does not re-check
-    that it is one. So an invalid spec reaches it as a missing decision or
-    an unresolvable input — blaming the run for a fault in the file, and
-    at a point far from the line that caused it. Asking ASTRA first costs
-    one pass over a spec file and moves the error to where it can be
-    fixed.
-
-    Args:
-        spec_path: The project's ``astra.yaml``.
-        universes: Every universe file that will be resolved against it.
-
-    Raises:
-        ProjectError: Listing every structural and semantic error found,
-            in ASTRA's own words.
-    """
-    from astra.validation import (
-        validate_analysis_file,
-        validate_analysis_schema,
-        validate_universe_file,
-    )
-
-    problems = [
-        *validate_analysis_schema(spec_path),
-        *(str(e) for e in validate_analysis_file(spec_path)),
-    ]
-    for path in universes:
-        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
-    if problems:
-        listed = "\n".join(f"  {problem}" for problem in problems)
-        raise ProjectError(
-            f"{spec_path} does not validate, so there is nothing to materialize "
-            f"from it:\n{listed}"
-        )
-
-
-def _tasks(
-    root: Path,
-    universe_id: str,
-    spec: dict[str, object],
-    universe: dict[str, object],
-) -> list[Task]:
-    """Every task one universe contributes.
-
-    ``resolve_outputs`` has already dropped what this universe does not
-    produce, so the only filter left is whether an output carries a
-    command: a re-export names bytes another output makes, and making it
-    twice under two ids is not a thing to do.
-    """
-    from astra.resolve import render_command, resolve_outputs
-
-    resolved = resolve_outputs(spec, universe, root)
-    # The whole resolved output, not just its id: an upstream input has to
-    # resolve to the *file* another task writes, which needs that output's
-    # format. A set of ids cannot say it.
-    executable = {out.id: out for out in resolved if out.command}
-
-    if absent := sorted(out.id for out in executable.values() if not out.format):
-        raise ProjectError(
-            f"{len(absent)} output(s) declare no `format:`: {', '.join(absent)}. "
-            "lc names each output's file from it, so there is nowhere to write them — "
-            "add the artifact's file extension, e.g. `format: png`."
-        )
-
-    def file_of(out: object) -> Path:
-        return assets.output_path(
-            root,
-            universe_id,
-            str(out.id),  # type: ignore[attr-defined]
-            str(out.format),  # type: ignore[attr-defined]
-        )
-
-    tasks = []
-    for out in resolved:
-        if not out.command:
-            continue
-        output_path = file_of(out)
-        values: dict[str, str] = {}
-        paths: dict[str, Path] = {}
-        produced_by: dict[str, Key] = {}
-        for declared in out.inputs:
-            if declared.produced_by in executable:
-                produced_by[declared.id] = (universe_id, declared.produced_by)
-                paths[declared.id] = file_of(executable[declared.produced_by])
-            elif declared.source:
-                # An absolute `source:` wins over the join — pathlib's own
-                # rule, and the one anyone writing one expects.
-                paths[declared.id] = root / declared.source
-            else:
-                raise ProjectError(
-                    f"output `{out.id}` declares the input `{declared.id}`, but no "
-                    "output produces it and no declared input gives it a source."
-                )
-            values[declared.id] = declared_path(root, paths[declared.id])
-
-        try:
-            recipe = render_command(
-                out.command,
-                inputs=values,
-                decisions=out.decisions,
-                output=declared_path(root, output_path),
-            )
-        except ValueError as e:
-            raise ProjectError(f"output `{out.id}`: {e}") from e
-        resources = dict((out.definition.get("recipe") or {}).get("resources") or {})
-
-        tasks.append(
-            Task(
-                universe_id=universe_id,
-                output_id=out.id,
-                output_path=output_path,
-                recipe=recipe,
-                inputs=paths,
-                produced_by=produced_by,
-                decisions=out.decisions,
-                definition_version=identity.definition_version(
-                    recipe=recipe, decisions=out.decisions, fmt=str(out.format)
-                ),
-                resources=resources,
-            )
-        )
-    return tasks
+    return path.relative_to(root).as_posix()

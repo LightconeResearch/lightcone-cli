@@ -14,8 +14,6 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from astra.scaffold import create_boilerplate
-
 from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
@@ -204,17 +202,15 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     if write:
         directory.mkdir(parents=True, exist_ok=True)
 
-    # `astra.scaffold` is astra's public scaffold API, the same one
-    # `astra init` delegates to: it writes the spec — an empty astra.yaml
-    # plus a universes/baseline.yaml selecting nothing, which converge as
-    # one item so the baseline never lands beside a user-authored spec —
-    # and nothing else. It is stdlib-only and imports in milliseconds, which is why it
-    # sits at module scope where the validation stack cannot.
-    c.item(
-        "astra.yaml",
-        (directory / SPEC_FILENAME).exists(),
-        lambda: create_boilerplate(directory),
-    )
+    def spec() -> None:
+        # astra's own scaffold, the one `astra init` writes: an empty
+        # astra.yaml, and nothing else. `astra.api` loads the whole library,
+        # so it is imported here, where a spec is really written.
+        from astra import api
+
+        api.init_analysis(directory)
+
+    c.item("astra.yaml", (directory / SPEC_FILENAME).exists(), spec)
     _converge_uv_project(c, directory)
     c.file(
         ".gitignore",

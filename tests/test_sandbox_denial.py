@@ -79,15 +79,16 @@ def test_an_undeclared_tool_is_named_with_its_remedy(policy: Policy, project: Pa
 def test_an_undeclared_data_file_gets_the_astra_snippet(
     policy: Policy, project: Path, tmp_path: Path
 ) -> None:
-    """The remedy is copy-pasteable and matches ASTRA's real schema —
-    inputs carry `source`, not `path`."""
+    """The remedy matches ASTRA's real schema — an input is an id mapped
+    to a `path` inside the project, which is why it says to bring the file
+    in rather than naming where it was found."""
     external = tmp_path / "elsewhere.fits"
     external.write_text("")
     stderr = f"PermissionError: [Errno 13] Permission denied: '{external}'\n"
     joined = "\n".join(denial.explain(stderr, policy, cwd=project))
     assert f"cannot read {external}" in joined
     assert "inputs:" in joined
-    assert f"source: {external}" in joined
+    assert "path: data/elsewhere.fits" in joined
 
 
 def test_an_in_tree_write_is_its_own_kind_of_denial(policy: Policy, project: Path) -> None:

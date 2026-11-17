@@ -34,6 +34,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import shlex
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
@@ -54,20 +55,20 @@ if TYPE_CHECKING:
 class MaterializeReport:
     """What a run did, or — in check mode — what it would do."""
 
-    #: ``universe/output`` for each output this run produced and committed.
+    #: Each result this run produced and committed, as lc names its task.
     made: list[str] = field(default_factory=list)
     #: Nothing about them changed, and the environment is the one they were
     #: made under.
     current: list[str] = field(default_factory=list)
     #: Still what the spec asks for, but made under an earlier environment
-    #: — ``universe/output`` → the context, naming the commit. Left alone;
+    #: — task → the context, naming the commit. Left alone;
     #: ``refresh`` is what remakes them.
     behind: dict[str, str] = field(default_factory=dict)
     #: The recipe failed, or the environment moved under it.
     failed: list[str] = field(default_factory=list)
     #: Not attempted, because something upstream did not finish.
     blocked: list[str] = field(default_factory=list)
-    #: Check mode only: ``universe/output`` → why it would run.
+    #: Check mode only: task → why it would run.
     planned: dict[str, str] = field(default_factory=dict)
     #: lc's own prose: what the lock scan found, why a task did not finish.
     warnings: list[str] = field(default_factory=list)
@@ -134,18 +135,17 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
         rest.
 
     Raises:
-        ProjectError: If the spec, the universes or the lock cannot be
-            read, or a target matches nothing.
+        ProjectError: If the analysis or the lock cannot be read, or a
+            target matches nothing.
     """
     report = MaterializeReport()
     for key, verdict, _, _ in _classified(root, targets, report, refresh=refresh):
-        name = _name(key)
         if verdict.calls_for_a_remake(refresh=refresh):
-            report.planned[name] = verdict.why
+            report.planned[key] = verdict.why
         elif verdict.status == "behind":
-            report.behind[name] = verdict.why
+            report.behind[key] = verdict.why
         else:
-            report.current.append(name)
+            report.current.append(key)
     return report
 
 
@@ -200,8 +200,7 @@ def _classify_graph(
     """
     would_run: set[Key] = set()
     classified = []
-    for key in graph.order():
-        task = graph.tasks[key]
+    for key, task in graph.tasks.items():
         manifest = assets.read(task.manifest_path)
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives, exactly as
@@ -285,7 +284,7 @@ def _predicted(
 class OutputStatus:
     """One output: what it is now, and the commit it came from."""
 
-    #: ``universe/output_id``.
+    #: The result's task, as lc names it (``fit#baseline``).
     output: str
     status: assets.Status
     #: Why, for ``stale`` and ``behind``. Empty for ``current``.
@@ -381,8 +380,7 @@ def status(root: Path) -> StatusReport:
         One record per declared output, upstream first.
 
     Raises:
-        ProjectError: If the spec, the universes or the lock cannot be
-            read.
+        ProjectError: If the analysis or the lock cannot be read.
     """
     report = MaterializeReport()
     result = StatusReport()
@@ -397,7 +395,7 @@ def status(root: Path) -> StatusReport:
             stamps.append(manifest.finished_at)
         result.outputs.append(
             OutputStatus(
-                output=_name(key),
+                output=key,
                 status=verdict.status,
                 why=verdict.why,
                 git_sha=manifest.git_sha if manifest else "",
@@ -597,7 +595,7 @@ def materialize(
                 refresh,
                 foreign,
                 *[pending[dep] for dep in task.depends_on],
-                key=_name(key),
+                key=key,
                 resources=requirements[key],
             )
             handles.append(pending[key])
@@ -638,7 +636,7 @@ def _consume(
     report: MaterializeReport,
 ) -> None:
     """Record one finished task, and commit or undo what it left on disk."""
-    name = _name(task.key)
+    name = task.key
     if result.notes:
         # Named on a line of their own rather than prefixed onto each: a
         # prefix would land in the middle of a multi-line remedy and make
@@ -717,7 +715,7 @@ class _Dask:
             try:
                 requests[task.key] = TaskResources.parse(task.resources).requirements(capacities)
             except ProjectError as exc:
-                raise ProjectError(f"{_name(task.key)}: {exc}") from exc
+                raise ProjectError(f"{task.key}: {exc}") from exc
         return requests
 
     def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
@@ -737,7 +735,7 @@ class _Dask:
             for _, result in as_completed(  # type: ignore[no-untyped-call]
                 handles, with_results=True, loop=self.client.loop
             ):
-                if not self.output.wait(_name(result.key)):
+                if not self.output.wait(result.key):
                     result = replace(
                         result,
                         notes=(*result.notes,
@@ -777,9 +775,7 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
     lc fetches rather than telling anyone to — the storage invariant —
     and only here: ``--check`` and ``status`` are read-only verbs that
     must not start network transfers, so there an unfetched input stays a
-    reported fact. In-tree inputs only, because an absolute input outside
-    the repository has no annex to fetch it from (the recorded weaker
-    promise). Unconditional rather than probed: ``git annex get`` on
+    reported fact. Unconditional rather than probed: ``git annex get`` on
     content already present is a fast no-op, and one batch invocation
     beats a detection walk.
 
@@ -793,7 +789,7 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
             plan.declared_path(root, path)
             for task in graph.tasks.values()
             for name, path in task.inputs.items()
-            if name not in task.produced_by and root in path.parents
+            if name not in task.produced_by
         }
     )
     if not declared:
@@ -930,7 +926,7 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         # form of the requirement contains spaces.
         "cmd": (
             f"uv run --no-project --with '{_engine_requirement()}' -- "
-            f"python -m lightcone.engine.worker {task.universe_id}/{task.output_id}"
+            f"python -m lightcone.engine.worker {shlex.quote(task.key)}"
         ),
         "dsid": dsid,
         "exit": 0,
@@ -962,7 +958,7 @@ def datalad_run_subject(key: Key) -> str:
     carries exactly this subject, so the composer and the comparator must
     not be two strings that can drift apart.
     """
-    return f"[DATALAD RUNCMD] {key[1]} [{key[0]}]"
+    return f"[DATALAD RUNCMD] {key}"
 
 
 def _engine_requirement() -> str:
@@ -1048,25 +1044,8 @@ def _graph(
 
     env_version = identity.env_version(root)
     full = plan.build(root)
+    report.warnings.extend(full.notes)
     graph = full.closure(full.resolve(list(targets))) if targets else full
-
-    # A declared input outside the project is hashed into the manifest like
-    # any other, so a change to it still cascades — but it is not in the
-    # repository, so the commit that records the output cannot bring it
-    # back. That is a weaker promise than the rest of the layer makes, and
-    # the only honest thing to do about it is say so.
-    outside = {
-        plan.declared_path(root, path)
-        for task in graph.tasks.values()
-        for name, path in task.inputs.items()
-        if name not in task.produced_by and root not in path.parents
-    }
-    if outside:
-        report.warnings.append(
-            "declared inputs outside the project are recorded by content but "
-            "not stored in it, so a commit cannot restore them: "
-            + ", ".join(sorted(outside))
-        )
     return graph, env_version, full
 
 
@@ -1084,13 +1063,9 @@ def _owned(root: Path, task: Task) -> list[str]:
     """
     parent = plan.declared_path(root, task.output_path.parent)
     return [
-        f":(glob){parent}/{task.output_id}.*",
-        f":(glob){parent}/.{task.output_id}{assets.MANIFEST_SUFFIX}*",
+        f":(glob){parent}/{task.name}.*",
+        f":(glob){parent}/.{task.name}{assets.MANIFEST_SUFFIX}*",
     ]
-
-
-def _name(key: Key) -> str:
-    return f"{key[0]}/{key[1]}"
 
 
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:

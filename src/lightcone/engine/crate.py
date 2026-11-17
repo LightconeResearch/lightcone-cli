@@ -1,8 +1,8 @@
 """The publication view: the repository described as a Workflow Run RO-Crate.
 
 The project *is* the crate. ``ro-crate-metadata.json`` sits at the root
-and describes what the repository already holds — the spec, the lock, the
-universes, each materialized output and the run that made it — so a
+and describes what the repository already holds — the spec, the lock,
+each materialized result and the run that made it — so a
 deposit is ``git archive`` on the repository, not an export step that
 copies bytes. lc's manifests stay the canonical record; the crate is the
 same facts in schema.org vocabulary, readable by archives and viewers
@@ -117,8 +117,16 @@ def render(
     return build.document()
 
 
-def _control_id(key: Key) -> str:
-    return f"#control-{key[0]}-{key[1]}"
+def _slug(task: plan.Task) -> str:
+    """A task's key as a fragment identifier, which cannot hold its ``#``."""
+    return f"{task.universe}-{task.name}" if task.universe else task.name
+
+
+def _titled(task: plan.Task) -> str:
+    """A task's result, as a sentence names it."""
+    if task.universe:
+        return f"`{task.name}` in universe `{task.universe}`"
+    return f"`{task.name}`"
 
 
 class _Builder:
@@ -133,8 +141,6 @@ class _Builder:
         writer: Callable[..., LastWrite],
         keys: Mapping[str, str],
     ) -> None:
-        from astra.helpers import load_yaml
-
         self.root = root
         self.graph = graph
         self.license = license
@@ -159,13 +165,11 @@ class _Builder:
         self.actions: list[str] = []  # action @ids, for the root's mentions
         #: Loop invariants, asked once: the uuid5 namespace every minted
         #: id lives under, the project's one recorded remote, the spec's
-        #: header and last commit, and which decisions it declares.
+        #: last commit, and which decisions it declares.
         self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
         remotes = {m.git_remote for _, m in self.made if m.git_remote}
         self.remote = remotes.pop() if len(remotes) == 1 else ""
-        loaded = load_yaml(root / SPEC_FILENAME)
-        self.spec: dict[str, Any] = dict(loaded) if isinstance(loaded, dict) else {}
-        self.title = str(self.spec.get("name") or root.name)
+        self.title = graph.label or root.name
         self.spec_write = writer(root / SPEC_FILENAME)
         self.parameters = {d for t in graph.tasks.values() for d in t.decisions}
 
@@ -221,8 +225,8 @@ class _Builder:
                 "encodingFormat": "application/yaml",
             },
         )
-        if description := self.spec.get("description"):
-            workflow["description"] = str(description)
+        if self.graph.description:
+            workflow["description"] = self.graph.description
         workflow["conformsTo"] = {
             "@id": "https://bioschemas.org/profiles/ComputationalWorkflow/1.0-RELEASE"
         }
@@ -253,7 +257,7 @@ class _Builder:
         return workflow
 
     def _steps_and_tools(self, workflow: Any) -> None:
-        output_ids = sorted({output_id for _, output_id in self.graph.tasks})
+        output_ids = sorted({task.name for task in self.graph.tasks.values()})
         for position, output_id in enumerate(output_ids):
             tool = ContextEntity(
                 self.crate,
@@ -296,11 +300,7 @@ class _Builder:
 
     def _environment_files(self) -> None:
         """The lock and its companions — what every run consumed."""
-        universes = sorted(
-            path.relative_to(self.root).as_posix()
-            for path in (self.root / "universes").glob("*.yaml")
-        )
-        for name in (*_ENVIRONMENT, *universes):
+        for name in _ENVIRONMENT:
             if (self.root / name).is_file():
                 self._file(name)
         if (self.root / "README.md").is_file():
@@ -356,15 +356,14 @@ class _Builder:
         return plan.declared_path(self.root, self.graph.tasks[key].output_path)
 
     def _dataset(self, key: Key, manifest: assets.Manifest) -> None:
-        universe_id, output_id = key
         task = self.graph.tasks[key]
         # A `File`, not a `Dataset` with parts: an output is one file, so
         # there is one annex key to look up by name and one checksum to
         # publish. `data_version` is that same digest — the manifest and
         # the crate no longer carry two numbers for the same bytes.
         entity = self._file(self._dataset_id(key))
-        entity["name"] = f"{output_id} (universe {universe_id})"
-        entity["description"] = f"output `{output_id}` materialized under `{universe_id}`"
+        entity["name"] = f"{task.name} (universe {task.universe})" if task.universe else task.name
+        entity["description"] = f"output {_titled(task)}, materialized"
         entity["version"] = manifest.data_version
         manifest_file = self._file(plan.declared_path(self.root, task.manifest_path))
         manifest_file["about"] = {"@id": entity.id}
@@ -373,18 +372,17 @@ class _Builder:
     # ----- the runs -----
 
     def _action(self, key: Key, manifest: assets.Manifest) -> str:
-        universe_id, output_id = key
         task = self.graph.tasks[key]
         write = self.writer(task.output_path, task.manifest_path)
         self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {
             "@type": "CreateAction",
-            "name": f"run of `{output_id}` in universe `{universe_id}`",
+            "name": f"run of {_titled(task)}",
             # The *recorded* recipe, not the graph's: the action states
             # what ran, and the spec may have moved since — the manifest
             # is the canonical record of the execution.
             "description": manifest.recipe,
-            "instrument": {"@id": self._tool_id(output_id)},
+            "instrument": {"@id": self._tool_id(task.name)},
             "result": [{"@id": self._dataset_id(key)}],
             "actionStatus": "http://schema.org/CompletedActionStatus",
             "object": self._objects(key, manifest),
@@ -398,7 +396,7 @@ class _Builder:
         if manifest.image is not None:
             properties["containerImage"] = {"@id": self._image(manifest.image)}
         action = ContextEntity(
-            self.crate, self._uri(f"action/{universe_id}/{output_id}"), properties
+            self.crate, self._uri(f"action/{key}"), properties
         )
         self.crate.add(action)
         self.actions.append(str(action.id))
@@ -426,61 +424,41 @@ class _Builder:
             }
             if decision in self.parameters:
                 properties["exampleOfWork"] = {"@id": f"#param-{decision}"}
-            value = ContextEntity(
-                self.crate, f"#value-{key[0]}-{key[1]}-{decision}", properties
-            )
+            value = ContextEntity(self.crate, f"#value-{_slug(task)}-{decision}", properties)
             self.crate.add(value)
             refs.append({"@id": value.id})
         return refs
 
     def _external(self, name: str, path: Path) -> str:
-        """A declared input the spec points at, in or out of the tree.
+        """A declared input, named as :func:`plan.declared_path` names it.
 
-        In-or-out is :func:`plan.declared_path`'s answer — relative
-        inside the tree, absolute outside it — never a second spelling
-        of that rule here: two copies of one path rule is how the first
-        one shipped a bug.
-
-        An in-tree input's checksum comes from its annex key, like every
-        other file: a ``File`` entity's ``sha256`` describes the
-        *deposit* — the bytes a ``git archive`` carries — never what any
-        particular run consumed, so manifests disagreeing about a shared
-        input (a half-rebuilt project) do not suppress it; which bytes a
-        run consumed is its own manifest's ``input_versions``. An
-        out-of-tree input carries none: its recorded digest is lc's
-        *framed* hash, not a raw sha256, so publishing it under the
-        workflow-run ``sha256`` term would be a checksum nothing can
-        verify — the manifests keep the full story, which is the layer's
-        stated weaker promise.
+        Its checksum comes from its annex key, like every other file: a
+        ``File`` entity's ``sha256`` describes the *deposit* — the bytes a
+        ``git archive`` carries — never what any particular run consumed,
+        so manifests disagreeing about a shared input (a half-rebuilt
+        project) do not suppress it; which bytes a run consumed is its own
+        manifest's ``input_versions``.
         """
         declared = plan.declared_path(self.root, path)
-        in_tree = not Path(declared).is_absolute()
-        entity_id = declared if in_tree else Path(declared).as_uri()
-        if self.crate.dereference(entity_id) is not None:
-            return entity_id
+        if self.crate.dereference(declared) is not None:
+            return declared
         properties: dict[str, Any] = {"@type": "File", "name": declared}
         if fmt := _format_of(declared):
             properties["encodingFormat"] = fmt
-        if in_tree:
-            properties.update(self._integrity(declared))
-            self.crate.add_file(path, declared, properties=properties)
-        else:
-            # Outside the repository: recorded by content, not stored
-            # in it — the layer's stated weaker promise, so a context
-            # entity rather than a data entity the crate cannot hold.
-            self.crate.add(ContextEntity(self.crate, entity_id, properties))
-        return entity_id
+        properties.update(self._integrity(declared))
+        self.crate.add_file(path, declared, properties=properties)
+        return declared
 
     def _control(self, key: Key, action_id: str) -> None:
-        universe_id, output_id = key
+        task = self.graph.tasks[key]
         self.crate.add(
             ContextEntity(
                 self.crate,
-                _control_id(key),
+                f"#control-{_slug(task)}",
                 properties={
                     "@type": "ControlAction",
-                    "name": f"orchestration of `{output_id}` in universe `{universe_id}`",
-                    "instrument": {"@id": f"#step-{output_id}"},
+                    "name": f"orchestration of {_titled(task)}",
+                    "instrument": {"@id": f"#step-{task.name}"},
                     "object": {"@id": action_id},
                 },
             )
@@ -530,7 +508,9 @@ class _Builder:
                     "@type": "OrganizeAction",
                     "name": f"scheduling of the run at {sha[:7] or 'unknown commit'}",
                     "instrument": {"@id": engine},
-                    "object": [{"@id": _control_id(key)} for key, _ in group],
+                    "object": [
+                        {"@id": f"#control-{_slug(self.graph.tasks[key])}"} for key, _ in group
+                    ],
                     "result": {"@id": run_action.id},
                 },
             )
@@ -599,7 +579,7 @@ class _Builder:
         root = self.crate.root_dataset
         root["name"] = self.title
         root["description"] = str(
-            self.spec.get("description")
+            self.graph.description
             or f"ASTRA analysis `{self.title}`, materialized by lightcone-cli."
         )
         root["license"] = self._license_ref()

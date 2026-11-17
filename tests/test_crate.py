@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from astra.api import Place, Result, Source
 
 from lightcone.engine import assets, crate
 from lightcone.engine.dataset import LastWrite
@@ -28,11 +29,8 @@ Writer = Callable[..., LastWrite]
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "demo"
-    (root / "universes").mkdir(parents=True)
-    (root / "data").mkdir()
-    (root / "astra.yaml").write_text("name: demo\ndescription: A demo analysis.\n")
-    (root / "universes" / "baseline.yaml").write_text("id: baseline\n")
-    (root / "universes" / "alt.yaml").write_text("id: alt\n")
+    (root / "data").mkdir(parents=True)
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\nlabel: demo\n')
     (root / "pyproject.toml").write_text('[project]\nname = "demo"\nlicense = "MIT"\n')
     (root / "uv.lock").write_text("version = 1\n")
     (root / ".python-version").write_text("3.12.5\n")
@@ -62,7 +60,7 @@ def _made(
             definition_version="sha256:def",
             env_version="sha256:env",
             data_version=f"sha256:{universe_id}-{output_id}",
-            decisions={"method": "alpha"},
+            decisions={"decisions.method": "alpha"},
             input_versions=inputs or {},
             git_sha=git_sha,
             git_remote="https://github.com/example/demo.git",
@@ -76,31 +74,41 @@ def _made(
     return output
 
 
+def _task(root: Path, universe: str, name: str, *sources: Source) -> Task:
+    """A task as `plan.build` makes one, around ASTRA's account of it."""
+    file_path = f"results/{universe}/{name}.txt"
+    result = Result(
+        id=f"{name}#{universe}",
+        output=f"outputs.{name}",
+        places=(
+            Place(f"{name}#{universe}", f".astra/records/{universe}/{name}.json", file_path),
+        ),
+        universe=f"universes.{universe}",
+        inputs=sources,
+        command=f"make {name}",
+    )
+    return Task(
+        result,
+        root / file_path,
+        {
+            source.entry: root
+            / (f"results/{universe}/{source.entry}.txt" if source.result else "data/catalog.csv")
+            for source in sources
+        },
+        {"decisions.method": "alpha"},
+        "sha256:def",
+    )
+
+
 def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
     tasks: dict[Key, Task] = {}
-    for universe_id in universes:
-        first = root / "results" / universe_id / "first.txt"
-        tasks[(universe_id, "first")] = Task(
-            universe_id,
-            "first",
-            first,
-            "make first",
-            {"catalog": root / "data" / "catalog.csv"},
-            {},
-            {"method": "alpha"},
-            "sha256:def",
-        )
-        tasks[(universe_id, "second")] = Task(
-            universe_id,
-            "second",
-            root / "results" / universe_id / "second.txt",
-            "make second",
-            {"first": first},
-            {"first": (universe_id, "first")},
-            {"method": "alpha"},
-            "sha256:def",
-        )
-    return Graph(tasks)
+    for universe in universes:
+        for task in (
+            _task(root, universe, "first", Source("catalog", input="inputs.catalog")),
+            _task(root, universe, "second", Source("first", result=f"first#{universe}")),
+        ):
+            tasks[task.key] = task
+    return Graph(tasks, label="demo", description="A demo analysis.")
 
 
 def _writer(*paths: Path) -> LastWrite:
@@ -319,11 +327,11 @@ def test_decision_values_point_back_at_their_parameter(project: Path) -> None:
     _made(project, "baseline", "first", git_sha="aaa111")
     entities = _entities(_render(project, _graph(project)))
 
-    value = entities["#value-baseline-first-method"]
+    value = entities["#value-baseline-first-decisions.method"]
     assert value["value"] == "alpha"
-    assert value["exampleOfWork"] == {"@id": "#param-method"}
+    assert value["exampleOfWork"] == {"@id": "#param-decisions.method"}
     workflow = entities["astra.yaml"]
-    assert {"@id": "#param-method"} in _as_list(workflow["input"])
+    assert {"@id": "#param-decisions.method"} in _as_list(workflow["input"])
 
 
 def test_a_never_materialized_project_still_describes_its_workflow(project: Path) -> None:
@@ -420,33 +428,6 @@ def test_git_carried_files_are_hashed_by_their_bytes(project: Path) -> None:
     body = (project / "uv.lock").read_bytes()
     assert entities["uv.lock"]["sha256"] == hashlib.sha256(body).hexdigest()
     assert entities["uv.lock"]["contentSize"] == str(len(body))
-
-
-def test_an_out_of_tree_input_publishes_no_checksum(
-    project: Path, tmp_path: Path
-) -> None:
-    """Its recorded input_versions digest is lc's *framed* hash, not a
-    raw sha256 — publishing it under the workflow-run term would be a
-    checksum nothing can verify. The manifests keep the full story."""
-    catalog = tmp_path / "shared" / "catalog.csv"
-    catalog.parent.mkdir()
-    catalog.write_text("a,b\n")
-    task = Task(
-        "baseline",
-        "first",
-        project / "results/baseline/first.txt",
-        "make first",
-        {"catalog": catalog},
-        {},
-        {},
-        "sha256:def",
-    )
-    _made(project, "baseline", "first", git_sha="aaa111", inputs={"catalog": "sha256:cafe"})
-    entities = _entities(_render(project, Graph({("baseline", "first"): task})))
-
-    external = entities[catalog.as_uri()]
-    assert "sha256" not in external
-    assert "contentSize" not in external
 
 
 def _as_list(value: Any) -> list[Any]:

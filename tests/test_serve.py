@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psutil
 import pytest
-from astra.papers.cache import PaperCache
+from astra import api
 
 from lightcone.engine import assets
 from lightcone.engine import serve as engine
@@ -54,7 +54,7 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
-    (root / "astra.yaml").write_text("name: demo\n")
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\nlabel: demo\n')
     return root
 
 
@@ -134,7 +134,7 @@ def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
     Each request names the first server's host, as the open page's would."""
     other = tmp_path / "other"
     other.mkdir()
-    (other / "astra.yaml").write_text("name: other\n")
+    (other / "astra.yaml").write_text('spec_version: "0.1.0"\nlabel: other\n')
     first = engine.serve(project)
     with urllib.request.urlopen(first.url) as page:  # the token logs the page in
         cookie = next(
@@ -159,16 +159,16 @@ def test_a_stopped_servers_cookie_cannot_authenticate_any_new_server(
 
 
 @pytest.fixture
-def papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PaperCache:
-    """astra's paper cache, where the server's $HOME puts it. The project is
-    under that $HOME too, as a project usually is — which is where jupyter
+def papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """astra's paper cache, where the server finds it: in ASTRA's cache,
+    which the suite keeps apart from the developer's. The project is under
+    the server's $HOME, as a project usually is — which is where jupyter
     starts abbreviating paths to `~`."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    return PaperCache(tmp_path / ".cache" / "astra" / "papers")
 
 
 @pytest.fixture
-def served(state: Path, project: Path, papers: PaperCache) -> tuple[str, str]:
+def served(state: Path, project: Path, papers: None) -> tuple[str, str]:
     """The server's root URL and its token."""
     url = urlsplit(engine.serve(project).url)
     (token,) = parse_qs(url.query)["token"]
@@ -220,15 +220,15 @@ def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project
 
 
 def test_an_outputs_state_is_the_engines(
-    state: Path, papers: PaperCache, analysis: Callable[..., Path]
+    state: Path, papers: None, analysis: Callable[..., Path]
 ) -> None:
     """The page shows what `lc status` would print, from the same call —
     it holds no classification of its own."""
     from lightcone.engine import materialize
 
     root = analysis(
-        'version: "0.0.13"\nname: analysis\ninputs: []\ndecisions: {}\n'
-        "outputs:\n  - id: fit\n    type: metric\n    format: json\n"
+        'spec_version: "0.1.0"\n'
+        "outputs:\n  fit:\n    type: metric\n    format: json\n"
         "    recipe:\n      command: 'echo 1 > {output}'\n"
     )
     url = urlsplit(engine.serve(root).url)
@@ -239,7 +239,7 @@ def test_an_outputs_state_is_the_engines(
         "outputs": {o.output: {"state": o.status, "detail": o.why} for o in report.outputs},
         "warnings": report.warnings,
     }
-    assert json.loads(body)["outputs"]["baseline/fit"]["state"] == "stale"
+    assert json.loads(body)["outputs"]["fit"]["state"] == "stale"
 
 
 def test_a_project_the_engine_cannot_read_has_no_state(served: tuple[str, str]) -> None:
@@ -330,19 +330,19 @@ def test_reading_a_notebook_leaves_jupyters_data_directory_alone(
     assert not list(data.glob("*"))
 
 
-def test_a_cited_paper_comes_from_astras_cache(
-    served: tuple[str, str], papers: PaperCache
-) -> None:
+def test_a_cited_paper_comes_from_astras_cache(served: tuple[str, str], tmp_path: Path) -> None:
+    """Found under the DOI the page sends, which is how astra keeps this one."""
     base, token = served
-    papers.add("10.1093/MNRAS/stv1198", b"%PDF-1.4 gd1", title="Gaia", authors=["A. B.", "C. D."])
-    # The page sends DOIs as the SDK normalizes them; astra stored this one as written.
+    source = tmp_path / "gd1.pdf"
+    source.write_bytes(b"%PDF-1.4 gd1")
+    api.add_paper("10.1093/mnras/stv1198", pdf=source)
     query = f"doi=10.1093/mnras/stv1198&doi=10.1/absent&token={token}"
     status, body = _request(f"{base}/lightcone/api/papers?{query}")
     assert status == 200
     found = json.loads(body)["papers"]
     assert found.keys() == {"10.1093/mnras/stv1198"}
     paper = found["10.1093/mnras/stv1198"]
-    assert (paper["title"], paper["authors"]) == ("Gaia", "A. B., C. D.")
+    assert _request(f"{base}/lightcone/papers/10.1/absent?token={token}")[0] == 404
     # Served by Jupyter's own file handler: ranges for pdf.js.
     request = urllib.request.Request(
         f"{base}{paper['pdfUrl']}?token={token}", headers={"Range": "bytes=0-3"}
