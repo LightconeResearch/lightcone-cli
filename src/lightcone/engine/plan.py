@@ -243,21 +243,30 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
         universes: Every universe file that will be resolved against it.
 
     Raises:
-        ProjectError: Listing every structural and semantic error found,
-            in ASTRA's own words.
+        ProjectError: Listing every structural and semantic error found, in
+            ASTRA's own words, or the parse error of a file that is not YAML
+            at all.
     """
+    import yaml
     from astra.validation import (
         validate_analysis_file,
         validate_analysis_schema,
         validate_universe_file,
     )
 
-    problems = [
-        *validate_analysis_schema(spec_path),
-        *(str(e) for e in validate_analysis_file(spec_path)),
-    ]
-    for path in universes:
-        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    try:
+        problems = [
+            *validate_analysis_schema(spec_path),
+            *(str(e) for e in validate_analysis_file(spec_path)),
+        ]
+        for path in universes:
+            problems += [
+                f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)
+            ]
+    except yaml.YAMLError as exc:
+        # The loader failed before there was anything to validate, and its
+        # own error already names the file, the line and the column.
+        problems = [str(exc)]
     if problems:
         listed = "\n".join(f"  {problem}" for problem in problems)
         raise ProjectError(
