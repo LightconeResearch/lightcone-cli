@@ -51,8 +51,9 @@ class OCIBackend:
     #: ``podman``, ``podman-hpc`` or ``docker`` — also what the
     #: attestation names.
     runtime: OCIRuntime
-    #: The image id (bare hex). Execution pins on the id, never a tag, so
-    #: a retagged image in the local store can never substitute.
+    #: The id the runtime's local store gives the image (bare hex).
+    #: Execution pins on the id, never a tag, so a retagged image in the
+    #: local store can never substitute.
     image_id: str
     #: The project root — the container's working directory.
     root: Path
