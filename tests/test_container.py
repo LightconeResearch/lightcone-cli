@@ -81,9 +81,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         if argv[:3] == ["git", "diff", "--cached"]:
             return MagicMock(returncode=1)  # something staged: commits proceed
         if argv[:2] == ["git", "check-attr"]:
-            return MagicMock(
-                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
-            )
+            return MagicMock(returncode=0, stdout=_attributes(argv[-1], "anything", "annex"))
         if argv[:3] == ["git", "annex", "get"]:
             _write_archive(cwd / argv[-1])  # the fetch's observable effect
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -298,21 +296,32 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     assert len(_git_calls(fake, "commit")) == 1
 
 
+def _attributes(path: str, largefiles: str, filter: str) -> str:
+    """What `git check-attr -z annex.largefiles filter` answers of *path*."""
+    return f"{path}\0annex.largefiles\0{largefiles}\0{path}\0filter\0{filter}\0"
+
+
+@pytest.mark.parametrize(
+    ("largefiles", "filter"), [("unspecified", "annex"), ("anything", "unset")]
+)
 def test_an_unrouted_archive_refuses_before_building(
-    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+    root: Path,
+    fake: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    largefiles: str,
+    filter: str,
 ) -> None:
     """The archive is committed, and `.gitattributes` is a user-authored
     file lc only appends to — so an archive it does not route to the
-    annex would land in git as a several-hundred-MB blob, silently. The
-    probe fires before any build is paid for. Mutation check: the `fake`
-    fixture's routed answer is what every other build test passes with."""
+    annex, or that git does not hand git-annex's filter at all, would land
+    in git as a several-hundred-MB blob, silently. The probe fires before
+    any build is paid for. Mutation check: the `fake` fixture's routed
+    answer is what every other build test passes with."""
     original = project._run
 
     def unrouted(argv: list[str], *, cwd: Path) -> MagicMock:
         if argv[:2] == ["git", "check-attr"]:
-            return MagicMock(
-                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: unspecified\n", stderr=""
-            )
+            return MagicMock(returncode=0, stdout=_attributes(argv[-1], largefiles, filter))
         return original(argv, cwd=cwd)
 
     monkeypatch.setattr(project, "_run", unrouted)

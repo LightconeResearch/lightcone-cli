@@ -41,7 +41,10 @@ the annex, as a thin add leaves, and a read-only one. The checkout keeps
 the recipe's own file, for the tasks that read it, until the run gives
 the slot back. A result lands only where its record will be true and
 kept: on the branch the run started from, with the run's commit in its
-history, and with no other git operation under way.
+history, and with no other git operation under way. And only over what
+that commit holds of it: a result committed since, by a run of a later
+commit or by hand, is newer than this run's, and is left as it is —
+an older run finishing last never takes the place of a newer one.
 """
 
 from __future__ import annotations
@@ -270,16 +273,19 @@ def _exclusive(lock: Path, abandoned: float) -> Iterator[None]:
 
     A directory, because making one is atomic on every filesystem a
     project lives on, where ``flock`` is not — holding one file that
-    names its holder. A holder that was killed leaves both: on this host
-    that is seen at once, since its process is gone; from another host
-    only by its age, measured against a file made now on the same
+    names its holder, and when the holder's process started. A holder
+    that was killed leaves both: on this host that is seen at once,
+    since no process of that start has its pid any more, and age never
+    decides it, as a landing may take longer than any age; from another
+    host only by its age, measured against a file made now on the same
     filesystem and not against this host's clock. Whoever takes an
     abandoned lock removes the very file it judged, never the directory
     a new holder has made since, and a holder goes on only once its file
     is the one in there.
     """
     host = socket.gethostname()
-    mine = f"{host}.{os.getpid()}.{uuid4().hex}"
+    born = int(psutil.Process().create_time())
+    mine = f"{host}.{os.getpid()}.{born}.{uuid4().hex}"
     while True:
         try:
             lock.mkdir()
@@ -313,10 +319,23 @@ def _free_if_abandoned(lock: Path, host: str, abandoned: float) -> None:
         probe.unlink(missing_ok=True)
 
     def gone(holder: str) -> bool:
-        owner, pid, _ = holder.rsplit(".", 2)
-        return owner == host and not psutil.pid_exists(int(pid))
+        owner, pid, born, _ = holder.rsplit(".", 3)
+        if owner != host:
+            return old
+        try:
+            started = psutil.Process(int(pid)).create_time()
+        except psutil.NoSuchProcess:
+            return True
+        except psutil.AccessDenied:
+            return old  # alive, and not this host's to identify
+        # Its pid, taken by a process that started at another time. Linux
+        # gives the start against a boot time in whole seconds, which can
+        # move by one.
+        return abs(started - int(born)) >= 2
 
-    if old or (held and all(gone(holder) for holder in held)):
+    # A holder makes the directory before the file that names it: one
+    # killed in between leaves it empty, which only its age can tell.
+    if all(gone(holder) for holder in held) if held else old:
         for holder in held:
             (lock / holder).unlink(missing_ok=True)
         with contextlib.suppress(OSError):
@@ -418,7 +437,8 @@ def land(checkout: Checkout, task: Task, message: str) -> str:
     Returns:
         Empty once the result is committed in the project. Otherwise why
         it cannot be yet, with the project's tree as it was: a state of
-        the project that may pass, so the caller can ask again.
+        the project, so the caller can ask again. A newer result stays
+        newer unless history is rewritten under it.
 
     Raises:
         ProjectError: If a commit failed and what it left in the
@@ -437,6 +457,17 @@ def land(checkout: Checkout, task: Task, message: str) -> str:
             return (
                 f"the project's history no longer holds {checkout.commit[:7]}, the commit "
                 "the run built"
+            )
+        # Over what the run's commit holds of the result, and nothing
+        # else: one committed since — by a run of a later commit, or by
+        # hand — is newer than what this run made.
+        if dataset._git(
+            ["diff-tree", "-r", "--name-only", checkout.commit, "HEAD", "--", *owned(task)],
+            cwd=project,
+        ).strip():
+            return (
+                f"the project's copy was committed after {checkout.commit[:7]}, the "
+                "commit the run built, and is newer than what this run made"
             )
 
         folders = {posixpath.dirname(path) for path in task.files}

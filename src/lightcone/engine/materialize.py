@@ -875,7 +875,8 @@ def _require_storable(root: Path, graph: Graph) -> None:
     Asked of git for the very paths a run would commit, because the
     rules are files the researcher owns and convergence only appends to:
     an ignored result is committed by nobody and reported made; one that
-    no line sends to the annex lands in git itself, in every clone
+    no line sends to the annex, or that git does not pass through
+    git-annex's filter at all, lands in git itself, in every clone
     forever; and a record a line does send there cannot be read on a
     clone that holds no content.
 
@@ -895,11 +896,16 @@ def _require_storable(root: Path, graph: Graph) -> None:
     )
     ignored = [path for path in asked.stdout.split("\0") if path]
     listed = dataset._git(
-        ["check-attr", "-z", "annex.largefiles", "--", *files, *records], cwd=root
+        ["check-attr", "-z", "annex.largefiles", "filter", "--", *files, *records], cwd=root
     ).split("\0")
-    routed = dict(zip(listed[::3], listed[2::3], strict=False))
-    unrouted = [path for path in files if routed.get(path) in ("nothing", "unspecified", "unset")]
-    annexed = [path for path in records if routed.get(path) == "anything"]
+    attrs = dict(zip(zip(listed[::3], listed[1::3], strict=False), listed[2::3], strict=False))
+    unrouted = [
+        path
+        for path in files
+        if attrs.get((path, "annex.largefiles")) in ("nothing", "unspecified", "unset")
+    ]
+    unfiltered = [path for path in files if attrs.get((path, "filter")) != "annex"]
+    annexed = [path for path in records if attrs.get((path, "annex.largefiles")) == "anything"]
     refusals = [
         *(
             f"{path} is git-ignored, so it would never be committed — remove the "
@@ -910,6 +916,11 @@ def _require_storable(root: Path, graph: Graph) -> None:
             f"{path} would be committed to git itself — the last .gitattributes line "
             "that matches it does not send it to the annex"
             for path in unrouted
+        ),
+        *(
+            f"{path} would be committed to git itself — the last .gitattributes line "
+            "that sets its filter does not set it to annex"
+            for path in unfiltered
         ),
         *(
             f"{path} would be annexed — the last .gitattributes line that matches it "

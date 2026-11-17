@@ -418,7 +418,8 @@ def policy_for(
 
     Args:
         runtime: The resolved runtime.
-        read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
+        read_paths: What a recipe reads outside the tree, as
+            :func:`sandbox.exec_policy` takes.
         write_dir: The directory a recipe's output lands in; absent for a probe.
         use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
 
@@ -550,15 +551,20 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     # the bytes exist: with `.gitattributes` not sending it to the annex
     # — a user-authored file lc only ever appends to — a several-hundred-
     # MB blob would land in git itself, silently, and every clone would
-    # carry it forever. The same probe-don't-assume rule as the ignore
-    # check on `results/`.
-    routed = dataset._git(["check-attr", "annex.largefiles", "--", relative], cwd=root)
-    if "anything" not in routed:
+    # carry it forever. The same probe-don't-assume rule as the check on
+    # results: git-annex keeps what `annex.largefiles` names, of what git
+    # hands its filter.
+    routed = dataset._git(
+        ["check-attr", "-z", "annex.largefiles", "filter", "--", relative], cwd=root
+    ).split("\0")[2::3]
+    if routed != ["anything", "annex"]:
         raise ProjectError(
             "the image archive would be committed to git itself instead of the "
-            f"annex — .gitattributes does not route `{relative}`. Add the line\n"
+            f"annex — .gitattributes does not route `{relative}` there. The lines\n"
+            "  * filter=annex\n"
             "  .datalad/environments/*/image annex.largefiles=anything\n"
-            "(`lc init` repairs this), then re-run."
+            "have to be the last that match it (`lc init` adds any that is missing), "
+            "then re-run."
         )
 
     with tempfile.TemporaryDirectory(prefix="lc-build-") as context:

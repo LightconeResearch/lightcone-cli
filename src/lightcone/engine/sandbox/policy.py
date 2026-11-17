@@ -217,7 +217,9 @@ def exec_policy(
         project: The root the command is given, granted read: the project
             root for a probe, the same folder inside the run's checkout
             for a recipe.
-        read_paths: Declared inputs outside the tree.
+        read_paths: What a recipe reads outside the tree: declared
+            inputs, and the folder of an analysis declared beside the
+            project, which its recipes run in.
         env_dir: The project environment prefix; defaults to the host
             ``.venv``.
         containerized: Build the mount-shaped policy instead of the host

@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import psutil
 import pytest
 from conftest import CLUSTER_ID
 
@@ -53,6 +54,11 @@ def root(analysis: Callable[..., Path]) -> Path:
 
 def _take(root: Path) -> checkout.Checkout:
     return checkout.take(root, dataset.head(root), CLUSTER_ID)
+
+
+def _born() -> int:
+    """When this process started, as a lock's holder names it."""
+    return int(psutil.Process().create_time())
 
 
 def _stored(root: Path, path: str) -> Path:
@@ -250,7 +256,7 @@ def test_giving_a_checkout_back_frees_what_the_run_left_in_it(root: Path) -> Non
 
 def test_choosing_waits_for_another_run_and_outlives_one_that_died(root: Path) -> None:
     lock = root / ".lightcone/checkouts/choosing"
-    held = lock / f"{socket.gethostname()}.{os.getpid()}.another-thread"
+    held = lock / f"{socket.gethostname()}.{os.getpid()}.{_born()}.another-thread"
     lock.mkdir(parents=True)
     held.touch()
 
@@ -269,7 +275,7 @@ def test_choosing_waits_for_another_run_and_outlives_one_that_died(root: Path) -
     # Left by a run that was killed while choosing: its process is gone,
     # which this host can see at once.
     lock.mkdir()
-    (lock / f"{socket.gethostname()}.999999999.killed").touch()
+    (lock / f"{socket.gethostname()}.999999999.0.killed").touch()
     began = time.monotonic()
     assert _take(root).root == first.root
     assert time.monotonic() - began < 5
@@ -279,7 +285,7 @@ def test_a_lock_held_from_another_host_is_abandoned_only_by_its_age(root: Path) 
     """This host cannot ask whether that holder is alive."""
     lock = root / ".lightcone/checkouts/choosing"
     lock.mkdir(parents=True)
-    (lock / "another-login-node.4242.somebody").touch()
+    (lock / "another-login-node.4242.0.somebody").touch()
     taken: list[checkout.Checkout] = []
     waiter = threading.Thread(target=lambda: taken.append(_take(root)))
     waiter.start()
@@ -291,6 +297,47 @@ def test_a_lock_held_from_another_host_is_abandoned_only_by_its_age(root: Path) 
     waiter.join(timeout=10)
 
     assert taken and taken[0].root == root / ".lightcone/checkouts/0"
+
+
+def test_a_holder_alive_on_this_host_keeps_the_lock_however_old_it_is(root: Path) -> None:
+    """A landing takes as long as storing its result does, which no age
+    bounds: on this host the holder's process answers, and age never does."""
+    lock = root / ".lightcone/checkouts/landing"
+    lock.mkdir(parents=True)
+    holder = lock / f"{socket.gethostname()}.{os.getpid()}.{_born()}.storing-a-large-result"
+    holder.touch()
+    long_ago = time.time() - 2 * checkout._LANDING_ABANDONED
+    os.utime(lock, (long_ago, long_ago))
+
+    def land() -> None:
+        with checkout.landing(root):
+            pass
+
+    waiter = threading.Thread(target=land)
+    waiter.start()
+    waiter.join(timeout=1)
+    assert waiter.is_alive()  # still waiting on it
+
+    holder.unlink()
+    lock.rmdir()
+    waiter.join(timeout=10)
+    assert not waiter.is_alive()
+
+
+def test_a_pid_that_another_process_has_taken_since_holds_nothing(root: Path) -> None:
+    """After a reboot, say: the pid is alive, and is not the holder's."""
+    lock = root / ".lightcone/checkouts/landing"
+    lock.mkdir(parents=True)
+    (lock / f"{socket.gethostname()}.{os.getpid()}.{_born() - 3600}.before-a-reboot").touch()
+    taken = threading.Event()
+
+    def land() -> None:
+        with checkout.landing(root):
+            taken.set()
+
+    threading.Thread(target=land, daemon=True).start()
+
+    assert taken.wait(timeout=5)
 
 
 def test_one_landing_at_a_time(root: Path) -> None:
@@ -556,6 +603,32 @@ def test_a_result_does_not_land_where_its_record_would_not_hold(root: Path, stat
     assert dataset._git(["status", "--porcelain"], cwd=root) == before
     assert not (root / "results/baseline/fit.txt").exists()
     assert "RUNCMD" not in dataset._git(["log", "--all", "--format=%s"], cwd=root)
+
+
+@pytest.mark.parametrize("since", ["a run of a later commit", "the researcher"])
+def test_a_result_committed_since_the_runs_commit_is_left_as_it_is(
+    root: Path, since: str
+) -> None:
+    """An older run finishing last never takes the place of what was
+    committed after its commit: that is newer than what it made."""
+    older = _take(root)
+    task = _made(older, "older\n")
+    if since == "the researcher":
+        (root / "results/baseline").mkdir(parents=True)
+        (root / "results/baseline/fit.txt").write_text("newer\n")
+        dataset.save(root, ["results/baseline/fit.txt"], "by hand")
+    else:
+        (root / "notes.md").write_text("a later commit\n")
+        dataset.save(root, ["notes.md"], "notes")
+        newer = _take(root)
+        assert checkout.land(newer, _made(newer, "newer\n"), "[DATALAD RUNCMD] newer") == ""
+    head = dataset.head(root)
+
+    why = checkout.land(older, task, "[DATALAD RUNCMD] older")
+
+    assert "is newer than what this run made" in why
+    assert (root / "results/baseline/fit.txt").read_text() == "newer\n"
+    assert dataset.head(root) == head and not dataset.status(root)
 
 
 def test_an_interrupt_in_the_middle_of_a_landing_leaves_nothing_of_it_behind(

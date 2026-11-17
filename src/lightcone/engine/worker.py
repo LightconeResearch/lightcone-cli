@@ -28,6 +28,7 @@ owning the loop.
 from __future__ import annotations
 
 import functools
+import os
 import shutil
 import sys
 from collections.abc import Callable, Mapping
@@ -321,9 +322,17 @@ def execute(
     folders = {(root / path).parent for path in task.files}
     for place in places:
         (root / place.file_path).parent.mkdir(parents=True, exist_ok=True)
+    # The folder of the output's analysis holds the code its recipe runs.
+    # An analysis declared beside the project has it outside the root the
+    # policy grants, so it is granted on its own, beside that root: in a
+    # run, the checkout's copy of it and never the researcher's.
+    cwd = Path(os.path.normpath(root / task.workdir))
     policy = container.policy_for(
         context.runtime,
-        [path for name in task.reads.values() if (path := root / name).exists()],
+        [
+            *([] if cwd.is_relative_to(root) else [cwd]),
+            *(path for name in task.reads.values() if (path := root / name).exists()),
+        ],
         write_dir=made.parent,
         use_gpus=resources.gpus > 0,
     )
@@ -337,7 +346,6 @@ def execute(
                 ):
                     stale.unlink()
         started = datetime.now(UTC)
-        cwd = root / task.workdir
         outcome = sandbox.run(
             container.backend(context.runtime, cwd),
             policy,

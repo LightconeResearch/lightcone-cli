@@ -943,6 +943,36 @@ def test_a_result_that_never_gets_to_land_is_reported(
     assert not dataset.status(root)
 
 
+def test_a_run_that_finishes_last_never_replaces_a_newer_result(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipe is changed and committed while a run is in flight, and a
+    run of that commit lands first: the older run's result is reported,
+    and the newer one stays."""
+    newer: list[str] = []
+
+    class Overtaken(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            spec = root / "astra.yaml"
+            spec.write_text(spec.read_text().replace("echo {decisions.method}", "echo newer"))
+            dataset.save(root, [spec], "a newer recipe")
+            newer.append(dataset.head(root))
+            with monkeypatch.context() as later:
+                _cluster(later, _Inline())
+                assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).ok
+            yield from handles
+
+    _cluster(monkeypatch, Overtaken())
+
+    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+
+    assert report.failed == ["first#baseline"] and not report.made
+    assert any("newer than what this run made" in w for w in report.warnings)
+    assert (root / "results/baseline/first.txt").read_text() == "newer\n"
+    assert _record(root, "first")["generated_by"]["commit"] == newer[0]
+    assert not dataset.status(root)
+
+
 def test_a_clean_run_records_everything_it_made(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
@@ -1171,6 +1201,24 @@ def test_an_uncommitted_change_in_an_analysis_declared_beside_the_project_refuse
     assert not (root.parent / "shared/results").exists()
 
 
+def test_an_analysis_declared_beside_the_project_runs_its_own_code(
+    analysis: Callable[..., Path], tmp_path: Path, inline: None
+) -> None:
+    """Its recipe runs in its own folder of the run's checkout, outside the
+    project root the boundary grants — and the code it runs is there."""
+    root = _beside(analysis, tmp_path)
+    shared = root.parent / "shared"
+    (shared / "fit.sh").write_text('echo committed "$1"\n')
+    spec = shared / "astra.yaml"
+    spec.write_text(spec.read_text().replace("echo committed", "bash fit.sh"))
+    dataset.save(root.parent, ["shared/astra.yaml", "shared/fit.sh"], "a script of its own")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok, report.warnings
+    assert (root / "results/report.txt").read_text() == "committed x\n"
+
+
 # ---- results git would not store as lc does ---------------------------------
 
 
@@ -1193,6 +1241,20 @@ def test_a_result_no_line_sends_to_the_annex_is_refused(root: Path, inline: None
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert "results/baseline/first.txt" in str(raised.value)
     assert "lc init" in str(raised.value)
+
+
+def test_a_result_git_would_not_hand_to_the_annex_filter_is_refused(
+    root: Path, inline: None
+) -> None:
+    """`annex.largefiles` says what git-annex keeps of what git hands it.
+    A later line that unsets the filter hands it nothing, and git stores
+    the bytes itself."""
+    _rules(root, ".gitattributes", lambda text: text + "results/** -filter\n")
+
+    with pytest.raises(ProjectError, match="does not set it to annex") as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert "results/baseline/first.txt" in str(raised.value)
+    assert "RUNCMD" not in dataset._git(["log", "--format=%s"], cwd=root)
 
 
 def test_a_result_git_ignores_is_refused(root: Path, inline: None) -> None:
