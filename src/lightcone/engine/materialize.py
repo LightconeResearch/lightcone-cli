@@ -258,7 +258,7 @@ def _predicted(
             predicted[name] = None
         else:
             try:
-                predicted[name] = versions.of(path)
+                predicted[name] = versions.of(path)[0]
             except assets.ContentNotFetchedError:
                 # Not "it changed" — "I cannot tell". Conservative, and
                 # said out loud, because reporting a rebuild for a clone
@@ -517,6 +517,7 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
+    worker.require_recreatable(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
@@ -533,12 +534,12 @@ def materialize(
     classified = _classify_graph(
         root, graph, env_version, refresh=refresh, versions=versions, unfetched=set(),
     )
+    running = {
+        key for key, verdict, _, _ in classified if verdict.calls_for_a_remake(refresh=refresh)
+    }
     with cluster_for_run(cluster_id) as scheduler:
-        requirements = scheduler.validate(
-            graph.tasks[key] for key, verdict, _, _ in classified
-            if verdict.calls_for_a_remake(refresh=refresh)
-        )
-        _fetch_inputs(root, graph, report)
+        requirements = scheduler.validate(t for k, t in graph.tasks.items() if k in running)
+        _fetch_inputs(root, graph, running, report)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
         # one. Resolved once, then handed to every task — the HEAD discipline.
@@ -582,7 +583,11 @@ def materialize(
             if not verdict.calls_for_a_remake(refresh=refresh):
                 assert manifest is not None and verdict.status != "stale"
                 result = worker.TaskResult(
-                    key, verdict.status, data_version=manifest.data_version, reason=verdict.why,
+                    key,
+                    verdict.status,
+                    data_version=manifest.data_version,
+                    size=manifest.size,
+                    reason=verdict.why,
                 )
                 pending[key] = result
                 _consume(root, task, result, dsid, runtime, report)
@@ -620,8 +625,8 @@ def materialize(
         if edited := dataset.status(root):
             names = ", ".join(sorted(path for _, path in edited))
             report.warnings.append(
-                f"edited while the run was in flight: {names} — the manifests "
-                "record the starting commit, which no longer describes this code"
+                f"edited while the run was in flight: {names} — the records and "
+                "manifests name the starting commit, which no longer describes this code"
             )
         _converge_crate(root, report, full, dsid)
         return report
@@ -769,8 +774,14 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
             yield _Dask(client, invocation, output, client.scheduler_info()["workers"])
 
 
-def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
-    """Bring declared inputs' bytes into this clone before workers hash or execute.
+def _fetch_inputs(
+    root: Path, graph: Graph, running: set[Key], report: MaterializeReport
+) -> None:
+    """Bring what recipes read into this clone before workers hash or execute.
+
+    Every declared input, and each result a task that may run reads where
+    that result is left alone: its bytes are what the recipe reads, and a
+    clone that has fetched no content holds only a reference to them.
 
     lc fetches rather than telling anyone to — the storage invariant —
     and only here: ``--check`` and ``status`` are read-only verbs that
@@ -783,22 +794,29 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
     still run, and the task whose input is genuinely unreachable reports
     its own failure with the real error — per-task reporting is most of
     what owning the loop buys.
+
+    Args:
+        root: The project root.
+        graph: The tasks of the run.
+        running: The tasks that may run.
+        report: Collects the warning a failed fetch gives.
     """
-    declared = sorted(
+    wanted = sorted(
         {
             plan.declared_path(root, path)
-            for task in graph.tasks.values()
+            for key, task in graph.tasks.items()
             for name, path in task.inputs.items()
-            if name not in task.produced_by
+            if (made := task.produced_by.get(name)) is None
+            or (key in running and made not in running)
         }
     )
-    if not declared:
+    if not wanted:
         return
-    got = project._run(["git", "annex", "get", "--", *declared], cwd=root)
+    got = project._run(["git", "annex", "get", "--", *wanted], cwd=root)
     if got.returncode != 0:
         report.warnings.append(
-            "some declared inputs could not be fetched into this clone — tasks "
-            f"needing them will report it:\n{got.stderr.strip()}"
+            "some of what this run reads could not be fetched into this clone — "
+            f"tasks needing it will report it:\n{got.stderr.strip()}"
         )
 
 
@@ -932,8 +950,8 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
         "outputs": [
-            plan.declared_path(root, task.output_path),
-            plan.declared_path(root, task.manifest_path),
+            plan.declared_path(root, path)
+            for path in (task.output_path, task.manifest_path, *task.records)
         ],
         "pwd": ".",
     }
@@ -1052,11 +1070,13 @@ def _graph(
 def _owned(root: Path, task: Task) -> list[str]:
     """Every path one output owns, as git pathspecs.
 
-    Globs rather than the two literal paths, and each earns its magic. The
-    payload's covers whatever format the *previous* run wrote, so a
-    re-declared serialization stages the old file's deletion instead of
-    leaving it behind untracked. The manifest's trailing ``*`` covers the
-    ``.tmp`` a failed write leaves, which nothing else would sweep.
+    Globs rather than literal paths for the two files beside the bytes,
+    and each earns its magic. The payload's covers whatever format the
+    *previous* run wrote, so a re-declared serialization stages the old
+    file's deletion instead of leaving it behind untracked. The
+    manifest's trailing ``*`` covers the ``.tmp`` a failed write leaves,
+    which nothing else would sweep. A record's path is taken to the
+    letter.
 
     Never the parent directory: siblings share it, and under Dask they are
     in flight — ``git clean`` on it would delete a running task's bytes.
@@ -1065,6 +1085,7 @@ def _owned(root: Path, task: Task) -> list[str]:
     return [
         f":(glob){parent}/{task.name}.*",
         f":(glob){parent}/.{task.name}{assets.MANIFEST_SUFFIX}*",
+        *(f":(literal){plan.declared_path(root, record)}" for record in task.records),
     ]
 
 

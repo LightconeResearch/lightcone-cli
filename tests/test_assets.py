@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import assets, dataset
-from lightcone.engine.assets import Manifest, classify, data_version
+from lightcone.engine.assets import Manifest, classify, digest
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -35,6 +35,7 @@ def _manifest(**overrides: object) -> Manifest:
         "definition_version": "sha256:code",
         "env_version": "sha256:env",
         "data_version": "sha256:data",
+        "size": 4,
         "decisions": {"method": "mcmc"},
         "input_versions": {"catalog": "sha256:cat"},
         "git_sha": "abc123",
@@ -52,23 +53,23 @@ def _manifest(**overrides: object) -> Manifest:
 def test_the_same_bytes_hash_the_same(tmp_path: Path) -> None:
     for name in ("a", "b"):
         (tmp_path / name).write_text("x,y\n1,2\n")
-    assert data_version(tmp_path / "a") == data_version(tmp_path / "b")
+    assert digest(tmp_path / "a") == digest(tmp_path / "b")
 
 
 def test_changed_bytes_move_it(tmp_path: Path) -> None:
     (tmp_path / "fit.csv").write_text("x,y\n1,2\n")
-    before = data_version(tmp_path / "fit.csv")
+    before = digest(tmp_path / "fit.csv")
     (tmp_path / "fit.csv").write_text("x,y\n1,3\n")
-    assert data_version(tmp_path / "fit.csv") != before
+    assert digest(tmp_path / "fit.csv") != before
 
 
 def test_touching_a_file_does_not_move_it(tmp_path: Path) -> None:
     """Content, never mtime. A file restored from history carries an old
     timestamp and must not look changed because of it."""
     (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path / "fit.csv")
+    before = digest(tmp_path / "fit.csv")
     (tmp_path / "fit.csv").touch()
-    assert data_version(tmp_path / "fit.csv") == before
+    assert digest(tmp_path / "fit.csv") == before
 
 
 def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
@@ -77,9 +78,9 @@ def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
     output, so hashing one file cannot reach it."""
     output = tmp_path / "fit.csv"
     output.write_text("x,y\n")
-    before = data_version(output)
+    before = digest(output)
     assets.write(assets.manifest_path(output), _manifest())
-    assert data_version(output) == before
+    assert digest(output) == before
 
 
 def test_the_manifest_is_named_from_the_name_never_the_format(tmp_path: Path) -> None:
@@ -98,7 +99,7 @@ def test_a_file_hashes_its_own_bytes_and_nothing_else(tmp_path: Path) -> None:
     output = tmp_path / "fit.csv"
     body = b"x,y\n"
     output.write_bytes(body)
-    assert data_version(output) == f"sha256:{hashlib.sha256(body).hexdigest()}"
+    assert digest(output) == (f"sha256:{hashlib.sha256(body).hexdigest()}", len(body))
 
 
 def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None:
@@ -112,7 +113,7 @@ def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None
     )
 
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        data_version(pointer)
+        digest(pointer)
 
 
 def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
@@ -126,7 +127,7 @@ def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
 
     assert locked.is_symlink() and not locked.exists()
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        data_version(locked)
+        digest(locked)
 
 
 def test_a_broken_symlink_that_is_not_annexed_is_still_loud(tmp_path: Path) -> None:
@@ -135,7 +136,7 @@ def test_a_broken_symlink_that_is_not_annexed_is_still_loud(tmp_path: Path) -> N
     (tmp_path / "scratch.dat").symlink_to("/tmp/gone-with-the-scratch-dir")
 
     with pytest.raises(FileNotFoundError):
-        data_version(tmp_path / "scratch.dat")
+        digest(tmp_path / "scratch.dat")
 
 
 def test_a_file_that_merely_mentions_the_prefix_is_still_hashed(tmp_path: Path) -> None:
@@ -144,14 +145,14 @@ def test_a_file_that_merely_mentions_the_prefix_is_still_hashed(tmp_path: Path) 
     script = tmp_path / "fit.py"
     script.write_text("# reads /annex/objects/ sometimes\nprint(1)\n")
 
-    assert data_version(script).startswith("sha256:")
+    assert digest(script)[0].startswith("sha256:")
 
 
 def test_a_missing_path_is_an_error_not_an_empty_hash(tmp_path: Path) -> None:
     """The failure mode worth refusing loudly: a constant digest for
     everything absent would silently disable the whole chain."""
     with pytest.raises(FileNotFoundError):
-        data_version(tmp_path / "nothing")
+        digest(tmp_path / "nothing")
 
 
 def test_one_input_is_hashed_once_per_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,14 +163,28 @@ def test_one_input_is_hashed_once_per_run(tmp_path: Path, monkeypatch: pytest.Mo
     catalog = tmp_path / "catalog.txt"
     catalog.write_text("measured\n")
     hashed: list[Path] = []
-    real = assets.data_version
-    monkeypatch.setattr(assets, "data_version", lambda p: (hashed.append(p), real(p))[1])
+    real = assets.digest
+    monkeypatch.setattr(assets, "digest", lambda p: (hashed.append(p), real(p))[1])
 
     versions = assets.Versions()
     digests = {versions.of(catalog) for _ in range(32)}
 
     assert len(hashed) == 1
     assert digests == {real(catalog)}
+
+
+def test_a_file_written_since_it_was_hashed_is_hashed_again(tmp_path: Path) -> None:
+    """The memo gives a digest only for the very file it hashed: what a
+    task records reading has to be what it read, even when the file was
+    rewritten after the driver hashed it."""
+    catalog = tmp_path / "catalog.txt"
+    catalog.write_text("measured\n")
+    versions = assets.Versions()
+    before = versions.of(catalog)
+
+    catalog.write_text("measured again\n")
+
+    assert versions.of(catalog) == digest(catalog) != before
 
 
 def test_the_memo_does_not_confuse_two_inputs(tmp_path: Path) -> None:

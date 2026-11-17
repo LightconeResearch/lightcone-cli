@@ -33,7 +33,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
 from lightcone.engine.execution_resources import TaskResources
@@ -44,6 +44,9 @@ from lightcone.engine.project import (
     declared_project,
     uv_prefix,
 )
+
+if TYPE_CHECKING:
+    from astra.api import RecordedInput
 
 #: The commit a run is identified against: ``(sha, origin URL)``. Read once
 #: by the driver and handed to every task, because the driver commits as
@@ -65,8 +68,11 @@ class TaskResult:
     status: Literal["ok", "current", "behind", "failed", "blocked"]
     #: The output's content identity. Present for the three states in
     #: which the bytes on disk are what the spec asks for — this is what a
-    #: dependent compares against.
+    #: dependent compares against, and records having read.
     data_version: str = ""
+    #: The size of those bytes, which a dependent's record gives beside
+    #: their hash.
+    size: int = 0
     #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
     #: Console lines from the boundary: a downgrade notice, a denial.
@@ -83,6 +89,11 @@ class TaskResult:
             that the artifact is wrong.
         """
         return self.status in ("ok", "current", "behind")
+
+    @property
+    def digest(self) -> assets.Digest:
+        """The hash and size of the output's bytes, as one value."""
+        return self.data_version, self.size
 
 
 @dataclass(frozen=True)
@@ -109,6 +120,31 @@ class RunContext:
     runtime: container.Runtime
     #: The uv that converges environments this run. Attestation only.
     uv_version: str
+
+
+def require_recreatable(root: Path) -> None:
+    """Refuse a run whose commit could not recreate its environment.
+
+    A clean tree does not say the environment is in the commit: an
+    ignored file is clean. A record names its environment by the files
+    of its commit, so each has to be there for lc to recreate it. Asked
+    by whoever owns a run, before it writes a record: the driver, and
+    the rerun entry point.
+
+    Args:
+        root: The project root.
+
+    Raises:
+        ProjectError: Naming each file of the environment git does not
+            track.
+    """
+    if missing := dataset.untracked(root, identity.files(root)):
+        raise ProjectError(
+            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
+            "could not recreate the environment its recipe ran in "
+            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
+            "whatever .gitignore rule keeps them out."
+        )
 
 
 # =============================================================================
@@ -170,9 +206,11 @@ def _materialize(
             task.key, "blocked", reason=f"upstream did not finish: {', '.join(absent)}"
         )
 
-    live = {key: u.data_version for key, u in reported.items()}
+    # What each result this one reads came out as: the digest its task
+    # reported, by the entry that reads it.
+    made = {name: reported[key].digest for name, key in task.produced_by.items()}
     inputs = {
-        name: live[key] if (key := task.produced_by.get(name)) else context.versions.of(path)
+        name: made[name][0] if name in made else context.versions.of(path)[0]
         for name, path in task.inputs.items()
     }
     manifest = assets.read(task.manifest_path)
@@ -184,7 +222,7 @@ def _materialize(
         foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(root, task, inputs, context, output=output)
+        return execute(root, task, made, context, output=output)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -192,7 +230,11 @@ def _materialize(
     # report a different output.
     assert manifest is not None and verdict.status != "stale"  # the branch above
     return TaskResult(
-        task.key, verdict.status, data_version=manifest.data_version, reason=verdict.why
+        task.key,
+        verdict.status,
+        data_version=manifest.data_version,
+        size=manifest.size,
+        reason=verdict.why,
     )
 
 
@@ -204,43 +246,69 @@ def _materialize(
 def execute(
     root: Path,
     task: Task,
-    input_versions: Mapping[str, str],
+    made: Mapping[str, assets.Digest],
     context: RunContext,
     *,
     output: Callable[[str, bytes], None] | None = None,
 ) -> TaskResult:
-    """Run *task*'s recipe and record what it produced.
+    """Run *task*'s recipe, and record what it produced and what it read.
 
-    The output directory is reset first: the recipe owns it, and a file
-    left from a previous run would otherwise enter the content hash and be
-    committed as part of an output that never produced it. The context's
-    ``env_version`` is checked either side of the recipe, so a mid-run
-    lock edit cannot be recorded as if it had been in force.
+    What the result owns is removed first: a file left from a previous run
+    would otherwise be committed as part of a result that never produced
+    it. Every file the recipe reads is looked at before it runs, and again
+    after: each has to hold its content, and has to be the very file it
+    was when it was hashed, or the record would name bytes the recipe did
+    not read. The context's ``env_version`` is checked either side of the
+    recipe, so a mid-run lock edit cannot be recorded as if it had been in
+    force.
 
     Args:
         root: The project root.
         task: The output to make.
-        input_versions: Each declared input's content identity, recorded
-            in the manifest as the chain.
+        made: The digest of each result this one reads, by the entry that
+            reads it, as the task that made or kept it reported: what was
+            hashed once, by that task, is never hashed again here.
         context: The run's driver-resolved facts.
         output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
-        ``ok`` with the output's ``data_version``, or ``failed``. Commits
-        nothing and never touches git beyond reading HEAD.
+        ``ok`` with the output's digest, or ``failed``. Commits nothing and
+        never touches git beyond reading HEAD.
     """
+    from astra import api
+
     resources = TaskResources.parse(task.resources)
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
+    # What the recipe is about to read, looked at before it runs: a file
+    # this clone does not hold the content of is a refusal that should
+    # cost no compute, and a recipe handed a pointer would read a few
+    # lines of text for its data, under a record naming the real bytes.
+    read: list[RecordedInput] = []
+    watched: dict[str, tuple[Path, tuple[int, int, int]]] = {}
+    for name, path in task.inputs.items():
+        try:
+            assets.require_fetched(path)
+            stamp = assets.stamp(path)
+            digest = made[name] if name in made else context.versions.of(path)
+        except (OSError, ProjectError) as e:
+            return TaskResult(
+                task.key,
+                "failed",
+                reason=(
+                    f"the input `{name}` ({plan.declared_path(root, path)}) cannot be "
+                    f"read: {str(e).removeprefix(f'{path}: ')}"
+                ),
+            )
+        watched[name] = path, stamp
+        read.append(api.RecordedInput(name, *digest))
+
     # Never the parent directory: siblings share it now, and under Dask
     # they are being written concurrently. What this output owns is its
-    # manifest and any file named after it — the glob rather than the one
-    # declared path, so a spec that re-declares the output in another
-    # format leaves no stale payload behind. `<name>.` needs a literal dot
-    # straight after the whole name, and a name cannot contain one, so it
-    # cannot reach a sibling, a longer name, another output's sidecar, or a
-    # directory of the same name.
+    # manifest, its record and any file named after it — the glob rather
+    # than the one declared path, so a spec that re-declares the output in
+    # another format leaves no stale payload behind (`Task.owns`).
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
@@ -249,11 +317,12 @@ def execute(
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing outputs.
-        task.manifest_path.unlink(missing_ok=True)
+        for own in (task.manifest_path, *task.records):
+            own.unlink(missing_ok=True)
         for stale in task.output_path.parent.glob(f"{task.name}.*"):
             if stale.is_file() or stale.is_symlink():
                 stale.unlink()
-        started_at = _now()
+        started = datetime.now(UTC)
         outcome = sandbox.run(
             container.backend(context.runtime),
             policy,
@@ -263,7 +332,7 @@ def execute(
             env=child_env(),
             output=output,
         )
-    finished_at = _now()
+    finished = datetime.now(UTC)
 
     if outcome.returncode != 0:
         return TaskResult(
@@ -274,6 +343,23 @@ def execute(
         )
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved, notes=outcome.notes)
+    # A declared input is a file in the project's tree, which only a
+    # sandbox makes read-only: written in place, the record would name
+    # bytes that no longer exist anywhere.
+    if rewritten := [
+        name
+        for name, (path, stamp) in watched.items()
+        if not path.is_file() or assets.stamp(path) != stamp
+    ]:
+        return TaskResult(
+            task.key,
+            "failed",
+            reason=(
+                f"the recipe changed what it only reads: {', '.join(rewritten)}. "
+                "Nothing was recorded."
+            ),
+            notes=outcome.notes,
+        )
 
     # Guarded separately from the boundary catch above it, because these
     # two failures deserve different words: "your recipe failed" and "your
@@ -294,7 +380,25 @@ def execute(
 
     try:
         sha, remote = context.head
-        data_version = assets.data_version(task.output_path)
+        content_hash, size = assets.digest(task.output_path)
+        # ASTRA's record, at each place the result has: what a checker
+        # compares with the analysis as it then is.
+        api.write_records(
+            root,
+            task.result,
+            content_hash,
+            size,
+            api.Generation(
+                commit=sha,
+                # The environment the gate either side of the recipe held
+                # it to, not one read again from files that may move.
+                environment=api.Environment(identity.environment(context.env_version)),
+                runner=api.Runner("lightcone-cli", lc_version()),
+                inputs=tuple(read),
+                started=_instant(started),
+                finished=_instant(finished),
+            ),
+        )
         assets.write(
             task.manifest_path,
             assets.Manifest(
@@ -303,37 +407,37 @@ def execute(
                 recipe=task.recipe,
                 definition_version=task.definition_version,
                 env_version=context.env_version,
-                data_version=data_version,
+                data_version=content_hash,
+                size=size,
                 decisions=dict(task.decisions),
-                input_versions=dict(input_versions),
+                input_versions={item.entry: item.content_hash for item in read},
                 git_sha=sha,
                 git_remote=remote,
                 lc_version=lc_version(),
                 uv_version=context.uv_version,
                 hermeticity=asdict(outcome.attestation),
-                started_at=started_at,
-                finished_at=finished_at,
+                # Milliseconds, not microseconds: RO-Crate consumers parse
+                # `schema:endTime` with at most three fractional digits.
+                started_at=started.isoformat(timespec="milliseconds"),
+                finished_at=finished.isoformat(timespec="milliseconds"),
                 image=context.runtime.manifest_image(),
             ),
         )
-    except (OSError, ProjectError) as e:
+    except (OSError, ValueError, ProjectError) as e:
         return TaskResult(
             task.key,
             "failed",
             reason=f"the recipe finished but its output could not be recorded: {e}",
             notes=outcome.notes,
         )
-    return TaskResult(task.key, "ok", data_version=data_version, notes=outcome.notes)
+    return TaskResult(
+        task.key, "ok", data_version=content_hash, size=size, notes=outcome.notes
+    )
 
 
-def _now() -> str:
-    """The current instant, as a manifest timestamp.
-
-    Milliseconds, not microseconds: RO-Crate consumers parse
-    ``schema:endTime`` with at most three fractional digits, and the
-    manifest is where that string is minted.
-    """
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
+def _instant(moment: datetime) -> str:
+    """A moment as a record gives one: in UTC, to the millisecond."""
+    return f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
 
 
 def _gate(root: Path, env_version: str) -> str:
@@ -351,9 +455,10 @@ def _gate(root: Path, env_version: str) -> str:
 def lc_version() -> str:
     """Report the running engine's version, empty for a bare source tree.
 
-    The one lookup behind both places the engine attests itself: the
-    manifest's ``lc_version`` and the run record's version pin. One
-    function, so the two cannot disagree about which engine ran.
+    The one lookup behind every place the engine attests itself: the
+    record's ``runner``, the manifest's ``lc_version`` and the run
+    record's version pin. One function, so they cannot disagree about
+    which engine ran.
 
     Cached: the metadata scan walks ``sys.path``, both callers are once
     per output, and an installed version cannot change under a running
@@ -412,6 +517,20 @@ def main(argv: list[str]) -> int:
         if (task := graph.tasks.get(argv[0])) is None:
             print(f"no output `{argv[0]}` in this project", file=sys.stderr)
             return 2
+        # The record names HEAD, so the tree has to be HEAD's: all a rerun
+        # has changed by now is this result's own files, which it removed.
+        if edited := sorted(
+            path
+            for _, path in dataset.status(root, untracked_files=True)
+            if not task.owns(root / path)
+        ):
+            print(
+                f"error: uncommitted changes — {', '.join(edited)} — so the commit a "
+                "record names would not say what its recipe ran on. Commit them first.",
+                file=sys.stderr,
+            )
+            return 2
+        require_recreatable(root)
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -422,7 +541,7 @@ def main(argv: list[str]) -> int:
         result = execute(
             root,
             task,
-            _from_disk(task),
+            _from_disk(root, task),
             RunContext(
                 env_version=identity.env_version(root),
                 head=dataset.head(root),
@@ -443,34 +562,31 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def _from_disk(task: Task) -> dict[str, str]:
-    """Upstream versions, read from the manifests already in the tree.
+def _from_disk(root: Path, task: Task) -> dict[str, assets.Digest]:
+    """What *task* reads of other results, from the tree as it stands.
 
-    There is no graph in flight to take them from, and a single-task run
-    has nothing to share a memo with — the digests are read once each here
-    by construction.
+    There is no graph in flight to take them from. Each upstream has to
+    have been materialized, and its bytes are hashed where they lie: this
+    run reads what is in the tree, and its record must say so.
     """
-    versions: dict[str, str] = {}
-    for name, path in task.inputs.items():
-        if task.produced_by.get(name) is not None:
-            if (manifest := assets.read(assets.manifest_path(path))) is None:
-                raise ProjectError(
-                    f"the input `{name}` has never been materialized — there is no "
-                    f"manifest beside {path}. Run `lc materialize <cluster>` instead."
-                )
-            versions[name] = manifest.data_version
-        else:
-            try:
-                versions[name] = assets.data_version(path)
-            except OSError as e:
-                # `data_version` reports an absent or unreadable path with
-                # the OS's own exception, and this is the entry point a
-                # `datalad rerun` lands on — so it names the declared input
-                # rather than unwinding a traceback at whoever reads that.
-                raise ProjectError(
-                    f"the declared input `{name}` cannot be read: {e}"
-                ) from e
-    return versions
+    made: dict[str, assets.Digest] = {}
+    for name in task.produced_by:
+        path = task.inputs[name]
+        if assets.read(assets.manifest_path(path)) is None:
+            raise ProjectError(
+                f"the input `{name}` has never been materialized — there is no "
+                f"manifest beside {plan.declared_path(root, path)}. Run "
+                "`lc materialize <cluster>` instead."
+            )
+        try:
+            made[name] = assets.digest(path)
+        except OSError as e:
+            # `digest` reports an unreadable path with the OS's own
+            # exception, and this is the entry point a `datalad rerun`
+            # lands on — so it names the input rather than unwinding a
+            # traceback at whoever reads that.
+            raise ProjectError(f"the input `{name}` cannot be read: {e}") from e
+    return made
 
 
 if __name__ == "__main__":

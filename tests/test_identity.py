@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine.identity import LockScan, definition_version, env_version, scan_lock
+from lightcone.engine.identity import (
+    LockScan,
+    definition_version,
+    env_version,
+    environment,
+    files,
+    scan_lock,
+)
 from lightcone.engine.project import ProjectError
 
 _LOCK = """version = 1
@@ -166,6 +173,43 @@ def test_fields_cannot_shift_into_one_another(root: Path) -> None:
     (root / "uv.lock").write_bytes(b"lock\n")
     (root / ".python-version").write_bytes(b"3.13.1\n")
     assert env_version(root) != shifted_left
+
+
+# ---- the files a record names its environment by --------------------------
+
+
+def test_the_iri_names_env_version(root: Path) -> None:
+    assert environment(env_version(root)) == f"urn:lightcone:env:{env_version(root)}"
+
+
+@pytest.mark.parametrize("config", [False, True])
+def test_every_file_it_names_moves_env_version(root: Path, config: bool) -> None:
+    """What `files` names is what has to be in a commit to recreate the
+    environment, so each has to be something `env_version` reads: an edit
+    to any one of them moves it. `uv.toml` is named only where there is
+    one, since it then replaces `[tool.uv]`."""
+    if config:
+        (root / "uv.toml").write_text("no-binary = false\n")
+    assert ("uv.toml" in files(root)) is config
+    for name in files(root):
+        before = env_version(root)
+        path = root / name
+        edit = {
+            "pyproject.toml": '\n[tool.lightcone.image]\napt-install = ["bc"]\n',
+            "uv.toml": "no-build = true\n",
+        }.get(name, "\n")
+        path.write_text(path.read_text() + edit)
+        assert env_version(root) != before, name
+
+
+def test_a_file_it_does_not_name_does_not_move_env_version(root: Path) -> None:
+    """The other direction: nothing outside `files` is part of the
+    environment, so a commit lacking it still recreates the environment."""
+    before = env_version(root)
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    (root / "uv.toml.bak").write_text("no-build = true\n")
+    assert "astra.yaml" not in files(root)
+    assert env_version(root) == before
 
 
 # ---- definition_version ----------------------------------------------------

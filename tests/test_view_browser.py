@@ -108,6 +108,7 @@ outputs:
         definition_version="sha256:d",
         env_version="sha256:e",
         data_version="sha256:x",
+        size=2,
         decisions={"decisions.binning": "coarse"},
         input_versions={},
         git_sha="abc12345",

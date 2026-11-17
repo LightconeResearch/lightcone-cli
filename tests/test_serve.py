@@ -189,6 +189,7 @@ def test_an_outputs_run_comes_from_its_manifest(served: tuple[str, str], project
         definition_version="sha256:d",
         env_version="sha256:e",
         data_version="sha256:x",
+        size=2,
         decisions={},
         input_versions={"catalog": "sha256:c"},
         git_sha="abc123",

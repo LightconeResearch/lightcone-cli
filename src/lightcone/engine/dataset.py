@@ -161,7 +161,7 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(directory: Path) -> list[tuple[str, str]]:
+def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
@@ -193,6 +193,9 @@ def status(directory: Path) -> list[tuple[str, str]]:
 
     Args:
         directory: The project to inspect.
+        untracked_files: List each untracked file, where git otherwise
+            names only the outermost untracked folder — for a caller that
+            sorts changes by whose files they are.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -204,7 +207,7 @@ def status(directory: Path) -> list[tuple[str, str]]:
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
     listed = _git(
         [
-            "-c", "status.showUntrackedFiles=normal",
+            "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
             "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
             "--", ".",
         ],
@@ -358,6 +361,25 @@ def annex_keys(directory: Path) -> dict[str, str]:
         if sep and file and key:
             keys[file] = key
     return keys
+
+
+def untracked(directory: Path, paths: Iterable[str]) -> list[str]:
+    """Find which of *paths* git is not tracking.
+
+    Asked of the index rather than of ``status``, because an ignored file
+    is neither tracked nor a change: a tree can be clean without holding
+    it.
+
+    Args:
+        directory: The project root.
+        paths: Files, from the project root.
+
+    Returns:
+        Those the index does not hold, in the order given.
+    """
+    paths = list(paths)
+    listed = _git(["ls-files", "-z", "--", *paths], cwd=directory).split("\0")
+    return [path for path in paths if path not in listed]
 
 
 def tracked_manifests(directory: Path) -> list[Path]:

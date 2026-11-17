@@ -55,7 +55,7 @@ def _task(root: Path, output_id: str) -> plan.Task:
 
 
 #: What the driver reads once and hands to every task.
-_HEAD = ("0123456789abcdef", "https://example/analysis.git")
+_HEAD = ("0123456789abcdef" * 2 + "01234567", "https://example/analysis.git")
 
 
 def _runtime(root: Path) -> container.Runtime:
@@ -106,7 +106,7 @@ def test_a_recipe_runs_and_its_output_is_recorded(root: Path) -> None:
 
     assert result.status == "ok"
     assert (root / "results/first.txt").read_text() == "one\n"
-    assert result.data_version == assets.data_version(root / "results/first.txt")
+    assert result.data_version == assets.digest(root / "results/first.txt")[0]
 
 
 def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
@@ -117,7 +117,7 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
 
     manifest = assets.read(root / "results/.first.manifest.json")
     assert manifest is not None
-    assert manifest.data_version == assets.data_version(root / "results/first.txt")
+    assert manifest.data_version == assets.digest(root / "results/first.txt")[0]
     assert manifest.definition_version == _task(root, "first").definition_version
     assert manifest.env_version == identity.env_version(root)
     assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
@@ -280,6 +280,92 @@ def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
     assert result.status == "failed"
     assert "exited 1" in result.reason
     assert assets.read(root / "results/.first.manifest.json") is None
+
+
+def test_the_record_is_reset_before_the_recipe_runs(root: Path) -> None:
+    """A record left from an earlier run names bytes this run is about to
+    replace: a recipe that then fails must not leave it for the commit to
+    take as this run's account."""
+    assert _make(root, "first").status == "ok"
+    assert (root / ".astra/records/first.json").is_file()
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo one > {output}", "echo one > {output} && false")
+    )
+
+    assert _make(root, "first").status == "failed"
+    assert not (root / ".astra/records/first.json").exists()
+
+
+def test_a_record_that_cannot_be_written_fails_the_task(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASTRA refuses a record its schema rejects, and a refusal there is the
+    task's failure, never a raise into Dask."""
+    from astra import api
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise ValueError("`commit` is not a commit id")
+
+    monkeypatch.setattr(api, "write_records", refuse)
+
+    result = _make(root, "first")
+
+    assert result.status == "failed"
+    assert "could not be recorded" in result.reason
+    assert assets.read(root / "results/.first.manifest.json") is None
+
+
+def test_a_recipe_that_rewrites_what_it_reads_is_not_recorded(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record names the bytes each input held before the recipe ran.
+    Only a sandbox keeps a recipe from writing to one, so without a
+    mechanism a rewritten input fails the task: recorded, it would name
+    bytes that no longer exist anywhere."""
+    from lightcone.engine import sandbox
+
+    monkeypatch.setattr(sandbox, "detect", Unavailable)
+    spec = """
+    spec_version: "0.1.0"
+
+    inputs:
+      catalog: {path: data/catalog.txt}
+
+    outputs:
+      fit:
+        type: metric
+        format: txt
+        inputs: [catalog]
+        recipe:
+          command: cat {inputs.catalog} > {output} && echo more >> {inputs.catalog}
+    """
+    root = analysis(spec, files={"data/catalog.txt": "measured\n"})
+
+    result = _make(root, "fit")
+
+    assert result.status == "failed"
+    assert "changed what it only reads: catalog" in result.reason
+    assert not (root / ".astra/records/fit.json").exists()
+    assert assets.read(root / "results/.fit.manifest.json") is None
+
+
+def test_an_upstream_whose_content_is_not_here_is_refused(root: Path) -> None:
+    """A result left alone on a clone that has not fetched it is a pointer
+    to its content. A recipe handed it would read a few lines of text for
+    its data, under a record naming the real bytes — so the task refuses
+    before the recipe runs."""
+    first = _make(root, "first")
+    output = root / "results/first.txt"
+    output.unlink()
+    output.write_text("/annex/objects/SHA256E-s4--0123456789abcdef.txt\n")
+
+    result = _make(root, "second", first)
+
+    assert result.status == "failed"
+    assert "the input `first` (results/first.txt) cannot be read" in result.reason
+    assert "not in this clone" in result.reason
+    assert not (root / "results/second.txt").exists()
+    assert not (root / ".astra/records/second.json").exists()
 
 
 def test_a_recipe_that_writes_nothing_fails(root: Path) -> None:

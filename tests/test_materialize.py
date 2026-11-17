@@ -99,15 +99,18 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     assert not dataset.status(root)
 
 
-def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None) -> None:
+def test_an_output_its_record_and_its_manifest_land_in_one_commit(
+    root: Path, inline: None
+) -> None:
     """One commit is one complete, self-describing materialization — the
-    manifest can never come to describe different bytes."""
+    record and the manifest can never come to describe different bytes."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     committed = dataset._git(
         ["show", "--name-only", "--format=", "HEAD"], cwd=root
     ).split()
     assert sorted(committed) == [
+        ".astra/records/baseline/first.json",
         "results/baseline/.first.manifest.json",
         "results/baseline/first.txt",
     ]
@@ -476,9 +479,9 @@ def test_shared_inputs_are_hashed_once_before_task_serialization(
     spec = _consuming("data/catalog.fits").replace("inputs: [first]", "inputs: [first, catalog]")
     root = analysis(spec, files={"data/catalog.fits": "data"})
     hashed: list[Path] = []
-    real = assets.data_version
+    real = assets.digest
 
-    def digest(path: Path) -> str:
+    def digest(path: Path) -> assets.Digest:
         hashed.append(path)
         return real(path)
 
@@ -488,7 +491,7 @@ def test_shared_inputs_are_hashed_once_before_task_serialization(
         ) -> object:
             return fn(*pickle.loads(pickle.dumps(args)))
 
-    monkeypatch.setattr(assets, "data_version", digest)
+    monkeypatch.setattr(assets, "digest", digest)
     _cluster(monkeypatch, _Copied())
     first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(first.made) == 2
@@ -729,6 +732,7 @@ def test_the_run_record_is_what_datalad_reads(
     assert info["outputs"] == [
         "results/baseline/second.txt",
         "results/baseline/.second.manifest.json",
+        ".astra/records/baseline/second.json",
     ]
     assert info["dsid"] == "4b7b5c1e-0000-4000-8000-000000000000"
     assert info["chain"] == [] and info["pwd"] == "."
@@ -859,13 +863,36 @@ def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
 
     clone = _clone(root, tmp_path)
     with pytest.raises(assets.ContentNotFetchedError):
-        assets.data_version(clone / "data" / "catalog.fits")
+        assets.digest(clone / "data" / "catalog.fits")
 
     again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert again.up_to_date, (again.failed, again.warnings)
-    assert assets.data_version(clone / "data" / "catalog.fits")  # the bytes came
+    assert assets.digest(clone / "data" / "catalog.fits")  # the bytes came
     assert not dataset.status(clone)
+
+
+def test_a_bytes_free_clone_fetches_a_result_a_remade_one_reads(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """A result left alone is still read by one that is remade, so its
+    bytes are fetched like a declared input's. Without the fetch the
+    remade task refused the pointer it found in their place."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    clone = _clone(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(
+        spec.read_text().replace(
+            "cat {inputs.first} > {output}", "cat {inputs.first} > {output} && true"
+        )
+    )
+    dataset.save(clone, [spec], "change only the second recipe")
+
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["second#baseline"], (report.failed, report.warnings)
+    assert report.current == ["first#baseline"]
+    assert (clone / "results/baseline/second.txt").read_text() == "alpha\n"
 
 
 def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
@@ -956,7 +983,11 @@ def test_the_recorded_command_reproduces_the_output(
     rerun = assets.read(root / "results/baseline/.first.manifest.json")
     assert rerun is not None
     assert rerun.data_version == original.data_version
-    assert rerun.data_version == assets.data_version(root / "results/baseline/first.txt")
+    assert rerun.data_version == assets.digest(root / "results/baseline/first.txt")[0]
+    # The record is among the run record's outputs, so the rerun wrote it
+    # again and `datalad rerun` committed it with the bytes.
+    record = json.loads((root / ".astra/records/baseline/first.json").read_text())
+    assert record["content_hash"] == rerun.data_version
     assert not dataset.status(root)
 
 

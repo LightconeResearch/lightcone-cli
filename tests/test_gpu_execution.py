@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from lightcone.engine import assets, container, identity, plan, worker
+from lightcone.engine import assets, container, dataset, identity, plan, worker
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
@@ -34,7 +34,7 @@ def project(analysis: Callable[..., Path]) -> tuple[Path, plan.Task, worker.RunC
     task = plan.build(root).tasks["visibility"]
     context = worker.RunContext(
         env_version=identity.env_version(root),
-        head=("0123456789abcdef", "https://example/analysis.git"),
+        head=("0123456789abcdef" * 2 + "01234567", "https://example/analysis.git"),
         versions=assets.Versions(),
         runtime=container.runtime_for_run(root, build=False),
         uv_version="0.0.0-test",
@@ -185,6 +185,8 @@ def test_gpu_rerun_missing_mask_explains_how_to_select_local_devices(
     (root / "astra.yaml").write_text(_SPEC.replace(
         "command:", "resources: {gpus: 1}\n      command:",
     ))
+    # Committed: a rerun's record names HEAD, so it refuses any other edit.
+    dataset.save(root, [root / "astra.yaml"], "ask for a GPU")
     monkeypatch.chdir(root)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert worker.main(["visibility"]) == 2

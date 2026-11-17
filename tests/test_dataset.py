@@ -209,7 +209,7 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
         with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-            assets.data_version(output / name)
+            assets.digest(output / name)
 
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
@@ -226,7 +226,7 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
     with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        assets.data_version(output / "fit.csv")
+        assets.digest(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------

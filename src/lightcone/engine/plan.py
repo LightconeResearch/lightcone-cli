@@ -50,6 +50,8 @@ class Task:
     result: Result
     #: The single file this result is.
     output_path: Path
+    #: Where ASTRA's record of the result goes: one per place it has.
+    records: tuple[Path, ...]
     #: Each entry of the output's ``inputs``, as written → the file it
     #: reads: an input's own, or the file of the result it reads.
     inputs: dict[str, Path]
@@ -98,6 +100,25 @@ class Task:
     def depends_on(self) -> tuple[Key, ...]:
         """The tasks that must be made first, deduplicated, in order."""
         return tuple(dict.fromkeys(self.produced_by.values()))
+
+    def owns(self, path: Path) -> bool:
+        """Whether *path* is one of this result's own files.
+
+        Its manifest, its record, or a file named after it beside its
+        bytes — the name and not the one declared path, so the payload a
+        previous format left behind is the result's too. ``<name>.``
+        cannot reach a sibling: a name is an output's id, which holds no
+        dot.
+
+        Args:
+            path: A file, from the filesystem root.
+
+        Returns:
+            True for a file this result's run writes or replaces.
+        """
+        return path in (self.manifest_path, *self.records) or (
+            path.parent == self.output_path.parent and path.name.startswith(f"{self.name}.")
+        )
 
 
 @dataclass(frozen=True)
@@ -212,6 +233,7 @@ def build(root: Path) -> Graph:
         tasks[result.id] = Task(
             result=result,
             output_path=root / result.places[0].file_path,
+            records=tuple(root / place.record_path for place in result.places),
             inputs={
                 source.entry: root / made_at[source.result]
                 if source.result is not None

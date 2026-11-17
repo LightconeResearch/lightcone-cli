@@ -60,6 +60,7 @@ def _made(
             definition_version="sha256:def",
             env_version="sha256:env",
             data_version=f"sha256:{universe_id}-{output_id}",
+            size=len(f"{universe_id}/{output_id}\n"),
             decisions={"decisions.method": "alpha"},
             input_versions=inputs or {},
             git_sha=git_sha,
@@ -90,6 +91,7 @@ def _task(root: Path, universe: str, name: str, *sources: Source) -> Task:
     return Task(
         result,
         root / file_path,
+        (root / f".astra/records/{universe}/{name}.json",),
         {
             source.entry: root
             / (f"results/{universe}/{source.entry}.txt" if source.result else "data/catalog.csv")

@@ -6,9 +6,10 @@ An asset is a single file at the place ASTRA gives its result —
 for an output built once — with a manifest sidecar beside it,
 ``.<name>.manifest.json``. The place is ASTRA's, so the path is derived
 rather than chosen by the recipe, and one result can only ever be one
-file. The manifest is the only part lc writes itself, and it is kept out
-of the annex so it stays readable on a clone that has fetched no content
-at all.
+file. Beside the bytes lc writes ASTRA's record of the result, at
+``.astra/records/<universe>/<name>.json``, and its own manifest, which is
+what it decides from. Both are kept out of the annex, so they stay
+readable on a clone that has fetched no content at all.
 
 The rule that classifies an output — ``current``, ``behind`` or
 ``stale`` — lives here too, next to the manifest it reads and the hashes
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -36,6 +38,9 @@ if TYPE_CHECKING:
 
 MANIFEST_SUFFIX = ".manifest.json"
 SCHEMA_VERSION = 1
+
+#: The hash and size of a file's bytes, as a record gives them.
+Digest = tuple[str, int]
 
 #: The marker every annexed path carries, in both of the shapes an annexed
 #: file takes on disk — the pointer file's first bytes, and the locked
@@ -77,21 +82,22 @@ def manifest_path(output: Path) -> Path:
 # =============================================================================
 
 
-def data_version(path: Path) -> str:
+def digest(path: Path) -> Digest:
     """Hash a file's content — its bytes, and nothing else about it.
 
-    Unframed, so the digest is a plain sha256 an outsider reproduces with
-    ``sha256sum``, and the manifest agrees with what the crate publishes
-    for the same file. Never mtime or size: a content hash is what lets a
+    Unframed, so the hash is a plain sha256 an outsider reproduces with
+    ``sha256sum``, and the manifest, the record and the crate agree on it
+    for the same file. Never mtime: a content hash is what lets a
     byte-identical rebuild stop cascading, and what stops a file restored
-    with an old timestamp passing as unchanged.
+    with an old timestamp passing as unchanged. The size is the one a
+    record gives beside the hash, read from the very bytes hashed.
 
     Args:
         path: A file: an input, or a result, each of which ASTRA makes one
             file.
 
     Returns:
-        The digest, as ``sha256:<hex>``.
+        The hash, as ``sha256:<hex>``, and the size in bytes.
 
     Raises:
         FileNotFoundError: If *path* does not exist. Never a constant
@@ -105,20 +111,28 @@ def data_version(path: Path) -> str:
         raise FileNotFoundError(path)
     require_fetched(path)
     h = hashlib.sha256()
-    _feed(h, path)
-    return f"sha256:{h.hexdigest()}"
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+        return f"sha256:{h.hexdigest()}", os.fstat(f.fileno()).st_size
+
+
+def stamp(path: Path) -> tuple[int, int, int]:
+    """What changes when a file is written or replaced: its inode, its
+    size and its modification time."""
+    found = path.stat()
+    return found.st_ino, found.st_size, found.st_mtime_ns
 
 
 class Versions:
-    """Content identities, computed once per run.
+    """Content digests, computed once per run.
 
-    A declared input is hashed once per ``(universe, output)`` that names
-    it, which for a multiverse spec is the same bytes over and over: eight
-    universes times four outputs sharing one catalog reads it thirty-two
-    times. Memoizing is sound for exactly as long as a run lasts — a run
-    refuses to start on a dirty tree, and the only in-tree path a recipe
-    may write is its own output directory, so a declared input's bytes
-    cannot change underneath it.
+    A declared input is hashed once per result that reads it, which for a
+    multiverse spec is the same bytes over and over: eight universes times
+    four outputs sharing one catalog reads it thirty-two times. A digest
+    is kept with the stamp of the file it was computed from, and given
+    again only for that very file: one that was written or replaced since
+    is hashed again, so what a task records reading is what it read.
 
     The driver fills the memo before submitting tasks. Its populated dict
     travels with each task, so separate worker processes reuse the same hashes.
@@ -126,21 +140,25 @@ class Versions:
     """
 
     def __init__(self) -> None:
-        self._known: dict[Path, str] = {}
+        self._known: dict[Path, tuple[tuple[int, int, int], Digest]] = {}
 
-    def of(self, path: Path) -> str:
-        """Return *path*'s content identity, hashing it at most once.
+    def of(self, path: Path) -> Digest:
+        """Return *path*'s digest, hashing each version of it at most once.
 
         Args:
             path: A declared input.
 
         Returns:
-            The digest, as ``sha256:<hex>``.
+            The hash, as ``sha256:<hex>``, and the size.
         """
         resolved = path.resolve()
-        if (known := self._known.get(resolved)) is None:
-            known = self._known[resolved] = data_version(path)
-        return known
+        now = stamp(path) if path.exists() else None
+        known = self._known.get(resolved)
+        if known is None or known[0] != now:
+            found = digest(path)
+            assert now is not None  # `digest` raises for a path that is not there
+            known = self._known[resolved] = now, found
+        return known[1]
 
 
 def require_fetched(path: Path) -> None:
@@ -197,13 +215,6 @@ def is_pointer(path: Path) -> bool:
         return f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX
 
 
-def _feed(h: hashlib._Hash, path: Path) -> None:
-    """Stream *path* into *h* — outputs are not assumed to fit in memory."""
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-
-
 # =============================================================================
 # The manifest
 # =============================================================================
@@ -230,6 +241,9 @@ class Manifest:
     #: trigger — a difference here makes the output *behind*, not stale.
     env_version: str
     data_version: str
+    #: The size of the result's bytes, which a record of a result that
+    #: reads this one gives beside ``data_version``.
+    size: int
     decisions: dict[str, str]
     input_versions: dict[str, str]
     #: The commit the working tree was at when the run started. Recorded,

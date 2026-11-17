@@ -25,8 +25,9 @@ and a rebuild the caller can ask for. Over-sensitivity is affordable
 exactly because it no longer spends compute.
 
 What makes that safe is that nothing is lost: the environment an output
-was made under is recorded in its manifest, and the commit alongside it
-reconstructs that environment from the lock of the day.
+was made under is recorded in its manifest, and in its record as an IRI
+(:func:`environment`), and the commit alongside it reconstructs that
+environment from the lock of the day.
 
 The git commit is not an input to either hash. It is tree-wide, so
 hashing it would stale every output in the repository on a README edit.
@@ -107,6 +108,40 @@ def env_version(root: Path) -> str:
     _frame(h, "install-settings", _install_settings(root).encode())
     _frame(h, "image", (image.identity_document(root) or "null").encode())
     return f"sha256:{h.hexdigest()}"
+
+
+def files(root: Path) -> tuple[str, ...]:
+    """Name the files :func:`env_version` reads, from the project root.
+
+    A record names its environment by these files as its commit has them,
+    so they are what has to be in that commit for the environment to be
+    recreated from it.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The lock, the interpreter pin, ``pyproject.toml`` — which holds
+        the image declaration and, without a ``uv.toml``, uv's settings —
+        and the ``uv.toml`` that replaces them where there is one.
+    """
+    config = ("uv.toml",) if (root / "uv.toml").is_file() else ()
+    return ("uv.lock", ".python-version", "pyproject.toml", *config)
+
+
+def environment(version: str) -> str:
+    """Name an environment as a record does.
+
+    lc minted the name, so lc is who says what it holds: the files
+    :func:`files` names, in the commit the record gives.
+
+    Args:
+        version: The environment's :func:`env_version`.
+
+    Returns:
+        The IRI: *version* under lc's ``urn:`` prefix.
+    """
+    return f"urn:lightcone:env:{version}"
 
 
 def definition_version(*, recipe: str, decisions: Mapping[str, str], fmt: str) -> str:
