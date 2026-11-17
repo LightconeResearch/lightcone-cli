@@ -2,7 +2,10 @@
 
 A real project is materialized through the real driver, and the committed
 ``ro-crate-metadata.json`` is handed to the official ``rocrate-validator``
-against the deepest profile the crate claims. Gated exactly like the
+against the deepest profile the crate claims, at the version it claims:
+asked for a profile by name alone, the validator takes its newest
+version, which since Provenance Run Crate 0.6 sits on RO-Crate 1.3 and
+fails a 1.1 crate for its context. Gated exactly like the
 container smoke suite: hosts without the validator skip,
 ``LC_CRATE_TESTS_REQUIRED=1`` turns that skip into a hard failure, and
 two tests cover the guard itself — an unfailing guard is worse than none.
@@ -139,7 +142,7 @@ def test_a_materialized_crate_validates_against_the_provenance_profile(
             "from rocrate_validator.cli import cli; cli()",
             "validate",
             "-p",
-            "provenance-run-crate",
+            "provenance-run-crate-0.5",
             "-l",
             "recommended",
             "-f",

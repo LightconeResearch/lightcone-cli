@@ -18,6 +18,9 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
+import posixpath
+import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,6 +168,17 @@ def status(directory: Path) -> list[tuple[str, str]]:
     ``results/`` do, which is the point — inputs are committed before
     anything computes on them.
 
+    Untracked files count whatever ``status.showUntrackedFiles`` says:
+    set to ``no``, in the repository or in the user's own config, it
+    would hide a file a recipe reads but no commit holds. The setting is
+    passed on the command line, which is also what reaches the ``git
+    status`` git runs inside each submodule.
+
+    A submodule counts as changed whenever its commit, its files or its
+    untracked files differ, whatever ``.gitmodules`` asks git to ignore:
+    a recipe that reads from it would otherwise run on bytes the commit
+    does not name.
+
     Scoped to *directory* and reported relative to it, both deliberately.
     A project can sit inside a larger repository — ``lc init subdir/``
     adopts an enclosing work tree rather than nesting a new one — and
@@ -173,20 +187,35 @@ def status(directory: Path) -> list[tuple[str, str]]:
     and lc's own writes would arrive as ``subdir/results/…``, which no
     caller sorting by path class can recognise.
 
+    Read NUL-separated and with renames off, so each entry is one path as
+    it is on disk: git otherwise quotes a name holding a space or an
+    accent, and pairs a renamed file with where it came from.
+
     Args:
         directory: The project to inspect.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
-        *directory*, empty when clean. A wholly untracked project collapses
-        to ``.``, which is git's own summary of it and what the caller
-        would tell the user to add.
+        *directory*, empty when clean. An untracked folder is one entry
+        ending in ``/``, and a wholly untracked project collapses to
+        ``.``, which is git's own summary of it and what the caller would
+        tell the user to add.
     """
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
-    lines = _git(["status", "--porcelain", "--", "."], cwd=directory).splitlines()
-    return [
-        (line[:2], line[3:].removeprefix(prefix) or ".") for line in lines if line.strip()
-    ]
+    listed = _git(
+        [
+            "-c", "status.showUntrackedFiles=normal",
+            "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
+            "--", ".",
+        ],
+        cwd=directory,
+    )  # fmt: skip
+    changes = []
+    for entry in filter(None, listed.split("\0")):
+        path = posixpath.relpath(entry[3:], prefix or ".")
+        # An untracked folder keeps the slash that says it is one.
+        changes.append((entry[:2], f"{path}/" if entry.endswith("/") and path != "." else path))
+    return changes
 
 
 def require_committer(directory: Path) -> None:
@@ -356,6 +385,33 @@ def tracked_manifests(directory: Path) -> list[Path]:
     return [directory / name for name in listed.split("\0") if name]
 
 
+def require_free_index(directory: Path) -> None:
+    """Refuse a repository whose index lock does not go away.
+
+    A git command holds ``index.lock`` while it writes, and one that was
+    killed leaves it for good: every commit after that fails, which for a
+    run is every output, after its recipe has run. Asked before work that
+    ends in a commit, with the patience a live command deserves.
+
+    Args:
+        directory: The repository that is about to be committed to.
+
+    Raises:
+        ProjectError: If the lock is still there after :data:`_PATIENCE`
+            seconds.
+    """
+    lock = directory / _git(["rev-parse", "--git-path", "index.lock"], cwd=directory).strip()
+    deadline = time.monotonic() + _PATIENCE
+    while lock.exists():
+        if time.monotonic() > deadline:
+            raise project.ProjectError(
+                f"another git command holds the project's index ({lock}), so nothing "
+                "could be committed. Wait for it to end; if none is running, a git that "
+                "was killed left that file, and removing it is the remedy."
+            )
+        time.sleep(0.25)
+
+
 def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     """Commit *paths*.
 
@@ -392,6 +448,10 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     user staged while a graph was running would be swept, silently,
     into whichever save landed next. The end-of-run warning names such
     edits; this is what keeps lc's commits from eating them.
+
+    The project's tree is in use while a run saves into it, and git
+    refuses a second writer of the index rather than wait: every git
+    command here waits that out (:func:`_run`).
 
     Args:
         directory: The repository root.
@@ -447,6 +507,32 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
 # =============================================================================
 
 
+#: How long a git command waits for another to let go of the index. A
+#: plain ``git add`` of a file of a few gigabytes holds it for ten
+#: seconds and more while the annex filter hashes it (measured).
+_PATIENCE = 60.0
+
+
+def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run git, waiting out another git command's hold on the index.
+
+    git refuses a second writer of the index at once, and the project's
+    tree is one the researcher, their editor and a run all use. Past
+    :data:`_PATIENCE` seconds, git's own refusal is the answer: it names
+    the lock and how to remove it.
+    """
+    deadline = time.monotonic() + _PATIENCE
+    while True:
+        proc = project._run(["git", *argv], cwd=cwd)
+        if (
+            proc.returncode == 0
+            or "index.lock" not in (proc.stderr or "")
+            or time.monotonic() > deadline
+        ):
+            return proc
+        time.sleep(0.25)
+
+
 def _ask(argv: list[str], *, cwd: Path) -> str | None:
     """Run git where "cannot say" must be an answer, never an error.
 
@@ -458,7 +544,7 @@ def _ask(argv: list[str], *, cwd: Path) -> str | None:
         git's stdout, or ``None`` when git cannot answer.
     """
     try:
-        proc = project._run(["git", *argv], cwd=cwd)
+        proc = _run(argv, cwd=cwd)
     except OSError:
         return None
     if proc.returncode != 0:
@@ -468,7 +554,7 @@ def _ask(argv: list[str], *, cwd: Path) -> str | None:
 
 def _git(argv: list[str], *, cwd: Path) -> str:
     """Run git in *cwd*, returning its stdout; a nonzero exit raises."""
-    proc = project._run(["git", *argv], cwd=cwd)
+    proc = _run(argv, cwd=cwd)
     if proc.returncode != 0:
         raise project.ProjectError(f"`git {' '.join(argv)}` failed:\n{proc.stderr.strip()}")
     return str(proc.stdout or "")
@@ -476,7 +562,7 @@ def _git(argv: list[str], *, cwd: Path) -> str:
 
 def _git_ok(argv: list[str], *, cwd: Path) -> bool:
     """Run git as a yes/no probe: exit status is the answer, not a failure."""
-    return bool(project._run(["git", *argv], cwd=cwd).returncode == 0)
+    return bool(_run(argv, cwd=cwd).returncode == 0)
 
 
 def _rel(directory: Path, path: Path | str) -> str:

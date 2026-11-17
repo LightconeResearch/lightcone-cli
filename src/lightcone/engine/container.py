@@ -60,9 +60,14 @@ class Runtime:
     #: ``podman``, ``podman-hpc`` or ``docker``; empty in direct mode.
     runtime: str = ""
     image_tag: str = ""
-    #: The image id (bare hex of its config blob) — execution pins on
-    #: this, never the tag, so a retagged image cannot substitute.
+    #: The image id (bare hex of its config blob): what the archive is,
+    #: whichever runtime runs it.
     image_id: str = ""
+    #: The id the runtime's local store gives the image (bare hex) —
+    #: execution pins on this, never the tag, so a retagged image cannot
+    #: substitute. The image id itself under podman and Docker's classic
+    #: store; a manifest's digest under Docker's containerd store.
+    store_id: str = ""
     #: The architecture the archive was built for.
     arch: str = ""
 
@@ -137,10 +142,26 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
             )
         _build(root, name, tag, archive)
     _fetch(root, archive)
-    image_id, arch = archive_identity(archive)
+    image_id, arch, manifests, archive_tag = archive_identity(archive)
     _require_arch(root, archive, arch)  # before the load — see its docstring
-    if not _loaded(root, name, image_id):
+    # podman and Docker's classic store know an image by its id. Docker's
+    # containerd store, a fresh Docker 29's default, knows it by its
+    # manifest's digest (measured): the one the archive's index names
+    # where `docker save` wrote one, or, for an archive with none — what
+    # podman saves — one Docker writes itself as it loads. That one is in
+    # no file, so it is read off the tag the archive carries just after
+    # the load — the image the tag then names is the one the load made —
+    # and such an archive is loaded again by every run. The tag is the
+    # archive's own, not this host's spelling of it: podman writes
+    # `localhost/<tag>:latest`, which a bare name does not reach.
+    known = [image_id, *manifests]
+    store_id = _stored(root, name, known)
+    if not store_id:
         _check_call([name, "load", "-i", str(archive)], cwd=root)
+        if name in _PODMAN_FAMILY:
+            store_id = image_id
+        else:
+            store_id = _stored(root, name, known) or _tagged(root, name, archive_tag)
     if name == "podman-hpc":
         # Compute nodes run only migrated images — the squashed copy on
         # the shared filesystem — never the login node's overlay store.
@@ -148,7 +169,7 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
         # image is already in the store and the load never runs.
         # Unconditional: nothing here can ask whether the squashed copy
         # already exists, so re-migrate cost is podman-hpc's to bound.
-        _check_call([name, "migrate", image_id], cwd=root)
+        _check_call([name, "migrate", store_id], cwd=root)
     return Runtime(
         root=root,
         mode="containerized",
@@ -156,6 +177,7 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
         runtime=name,
         image_tag=tag,
         image_id=image_id,
+        store_id=store_id,
         arch=arch,
     )
 
@@ -266,7 +288,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     pull = ("--pull=never",) if runtime.runtime in _PODMAN_FAMILY else ()
     return OCIBackend(
         runtime=cast(OCIRuntime, runtime.runtime),
-        image_id=runtime.image_id,
+        image_id=runtime.store_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),
     )
@@ -307,6 +329,7 @@ def build(root: Path) -> tuple[Runtime, str]:
             "committed into the repository, so `lc build` needs the tree to say "
             "what it is building from. Commit first, then re-run `lc build`."
         )
+    dataset.require_free_index(root)
     existed = image_state(root)[0] != "absent"
     return runtime_for_run(root, build=True), ("present" if existed else "built")
 
@@ -393,7 +416,7 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         "--env", f"UV_CACHE_DIR={cache}",
         "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
         "-w", str(root),
-        runtime.image_id,
+        runtime.store_id,
         # The same sync `project.sync` runs, spelled once for both modes.
         "uv", *project._SYNC_ARGS, "--project", str(root),
     ]  # fmt: skip
@@ -454,18 +477,24 @@ def policy_for(
     )
 
 
-def archive_identity(path: Path) -> tuple[str, str]:
-    """Read an archive's image id and architecture, with no runtime.
+def archive_identity(path: Path) -> tuple[str, str, list[str], str]:
+    """Read an archive's image id, architecture, manifests and tag, with no runtime.
 
     The id is the sha256 of the image's config blob — the same value
     ``podman inspect`` reports and the same computation datalad's docker
-    adapter makes — so execution can pin by id before anything is loaded.
+    adapter makes — so the image is named before anything is loaded,
+    whatever runtime then runs it. The manifests are those of the OCI
+    index ``docker save`` writes beside the docker-archive's own listing,
+    by which Docker's containerd store knows the image; an archive podman
+    saved has no index, so names none. The tag is the one a load gives the
+    image, as the archive spells it.
 
     Args:
         path: A ``docker-archive`` file with its content present.
 
     Returns:
-        ``(bare hex id, architecture)``.
+        ``(bare hex id, architecture, bare hex digest of each manifest,
+        tag)``; the tag is empty for an archive saved without one.
 
     Raises:
         ProjectError: If the file is not a readable docker-archive.
@@ -474,10 +503,17 @@ def archive_identity(path: Path) -> tuple[str, str]:
         with tarfile.open(path) as tar:
             listing = tar.extractfile("manifest.json")
             assert listing is not None  # a member, not a directory
-            config_name = json.load(listing)[0]["Config"]
+            listed = json.load(listing)[0]
+            config_name = listed["Config"]
+            archive_tag = next(iter(listed.get("RepoTags") or []), "")
             blob = tar.extractfile(config_name)
             assert blob is not None
             config = blob.read()
+            index = tar.extractfile("index.json") if "index.json" in tar.getnames() else None
+            manifests = [
+                str(entry["digest"]).removeprefix("sha256:")
+                for entry in (json.load(index)["manifests"] if index else [])
+            ]
     except (OSError, KeyError, IndexError, json.JSONDecodeError, tarfile.TarError) as e:
         raise ProjectError(
             f"{path} is not a readable image archive ({e}) — it was committed by "
@@ -486,6 +522,8 @@ def archive_identity(path: Path) -> tuple[str, str]:
     return (
         hashlib.sha256(config).hexdigest(),
         str(json.loads(config).get("architecture", "")),
+        manifests,
+        archive_tag,
     )
 
 
@@ -654,10 +692,27 @@ def _build_failure(tag: str, stderr: str) -> str:
 # =============================================================================
 
 
-def _loaded(root: Path, runtime: str, image_id: str) -> bool:
-    """Whether the runtime's local store already holds *image_id*."""
-    probe = ["image", "exists" if runtime in _PODMAN_FAMILY else "inspect", image_id]
-    return project._run([runtime, *probe], cwd=root).returncode == 0
+def _stored(root: Path, runtime: str, ids: list[str]) -> str:
+    """The first of *ids* the runtime's local store holds an image under;
+    empty for none."""
+    probe = ["image", "exists" if runtime in _PODMAN_FAMILY else "inspect"]
+    return next(
+        (each for each in ids if project._run([runtime, *probe, each], cwd=root).returncode == 0),
+        "",
+    )
+
+
+def _tagged(root: Path, runtime: str, tag: str) -> str:
+    """The id of the image *tag* names in the runtime's local store.
+
+    Raises:
+        ProjectError: If the store has no image under *tag*.
+    """
+    argv = [runtime, "image", "inspect", "--format", "{{.Id}}", tag]
+    proc = project._run(argv, cwd=root)
+    if proc.returncode != 0:
+        raise ProjectError(f"`{' '.join(argv)}` failed:\n{proc.stderr.strip()}")
+    return str(proc.stdout).strip().removeprefix("sha256:")
 
 
 def _machine_preflight(root: Path) -> None:

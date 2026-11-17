@@ -512,6 +512,7 @@ def materialize(
     report = MaterializeReport()
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
+    dataset.require_free_index(root)
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
     # commits the whole index — on a dirty tree the user's staged edits

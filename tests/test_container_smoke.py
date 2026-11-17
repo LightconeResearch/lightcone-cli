@@ -114,11 +114,8 @@ def cproject(analysis: Callable[..., Path]) -> Path:
     return root
 
 
-def _inspect_id(runtime: str, image_id: str) -> str:
-    argv = {
-        "podman": ["podman", "image", "inspect", "--format", "{{.Id}}", image_id],
-        "docker": ["docker", "image", "inspect", "--format", "{{.Id}}", image_id],
-    }[runtime]
+def _inspect_id(runtime: str, reference: str) -> str:
+    argv = [runtime, "image", "inspect", "--format", "{{.Id}}", reference]
     out = subprocess.run(argv, capture_output=True, text=True, check=True).stdout.strip()
     return out.removeprefix("sha256:")
 
@@ -138,8 +135,10 @@ def test_build_commits_the_exact_bytes_and_leaves_the_tree_clean(
     # The user never sees a Containerfile — not in the tree, not beside
     # the archive.
     assert not list(cproject.rglob("Containerfile"))
-    # The id read from the archive is the id the runtime computed.
-    assert resolved.image_id == _inspect_id(runtime, resolved.image_id)
+    # Execution pins the id the runtime's own store gives the image the
+    # build made — the image id, or under Docker's containerd store its
+    # manifest's digest.
+    assert resolved.store_id == _inspect_id(runtime, resolved.image_tag)
     # And the image carries its own identity.
     label = subprocess.run(
         [
@@ -148,7 +147,7 @@ def test_build_commits_the_exact_bytes_and_leaves_the_tree_clean(
             "inspect",
             "--format",
             '{{index .Config.Labels "io.lightcone.image"}}',
-            resolved.image_id,
+            resolved.store_id,
         ],  # fmt: skip
         capture_output=True,
         text=True,
@@ -231,7 +230,11 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     assert manifest.hermeticity["network"] == "allowed"
     assert manifest.hermeticity["fs"] == "declared"
     assert manifest.image is not None
-    assert manifest.image["id"] == _inspect_id(runtime, manifest.image["id"])
+    # The manifest names the committed archive's image, whatever its runtime
+    # calls it.
+    assert manifest.image["id"] == container.archive_identity(
+        cproject / manifest.image["archive"]
+    )[0]
     assert manifest.image["archive"] == f".datalad/environments/{manifest.image['tag']}/image"
 
     # The record lists the archive, so a rerun's `datalad get` fetches

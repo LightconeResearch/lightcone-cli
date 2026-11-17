@@ -9,9 +9,11 @@ restating what the code already believes.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -434,6 +436,137 @@ def test_status_is_scoped_to_the_project_inside_a_larger_repository(
     # Relative to the project, not to the repository — a caller sorting by
     # path class cannot recognise `project/results/`.
     assert dataset.status(project_root) == [("??", "results/")]
+
+
+def test_status_names_each_path_as_it_is_on_disk(repo: Path) -> None:
+    """git quotes a name holding a space or an accent unless asked for
+    NUL-separated output, and no comparison with a real path then holds."""
+    (repo / "étape une").mkdir()
+    (repo / "étape une" / "a b.txt").write_text("1\n")
+    dataset.save(repo, [repo], "a folder with a space and an accent")
+    (repo / "étape une" / "a b.txt").write_text("2\n")
+    (repo / "étape une" / "c d.txt").write_text("new\n")
+
+    assert sorted(dataset.status(repo)) == [
+        (" M", "étape une/a b.txt"),
+        ("??", "étape une/c d.txt"),
+    ]
+
+
+def test_a_rename_is_a_deletion_and_an_addition(repo: Path) -> None:
+    """Paired, the entry would name two paths in one, and a caller sorting
+    by path class would see neither."""
+    (repo / "old.txt").write_text("1\n")
+    dataset.save(repo, [repo], "a file")
+    dataset._git(["mv", "old.txt", "new.txt"], cwd=repo)
+
+    assert sorted(dataset.status(repo)) == [("A ", "new.txt"), ("D ", "old.txt")]
+
+
+@pytest.fixture
+def with_submodule(repo: Path, tmp_path: Path) -> Path:
+    """*repo* with a committed submodule at `sub`, whose `.gitmodules`
+    asks git to ignore it entirely."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    dataset.init_git(upstream)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=upstream)
+    (upstream / "code.py").write_text("print('hi')\n")
+    dataset._git(["add", "code.py"], cwd=upstream)
+    dataset._git(["commit", "-q", "-m", "code"], cwd=upstream)
+    dataset._git(
+        ["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(upstream), "sub"],
+        cwd=repo,
+    )
+    dataset._git(["config", "-f", ".gitmodules", "submodule.sub.ignore", "all"], cwd=repo)
+    dataset._git(["add", ".gitmodules", "sub"], cwd=repo)
+    dataset._git(["commit", "-q", "-m", "a submodule"], cwd=repo)
+    assert not dataset.status(repo)
+    return repo
+
+
+def test_a_submodule_with_an_untracked_file_is_a_change(with_submodule: Path) -> None:
+    """A recipe that reads from it would run on bytes the commit does not
+    name — whatever `.gitmodules` asks git to ignore."""
+    (with_submodule / "sub" / "stray.py").write_text("print('stray')\n")
+
+    assert dataset.status(with_submodule) == [(" M", "sub")]
+
+
+def test_a_submodule_at_another_commit_is_a_change(with_submodule: Path) -> None:
+    sub = with_submodule / "sub"
+    (sub / "code.py").write_text("print('moved')\n")
+    dataset._git(
+        ["-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-qam", "move"],
+        cwd=sub,
+    )
+
+    assert dataset.status(with_submodule) == [(" M", "sub")]
+
+
+def test_untracked_files_count_whatever_the_repository_config_says(repo: Path) -> None:
+    """`status.showUntrackedFiles=no` would hide a file a recipe reads but
+    no commit holds."""
+    dataset._git(["config", "status.showUntrackedFiles", "no"], cwd=repo)
+    (repo / "fit.py").write_text("print('hi')\n")
+
+    assert dataset.status(repo) == [("??", "fit.py")]
+
+
+def test_untracked_files_count_whatever_the_users_config_says(
+    with_submodule: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Set in the user's own config, the setting reaches the `git status`
+    git runs inside a submodule, where no flag of the outer command does."""
+    config = tmp_path / "gitconfig"
+    config.write_text("[status]\n\tshowUntrackedFiles = no\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    (with_submodule / "fit.py").write_text("print('hi')\n")
+    (with_submodule / "sub" / "stray.py").write_text("print('stray')\n")
+
+    assert sorted(dataset.status(with_submodule)) == [(" M", "sub"), ("??", "fit.py")]
+
+
+# ---- another git holding the index ----------------------------------------
+
+
+def _hold_index(repo: Path, seconds: float) -> threading.Thread:
+    """Take the index lock as another git command would, and let it go
+    after *seconds*."""
+    lock = repo / ".git" / "index.lock"
+    lock.write_text("")
+    release = threading.Timer(seconds, lock.unlink)
+    release.start()
+    return release
+
+
+def test_a_save_waits_out_another_gits_hold_on_the_index(repo: Path) -> None:
+    """A plain `git add` of a large file holds the index for as long as
+    hashing it takes, and git refuses a second writer at once."""
+    (repo / "results" / "fit.csv").write_text("1\n")
+    _hold_index(repo, 1.0)
+
+    assert dataset.save(repo, [repo / "results"], "a result")
+    assert not dataset.status(repo)
+
+
+def test_an_index_lock_that_goes_away_is_not_held(repo: Path) -> None:
+    _hold_index(repo, 0.5)
+
+    dataset.require_free_index(repo)
+
+
+def test_an_index_lock_that_stays_is_named(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A git that was killed leaves the lock for good: past the patience
+    a live command deserves, it is the answer."""
+    monkeypatch.setattr(dataset, "_PATIENCE", 0.5)
+    (repo / ".git" / "index.lock").write_text("")
+
+    with pytest.raises(project.ProjectError, match=re.escape(str(repo / ".git" / "index.lock"))):
+        dataset.require_free_index(repo)
 
 
 def test_a_project_that_has_never_been_committed_reads_as_itself(

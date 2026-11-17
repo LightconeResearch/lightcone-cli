@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lightcone.engine import container, image, project
+from lightcone.engine import container, dataset, image, project
 from lightcone.engine.project import ProjectError
 
 _TABLE = '[tool.lightcone.image]\napt-install = ["bc"]\n'
@@ -36,14 +36,20 @@ def root(tmp_path: Path) -> Path:
     return project_dir
 
 
-def _write_archive(path: Path, config: bytes = _CONFIG) -> str:
-    """Write a minimal but structurally real docker-archive at *path*."""
+def _write_archive(
+    path: Path, config: bytes = _CONFIG, *, manifest: str = "", tag: str = ""
+) -> str:
+    """Write a minimal but structurally real docker-archive at *path* —
+    with the OCI index `docker save` writes beside it, naming *manifest*,
+    when one is given, and carrying *tag* when one is given."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    listing = [{"Config": "abc.json", "RepoTags": [tag] if tag else []}]
+    members = [("abc.json", config), ("manifest.json", json.dumps(listing).encode())]
+    if manifest:
+        index = {"manifests": [{"digest": f"sha256:{manifest}"}]}
+        members.append(("index.json", json.dumps(index).encode()))
     with tarfile.open(path, "w") as tar:
-        for name, data in (
-            ("abc.json", config),
-            ("manifest.json", json.dumps([{"Config": "abc.json", "RepoTags": []}]).encode()),
-        ):
+        for name, data in members:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -78,6 +84,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if argv[:2] == ["uv", "cache"]:
             return MagicMock(returncode=0, stdout="/home/user/.cache/uv\n", stderr="")
+        if argv[:3] == ["git", "rev-parse", "--git-path"]:
+            return MagicMock(returncode=0, stdout=f".git/{argv[3]}\n", stderr="")
         if argv[:3] == ["git", "diff", "--cached"]:
             return MagicMock(returncode=1)  # something staged: commits proceed
         if argv[:2] == ["git", "check-attr"]:
@@ -253,9 +261,78 @@ def test_a_present_archive_is_loaded_once_and_reused(
     second = container.runtime_for_run(root, build=False)
 
     assert first.image_id == expected and second.image_id == expected
+    assert first.store_id == expected  # podman knows an image by its id
     assert first.arch == "amd64"
     assert first.archive == f".datalad/environments/{image.tag(root)}/image"
     assert len(_argvs(fake, "podman", "load")) == 1  # the second run hit the store
+
+
+@pytest.fixture
+def containerd(
+    fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> list[list[str]]:
+    """A Docker host whose image store is containerd's, a fresh Docker 29's
+    default: it knows an image by its manifest's digest, never by the id
+    of its config blob. Loading an archive with an OCI index keeps the
+    manifests it names; loading one without (podman's) makes a manifest of
+    its own, under the tag the archive carries."""
+    calls = fake
+    stored: set[str] = set()
+    tags: dict[str, str] = {}
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[0] != "docker" or argv[1] not in ("image", "load"):
+            return inner(argv, cwd=cwd)
+        calls.append(list(argv))
+        if argv[1] == "load":
+            _, _, manifests, carried = container.archive_identity(Path(argv[3]))
+            stored.update(manifests or ["e" * 64])
+            tags[carried] = (manifests or ["e" * 64])[0]
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if argv[2] == "inspect" and "--format" in argv:
+            known = tags.get(argv[-1])
+            return MagicMock(
+                returncode=0 if known else 1, stdout=f"sha256:{known}\n", stderr="no such image"
+            )
+        return MagicMock(returncode=0 if argv[3] in stored else 1)
+
+    monkeypatch.setattr(project, "_run", run)
+    monkeypatch.setattr(
+        shutil, "which", lambda name, path=None: f"/usr/bin/{name}" if name == "docker" else None
+    )
+    return calls
+
+
+def test_a_containerd_store_runs_the_manifest_the_archive_indexes(
+    root: Path, containerd: list[list[str]]
+) -> None:
+    """The archive `docker save` wrote names its manifest, so the store is
+    asked for it before any load, and a second run loads nothing."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)), manifest="f" * 64)
+
+    first = container.runtime_for_run(root, build=False)
+    second = container.runtime_for_run(root, build=False)
+
+    assert first.image_id == expected  # what the archive is, whatever runs it
+    assert first.store_id == second.store_id == "f" * 64
+    assert len(_argvs(containerd, "docker", "load")) == 1
+
+
+def test_a_containerd_store_runs_what_it_made_of_an_archive_without_an_index(
+    root: Path, containerd: list[list[str]]
+) -> None:
+    """podman saves no index, so the manifest Docker runs is the one it
+    wrote as it loaded the archive, read off the tag the archive carries —
+    podman's spelling of it, which the bare tag does not reach."""
+    tag = image.tag(root)
+    expected = _write_archive(image.archive_path(root, tag), tag=f"localhost/{tag}:latest")
+
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.image_id == expected
+    assert runtime.store_id == "e" * 64
+    assert container.backend(runtime).image_id == "e" * 64  # what `docker run` is given
 
 
 # ---- building ---------------------------------------------------------------
@@ -402,6 +479,20 @@ def test_lc_build_refuses_a_dirty_tree(
         container.build(root)
 
 
+def test_lc_build_refuses_an_index_lock_that_stays_before_building(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The build ends in a commit, which a lock a killed git left behind
+    would fail after the build had taken its minutes."""
+    monkeypatch.setattr(dataset, "_PATIENCE", 0.1)
+    (root / ".git").mkdir(exist_ok=True)
+    (root / ".git" / "index.lock").write_text("")
+
+    with pytest.raises(ProjectError, match="holds the project's index"):
+        container.build(root)
+    assert not _argvs(fake, "podman", "build")
+
+
 def test_lc_build_is_idempotent(root: Path, fake: list[list[str]]) -> None:
     _, first = container.build(root)
     _, second = container.build(root)
@@ -532,9 +623,25 @@ def test_archive_identity_matches_the_runtime_id_computation(tmp_path: Path) -> 
     the value the smoke test compares against a real `podman inspect`."""
     config = b'{"architecture":"arm64"}'
     expected = _write_archive(tmp_path / "image", config)
-    found, arch = container.archive_identity(tmp_path / "image")
+    found, arch, manifests, tag = container.archive_identity(tmp_path / "image")
     assert found == expected
     assert arch == "arm64"
+    assert manifests == []  # podman saves no index
+    assert tag == ""
+
+
+def test_archive_identity_reads_the_tag_the_archive_carries(tmp_path: Path) -> None:
+    _write_archive(tmp_path / "image", tag="localhost/lc-env-0123456789abcdef:latest")
+    assert container.archive_identity(tmp_path / "image")[3] == (
+        "localhost/lc-env-0123456789abcdef:latest"
+    )
+
+
+def test_archive_identity_reads_the_manifests_of_the_index_docker_saves(
+    tmp_path: Path,
+) -> None:
+    _write_archive(tmp_path / "image", manifest="f" * 64)
+    assert container.archive_identity(tmp_path / "image")[2] == ["f" * 64]
 
 
 def test_a_garbled_archive_is_a_pointed_refusal(tmp_path: Path) -> None:
@@ -559,6 +666,7 @@ def test_podman_hpc_loads_then_migrates(root: Path, hpc: list[list[str]]) -> Non
     runtime = container.runtime_for_run(root, build=False)
 
     assert runtime.runtime == "podman-hpc"
+    # Asked once, before the load: podman knows what it loaded by its id.
     assert _argvs(hpc, "podman-hpc", "image") == [["podman-hpc", "image", "exists", expected]]
     assert len(_argvs(hpc, "podman-hpc", "load")) == 1
     assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", expected]]
