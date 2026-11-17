@@ -9,6 +9,7 @@ restating what the code already believes.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -553,7 +554,7 @@ def test_a_save_waits_out_another_gits_hold_on_the_index(repo: Path) -> None:
 def test_an_index_lock_that_goes_away_is_not_held(repo: Path) -> None:
     _hold_index(repo, 0.5)
 
-    assert dataset.index_held(repo) == ""
+    dataset.require_free_index(repo)
 
 
 def test_an_index_lock_that_stays_is_named(
@@ -564,7 +565,8 @@ def test_an_index_lock_that_stays_is_named(
     monkeypatch.setattr(dataset, "_PATIENCE", 0.5)
     (repo / ".git" / "index.lock").write_text("")
 
-    assert dataset.index_held(repo) == str(repo / ".git" / "index.lock")
+    with pytest.raises(project.ProjectError, match=re.escape(str(repo / ".git" / "index.lock"))):
+        dataset.require_free_index(repo)
 
 
 def test_a_project_that_has_never_been_committed_reads_as_itself(

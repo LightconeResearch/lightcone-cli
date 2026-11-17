@@ -512,12 +512,7 @@ def materialize(
     report = MaterializeReport()
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
-    if held := dataset.index_held(root):
-        raise ProjectError(
-            f"another git command holds the project's index ({held}), so no output "
-            "could be committed. Wait for it to end; if none is running, a git that "
-            "was killed left that file, and removing it is the remedy."
-        )
+    dataset.require_free_index(root)
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
     # commits the whole index — on a dirty tree the user's staged edits

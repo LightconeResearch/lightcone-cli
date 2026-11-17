@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lightcone.engine import container, image, project
+from lightcone.engine import container, dataset, image, project
 from lightcone.engine.project import ProjectError
 
 _TABLE = '[tool.lightcone.image]\napt-install = ["bc"]\n'
@@ -36,15 +36,15 @@ def root(tmp_path: Path) -> Path:
     return project_dir
 
 
-def _write_archive(path: Path, config: bytes = _CONFIG, *, manifest: str = "") -> str:
+def _write_archive(
+    path: Path, config: bytes = _CONFIG, *, manifest: str = "", tag: str = ""
+) -> str:
     """Write a minimal but structurally real docker-archive at *path* —
     with the OCI index `docker save` writes beside it, naming *manifest*,
-    when one is given."""
+    when one is given, and carrying *tag* when one is given."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    members = [
-        ("abc.json", config),
-        ("manifest.json", json.dumps([{"Config": "abc.json", "RepoTags": []}]).encode()),
-    ]
+    listing = [{"Config": "abc.json", "RepoTags": [tag] if tag else []}]
+    members = [("abc.json", config), ("manifest.json", json.dumps(listing).encode())]
     if manifest:
         index = {"manifests": [{"digest": f"sha256:{manifest}"}]}
         members.append(("index.json", json.dumps(index).encode()))
@@ -84,6 +84,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if argv[:2] == ["uv", "cache"]:
             return MagicMock(returncode=0, stdout="/home/user/.cache/uv\n", stderr="")
+        if argv[:3] == ["git", "rev-parse", "--git-path"]:
+            return MagicMock(returncode=0, stdout=f".git/{argv[3]}\n", stderr="")
         if argv[:3] == ["git", "diff", "--cached"]:
             return MagicMock(returncode=1)  # something staged: commits proceed
         if argv[:2] == ["git", "check-attr"]:
@@ -273,7 +275,7 @@ def containerd(
     default: it knows an image by its manifest's digest, never by the id
     of its config blob. Loading an archive with an OCI index keeps the
     manifests it names; loading one without (podman's) makes a manifest of
-    its own, under the archive's tag."""
+    its own, under the tag the archive carries."""
     calls = fake
     stored: set[str] = set()
     tags: dict[str, str] = {}
@@ -284,9 +286,9 @@ def containerd(
             return inner(argv, cwd=cwd)
         calls.append(list(argv))
         if argv[1] == "load":
-            manifests = container.archive_identity(Path(argv[3]))[2]
+            _, _, manifests, carried = container.archive_identity(Path(argv[3]))
             stored.update(manifests or ["e" * 64])
-            tags[image.tag(cwd)] = (manifests or ["e" * 64])[0]
+            tags[carried] = (manifests or ["e" * 64])[0]
             return MagicMock(returncode=0, stdout="", stderr="")
         if argv[2] == "inspect" and "--format" in argv:
             known = tags.get(argv[-1])
@@ -321,8 +323,10 @@ def test_a_containerd_store_runs_what_it_made_of_an_archive_without_an_index(
     root: Path, containerd: list[list[str]]
 ) -> None:
     """podman saves no index, so the manifest Docker runs is the one it
-    wrote as it loaded the archive, read off the archive's tag."""
-    expected = _write_archive(image.archive_path(root, image.tag(root)))
+    wrote as it loaded the archive, read off the tag the archive carries —
+    podman's spelling of it, which the bare tag does not reach."""
+    tag = image.tag(root)
+    expected = _write_archive(image.archive_path(root, tag), tag=f"localhost/{tag}:latest")
 
     runtime = container.runtime_for_run(root, build=False)
 
@@ -475,6 +479,20 @@ def test_lc_build_refuses_a_dirty_tree(
         container.build(root)
 
 
+def test_lc_build_refuses_an_index_lock_that_stays_before_building(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The build ends in a commit, which a lock a killed git left behind
+    would fail after the build had taken its minutes."""
+    monkeypatch.setattr(dataset, "_PATIENCE", 0.1)
+    (root / ".git").mkdir(exist_ok=True)
+    (root / ".git" / "index.lock").write_text("")
+
+    with pytest.raises(ProjectError, match="holds the project's index"):
+        container.build(root)
+    assert not _argvs(fake, "podman", "build")
+
+
 def test_lc_build_is_idempotent(root: Path, fake: list[list[str]]) -> None:
     _, first = container.build(root)
     _, second = container.build(root)
@@ -605,10 +623,18 @@ def test_archive_identity_matches_the_runtime_id_computation(tmp_path: Path) -> 
     the value the smoke test compares against a real `podman inspect`."""
     config = b'{"architecture":"arm64"}'
     expected = _write_archive(tmp_path / "image", config)
-    found, arch, manifests = container.archive_identity(tmp_path / "image")
+    found, arch, manifests, tag = container.archive_identity(tmp_path / "image")
     assert found == expected
     assert arch == "arm64"
     assert manifests == []  # podman saves no index
+    assert tag == ""
+
+
+def test_archive_identity_reads_the_tag_the_archive_carries(tmp_path: Path) -> None:
+    _write_archive(tmp_path / "image", tag="localhost/lc-env-0123456789abcdef:latest")
+    assert container.archive_identity(tmp_path / "image")[3] == (
+        "localhost/lc-env-0123456789abcdef:latest"
+    )
 
 
 def test_archive_identity_reads_the_manifests_of_the_index_docker_saves(
@@ -640,8 +666,8 @@ def test_podman_hpc_loads_then_migrates(root: Path, hpc: list[list[str]]) -> Non
     runtime = container.runtime_for_run(root, build=False)
 
     assert runtime.runtime == "podman-hpc"
-    # Asked before the load, and again after it for the id the store holds.
-    assert _argvs(hpc, "podman-hpc", "image") == [["podman-hpc", "image", "exists", expected]] * 2
+    # Asked once, before the load: podman knows what it loaded by its id.
+    assert _argvs(hpc, "podman-hpc", "image") == [["podman-hpc", "image", "exists", expected]]
     assert len(_argvs(hpc, "podman-hpc", "load")) == 1
     assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", expected]]
 

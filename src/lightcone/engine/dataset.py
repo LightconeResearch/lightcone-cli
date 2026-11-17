@@ -385,28 +385,31 @@ def tracked_manifests(directory: Path) -> list[Path]:
     return [directory / name for name in listed.split("\0") if name]
 
 
-def index_held(directory: Path) -> str:
-    """Find an index lock that does not go away.
+def require_free_index(directory: Path) -> None:
+    """Refuse a repository whose index lock does not go away.
 
     A git command holds ``index.lock`` while it writes, and one that was
     killed leaves it for good: every commit after that fails, which for a
-    run is every output, after its recipe has run. Asked before a run,
-    with the patience a live command deserves.
+    run is every output, after its recipe has run. Asked before work that
+    ends in a commit, with the patience a live command deserves.
 
     Args:
-        directory: The repository to ask in.
+        directory: The repository that is about to be committed to.
 
-    Returns:
-        The lock's path while it is still there after :data:`_PATIENCE`
-        seconds; empty once it is gone.
+    Raises:
+        ProjectError: If the lock is still there after :data:`_PATIENCE`
+            seconds.
     """
     lock = directory / _git(["rev-parse", "--git-path", "index.lock"], cwd=directory).strip()
     deadline = time.monotonic() + _PATIENCE
     while lock.exists():
         if time.monotonic() > deadline:
-            return str(lock)
+            raise project.ProjectError(
+                f"another git command holds the project's index ({lock}), so nothing "
+                "could be committed. Wait for it to end; if none is running, a git that "
+                "was killed left that file, and removing it is the remedy."
+            )
         time.sleep(0.25)
-    return ""
 
 
 def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:

@@ -142,21 +142,26 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
             )
         _build(root, name, tag, archive)
     _fetch(root, archive)
-    image_id, arch, manifests = archive_identity(archive)
+    image_id, arch, manifests, archive_tag = archive_identity(archive)
     _require_arch(root, archive, arch)  # before the load — see its docstring
     # podman and Docker's classic store know an image by its id. Docker's
     # containerd store, a fresh Docker 29's default, knows it by its
     # manifest's digest (measured): the one the archive's index names
     # where `docker save` wrote one, or, for an archive with none — what
     # podman saves — one Docker writes itself as it loads. That one is in
-    # no file, so it is read off the archive's tag just after the load —
-    # the image the tag then names is the one the load made — and such an
-    # archive is loaded again by every run.
+    # no file, so it is read off the tag the archive carries just after
+    # the load — the image the tag then names is the one the load made —
+    # and such an archive is loaded again by every run. The tag is the
+    # archive's own, not this host's spelling of it: podman writes
+    # `localhost/<tag>:latest`, which a bare name does not reach.
     known = [image_id, *manifests]
     store_id = _stored(root, name, known)
     if not store_id:
         _check_call([name, "load", "-i", str(archive)], cwd=root)
-        store_id = _stored(root, name, known) or _tagged(root, name, tag)
+        if name in _PODMAN_FAMILY:
+            store_id = image_id
+        else:
+            store_id = _stored(root, name, known) or _tagged(root, name, archive_tag)
     if name == "podman-hpc":
         # Compute nodes run only migrated images — the squashed copy on
         # the shared filesystem — never the login node's overlay store.
@@ -324,6 +329,7 @@ def build(root: Path) -> tuple[Runtime, str]:
             "committed into the repository, so `lc build` needs the tree to say "
             "what it is building from. Commit first, then re-run `lc build`."
         )
+    dataset.require_free_index(root)
     existed = image_state(root)[0] != "absent"
     return runtime_for_run(root, build=True), ("present" if existed else "built")
 
@@ -471,8 +477,8 @@ def policy_for(
     )
 
 
-def archive_identity(path: Path) -> tuple[str, str, list[str]]:
-    """Read an archive's image id, architecture and manifests, with no runtime.
+def archive_identity(path: Path) -> tuple[str, str, list[str], str]:
+    """Read an archive's image id, architecture, manifests and tag, with no runtime.
 
     The id is the sha256 of the image's config blob — the same value
     ``podman inspect`` reports and the same computation datalad's docker
@@ -480,13 +486,15 @@ def archive_identity(path: Path) -> tuple[str, str, list[str]]:
     whatever runtime then runs it. The manifests are those of the OCI
     index ``docker save`` writes beside the docker-archive's own listing,
     by which Docker's containerd store knows the image; an archive podman
-    saved has no index, so names none.
+    saved has no index, so names none. The tag is the one a load gives the
+    image, as the archive spells it.
 
     Args:
         path: A ``docker-archive`` file with its content present.
 
     Returns:
-        ``(bare hex id, architecture, bare hex digest of each manifest)``.
+        ``(bare hex id, architecture, bare hex digest of each manifest,
+        tag)``; the tag is empty for an archive saved without one.
 
     Raises:
         ProjectError: If the file is not a readable docker-archive.
@@ -495,7 +503,9 @@ def archive_identity(path: Path) -> tuple[str, str, list[str]]:
         with tarfile.open(path) as tar:
             listing = tar.extractfile("manifest.json")
             assert listing is not None  # a member, not a directory
-            config_name = json.load(listing)[0]["Config"]
+            listed = json.load(listing)[0]
+            config_name = listed["Config"]
+            archive_tag = next(iter(listed.get("RepoTags") or []), "")
             blob = tar.extractfile(config_name)
             assert blob is not None
             config = blob.read()
@@ -513,6 +523,7 @@ def archive_identity(path: Path) -> tuple[str, str, list[str]]:
         hashlib.sha256(config).hexdigest(),
         str(json.loads(config).get("architecture", "")),
         manifests,
+        archive_tag,
     )
 
 
