@@ -402,6 +402,22 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
     assert message.index("lc compute down") < message.index("git restore")
 
 
+def test_an_index_lock_that_never_goes_away_refuses_before_anything_runs(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every output is committed, so a lock a killed git left behind would
+    fail each of them after its recipe had run."""
+    monkeypatch.setattr(dataset, "_PATIENCE", 0.5)
+    (root / ".git" / "index.lock").write_text("")
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("a project that cannot commit contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+    with pytest.raises(ProjectError, match="holds the project's index"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
 @pytest.mark.parametrize("invalid", ["dirty", "spec"])
 def test_project_refusals_precede_cluster_connection(
     root: Path, monkeypatch: pytest.MonkeyPatch, invalid: str,
