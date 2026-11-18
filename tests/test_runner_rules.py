@@ -178,6 +178,25 @@ def test_unrecreatable_environment(root: Path, inline: None) -> None:
     assert not (root / "results/baseline").exists()
 
 
+def test_an_environment_file_committed_as_a_symlink_is_refused(
+    root: Path, inline: None
+) -> None:
+    """A symlink is committed as the path it points to: a pin read through
+    one, to a file outside the repository, is not in the commit a record
+    names, however clean the tree."""
+    outside = root.parent / "python-version"
+    outside.write_text((root / ".python-version").read_text())
+    (root / ".python-version").unlink()
+    (root / ".python-version").symlink_to(outside)
+    dataset.save(root, [root / ".python-version"], "pin the interpreter through a link")
+    assert not dataset.status(root)
+
+    with pytest.raises(ProjectError, match=r"\.python-version.*UNRECREATABLE_ENVIRONMENT"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert not (root / "results/baseline").exists()
+
+
 def test_a_rerun_answers_for_its_environment_too(
     root: Path,
     inline: None,
@@ -207,4 +226,4 @@ def test_the_environment_a_record_names_is_in_its_commit(root: Path, inline: Non
     dataset._git(["worktree", "add", "--quiet", str(checkout), made["commit"]], cwd=root)
 
     assert identity.environment(checkout) == made["environment"]["iri"]
-    assert dataset.untracked(root, identity.files(root)) == []
+    assert dataset.not_in_git(root, identity.files(root)) == []

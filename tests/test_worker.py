@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from astra import api
+from conftest import locked_version, with_idna
 
 from lightcone.engine import container, content, dataset, identity, plan, sandbox, worker
 from lightcone.engine.sandbox import Unavailable
@@ -286,18 +287,44 @@ def test_a_task_whose_upstream_did_not_finish_is_blocked(root: Path) -> None:
     assert not (root / _SECOND).exists()
 
 
-def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
-    """What the upstream task reported, never a rehash of the file: where
-    the upstream was left alone on a clone without its content, the file
-    is a pointer, and its hash is not the result's."""
+def test_a_downstream_task_takes_its_upstreams_digest_of_that_very_file(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task that made the result hashed it, so what reads that very
+    file takes its digest rather than reading all of it again."""
     first = _make(root, "first#baseline")
+    hashed: list[Path] = []
+    real = content.digest_file
+
+    def digest_file(path: Path) -> content.Digest:
+        hashed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(content, "digest_file", digest_file)
+
+    second = _make(root, "second#baseline", first)
+
+    assert second.status == "made"
+    assert root / _FIRST not in hashed
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
+
+
+def test_bytes_replaced_after_their_digest_was_taken_are_recorded_as_read(root: Path) -> None:
+    """A digest names the file it was taken of. Another file in its place
+    is hashed as the recipe reads it: a record names the bytes its recipe
+    read, never the ones an upstream reported of a file that is gone."""
+    first = _make(root, "first#baseline")
+    (root / _FIRST).unlink()
     (root / _FIRST).write_text("not the bytes the upstream task reported\n")
 
     second = _make(root, "second#baseline", first)
 
     assert second.status == "made"
-    assert first.digest != _digest((root / _FIRST).read_bytes())
-    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
+    read = _digest(b"not the bytes the upstream task reported\n")
+    assert read != first.digest
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == [
+        {"entry": "first", "content_hash": read[0], "size": read[1]}
+    ]
 
 
 # ---- downstream of a task that may be remade -------------------------------
@@ -458,17 +485,18 @@ def test_a_remake_with_other_bytes_remakes_its_dependents(
 # ---- the output directory the recipe owns ----------------------------------
 
 
-def test_a_payload_from_an_earlier_format_does_not_survive_a_rebuild(root: Path) -> None:
-    """The reset takes every file named after the output, not just the one
-    the spec declares today — so re-declaring the serialization leaves no
-    orphan behind."""
+def test_the_reset_takes_the_results_own_files_and_nothing_named_like_them(
+    root: Path,
+) -> None:
+    """A result is the one file at its place, and its records: a file that
+    is merely named after it is no output's, and not the reset's to take."""
     _make(root, "first#baseline")
-    earlier = root / "results/baseline/first.json"
-    earlier.write_text("from a run that declared another format\n")
+    beside = root / "results/baseline/first.json"
+    beside.write_text("named after the result, declared by nothing\n")
 
     worker.execute(root, _task(root, "first#baseline"), {}, _context(root))
 
-    assert not earlier.exists()
+    assert beside.read_text() == "named after the result, declared by nothing\n"
     assert (root / _FIRST).exists()
 
 
@@ -642,6 +670,7 @@ def test_a_result_that_cannot_be_recorded_fails_rather_than_raises(
 
     assert result.status == "failed"
     assert "could not be recorded" in result.reason
+    assert not (root / _FIRST_RECORD).exists()
 
 
 def test_whatever_goes_wrong_is_returned_rather_than_raised(
@@ -767,29 +796,45 @@ def test_the_module_reruns_unconditionally(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rerun is a rerun: the caller has already said what they want, and
-    a staleness check would answer a question nobody asked."""
+    a staleness check would answer a question nobody asked. The result
+    stands, and its recipe runs again all the same."""
     monkeypatch.chdir(root)
     _make(root, "first#baseline")
-    (root / _FIRST).write_text("untouched\n")
+    made = _record(root, _FIRST_RECORD)["generated_by"]["started"]
+    assert _make(root, "first#baseline").status == "unchanged"
 
     assert worker.main(["first#baseline"]) == 0
+    assert _record(root, _FIRST_RECORD)["generated_by"]["started"] != made
     assert (root / _FIRST).read_text() == "one\n"
 
 
+_IMPORTS = """
+spec_version: "0.1.0"
+
+outputs:
+  version:
+    type: data
+    format: txt
+    recipe:
+      command: python -c 'import idna; print(idna.__version__)' > {output}
+"""
+
+
 def test_the_module_converges_the_environment(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rerun checks out the lock but never `.venv`, and the recipe's own
     `uv run --no-sync` silently creates an *empty* environment where none
     exists — so the entry point syncs before anything executes, or a fresh
     clone's rerun would record the lock's environment over a recipe that
-    ran in a bare venv."""
+    ran in a bare venv. The recipe imports what the lock pins, which no
+    empty environment holds."""
+    root = with_idna(analysis(_IMPORTS))
     monkeypatch.chdir(root)
     shutil.rmtree(root / ".venv")
 
-    assert worker.main(["first#baseline"]) == 0
-    assert (root / ".venv").exists()
-    assert (root / _FIRST).read_text() == "one\n"
+    assert worker.main(["version"]) == 0
+    assert (root / "results/version.txt").read_text().strip() == locked_version(root, "idna")
 
 
 def test_the_module_records_the_bytes_its_task_read_in_the_tree(
@@ -887,20 +932,6 @@ def test_the_module_refuses_an_analysis_astra_rejects(
 # ---- what a recipe reads, and what a record cannot say ---------------------
 
 
-def test_a_recipe_can_read_an_annexed_input(analysis: Callable[..., Path]) -> None:
-    """Declared inputs live in the annex. With `filter=annex` the working
-    tree holds the real bytes, so the project read root covers them — but
-    that is worth pinning, since it is what every recipe with an input
-    depends on."""
-    root = analysis(_READS, files={"data/catalog.txt": "measured\n"})
-    dataset.save(root, [root / "data"], "the catalog")
-
-    result = _make(root, "fit")
-
-    assert result.status == "made", result.reason
-    assert (root / "results/fit.txt").read_text() == "measured\n"
-
-
 def test_an_upstream_whose_content_is_not_here_is_refused(root: Path) -> None:
     """A result left alone on a clone that has not fetched it is a pointer
     to its content. A recipe handed it would read a few lines of text for
@@ -930,24 +961,6 @@ def test_the_record_is_reset_before_the_recipe_runs(root: Path) -> None:
     )
 
     assert _make(root, "first#baseline").status == "failed"
-    assert not (root / _FIRST_RECORD).exists()
-
-
-def test_a_record_that_cannot_be_written_fails_the_task(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """ASTRA refuses a record its schema rejects, and a refusal there is the
-    task's failure, never a raise into Dask."""
-
-    def refuse(*args: object, **kwargs: object) -> None:
-        raise ValueError("`commit` is not a commit id")
-
-    monkeypatch.setattr(api, "write_records", refuse)
-
-    result = _make(root, "first#baseline")
-
-    assert result.status == "failed"
-    assert "could not be recorded" in result.reason
     assert not (root / _FIRST_RECORD).exists()
 
 

@@ -39,6 +39,7 @@ from lightcone.engine import container, content, dataset, identity, plan, sandbo
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import (
+    SPEC_FILENAME,
     ProjectError,
     child_env,
     declared_project,
@@ -68,6 +69,10 @@ class TaskOutcome:
     #: the spec asks for — this is what a dependent records having read.
     content_hash: str = ""
     size: int = 0
+    #: The stamp of the file those bytes are (`content.stamp`), or None
+    #: where there was none to look at. What reads the result takes the
+    #: digest for that very file only, and hashes any other it finds.
+    stamp: tuple[int, int, int] | None = None
     #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
     #: Console lines from the boundary: a downgrade notice, a denial.
@@ -117,28 +122,38 @@ class RunContext:
     )
 
 
-def require_recreatable(root: Path) -> None:
-    """Refuse a run whose commit could not recreate its environment.
+def require_in_commit(root: Path) -> None:
+    """Refuse a run whose commit would not hold what its records name it for.
 
-    A clean tree does not say the environment is in the commit: an
-    ignored file is clean. A record names its environment by the files
-    of its commit, so each has to be there for lc to recreate it. Asked
-    by whoever owns a run, before it writes a record: the driver, and
-    the rerun entry point.
+    A record names a commit, and two things are read back from it: the
+    analysis, which ASTRA's checker compares the result with, and the
+    files lc recreates the environment from, which its IRI names. A clean
+    tree does not say either is there: an ignored file is clean, and a
+    symlink is committed as the path it points to, not as the bytes read
+    through it. Asked by whoever owns a run, before it writes a record:
+    the driver, and the rerun entry point.
 
     Args:
         root: The project root.
 
     Raises:
-        ProjectError: Naming each file of the environment git does not
-            track.
+        ProjectError: Naming each file the commit would not hold.
     """
-    if missing := dataset.untracked(root, identity.files(root)):
+    environment = identity.files(root)
+    missing = dataset.not_in_git(root, [SPEC_FILENAME, *environment])
+    if SPEC_FILENAME in missing:
         raise ProjectError(
-            f"{', '.join(missing)} — not tracked by git, so the commit a record names "
-            "could not recreate the environment its recipe ran in "
-            "(UNRECREATABLE_ENVIRONMENT). Commit the environment's files, and remove "
-            "whatever .gitignore rule keeps them out."
+            f"{SPEC_FILENAME} is not in git as a file of its own — untracked, or a "
+            "symlink — so the commit a record names would hold no analysis to check "
+            "the result against. Commit the file itself, and remove whatever "
+            ".gitignore rule keeps it out."
+        )
+    if missing:
+        raise ProjectError(
+            f"{', '.join(missing)} — not in git as files of their own (untracked, or a "
+            "symlink), so the commit a record names could not recreate the environment "
+            "its recipe ran in (UNRECREATABLE_ENVIRONMENT). Commit each file itself, and "
+            "remove whatever .gitignore rule keeps it out."
         )
 
 
@@ -222,6 +237,7 @@ def _materialize(
         verdict.state,
         content_hash=record.content_hash,
         size=record.size,
+        stamp=content.stamp(task.path) if task.path.exists() else None,
         reason=verdict.why,
     )
 
@@ -279,15 +295,17 @@ def execute(
         try:
             content.require_fetched(path)
             stamp = content.stamp(path)
-            known = context.hashed.get(path)
+            # What was read of this very file already is taken: by the task
+            # that made or kept the result, or by the driver, for every task
+            # of the run that reads it. Any other file is hashed here.
+            known: tuple[tuple[int, int, int] | None, content.Digest] | None = (
+                context.hashed.get(path)
+            )
             if (producer := task.produced_by.get(entry)) is not None:
-                digest = upstream[producer].digest
-            elif known is not None and known[0] == stamp:
-                # What the driver read of this very file, for every task
-                # of the run that reads it.
-                digest = known[1]
-            else:
-                digest = content.digest_file(path)
+                known = upstream[producer].stamp, upstream[producer].digest
+            digest = (
+                known[1] if known is not None and known[0] == stamp else content.digest_file(path)
+            )
         except (OSError, ProjectError) as e:
             return TaskOutcome(
                 task.id,
@@ -302,9 +320,7 @@ def execute(
 
     # Never the parent directory: siblings share it, and under Dask they
     # are being written concurrently. What this result owns there is its
-    # record and any file named after it — the glob rather than the one
-    # declared path, so a spec that re-declares the result in another
-    # format leaves no stale payload behind (`Task.owns`).
+    # file and its records (`Task.owns`).
     task.path.parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
         context.runtime,
@@ -314,11 +330,9 @@ def execute(
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing what it owns.
-        for record in task.record_paths:
-            record.unlink(missing_ok=True)
-        for stale in task.path.parent.glob(f"{task.name}.*"):
-            if stale.is_file() or stale.is_symlink():
-                stale.unlink()
+        for owned in (task.path, *task.record_paths):
+            if owned.is_file() or owned.is_symlink():
+                owned.unlink()
         started = datetime.now(UTC)
         outcome = sandbox.run(
             container.backend(context.runtime),
@@ -377,7 +391,22 @@ def execute(
             notes=outcome.notes,
         )
 
+    # ASTRA reads a file shaped like a stand-in as one, for content its
+    # record does not give: a record of these bytes could never be checked,
+    # and every check would plan the result again.
+    if tool := content.standin(made):
+        return TaskOutcome(
+            task.id,
+            "failed",
+            reason=(
+                f"the recipe exited 0 but left what reads as a {tool} stand-in at "
+                f"{plan.declared_path(root, made)}, not content a record can name"
+            ),
+            notes=outcome.notes,
+        )
+
     try:
+        stamp = content.stamp(made)
         content_hash, size = content.digest_file(made)
         # ASTRA's record, at each place the result has: what a checker
         # compares with the analysis as it then is.
@@ -404,7 +433,9 @@ def execute(
             reason=f"the recipe finished but its result could not be recorded: {e}",
             notes=outcome.notes,
         )
-    return TaskOutcome(task.id, "made", content_hash=content_hash, size=size, notes=outcome.notes)
+    return TaskOutcome(
+        task.id, "made", content_hash=content_hash, size=size, stamp=stamp, notes=outcome.notes
+    )
 
 
 def _instant(moment: datetime) -> str:
@@ -502,7 +533,7 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
-        require_recreatable(root)
+        require_in_commit(root)
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -550,7 +581,9 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[ResultId, Task
         path = graph.tasks[key].path
         try:
             content.require_fetched(path)
-            upstream[key] = TaskOutcome(key, "unchanged", *content.digest_file(path))
+            upstream[key] = TaskOutcome(
+                key, "unchanged", *content.digest_file(path), stamp=content.stamp(path)
+            )
         except OSError as e:
             # This is the entry point a `datalad rerun` lands on, so it
             # names what it could not read rather than unwinding a

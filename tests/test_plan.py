@@ -172,31 +172,13 @@ def test_a_pinned_input_is_an_edge_to_that_universe(tmp_path: Path) -> None:
     assert task.produced_by == {"fit#baseline": "fit#baseline"}
 
 
-def test_an_input_nothing_provides_is_an_error(tmp_path: Path) -> None:
-    """Caught by ASTRA rather than by lc, in ASTRA's words, naming the line
-    at fault instead of the run that tripped over it."""
-    spec = _SPEC.replace("inputs: [catalog]", "inputs: [missing]").replace(
-        "{inputs.catalog}", "{inputs.missing}"
-    )
-    with pytest.raises(ProjectError, match="(?s)does not validate.*UNRESOLVED_ADDRESS"):
-        _build(_project(tmp_path, spec))
-
-
-def test_an_output_without_a_format_is_refused_by_astra(tmp_path: Path) -> None:
-    """lc places a result from its format, so ASTRA's refusal comes before
-    anything runs — every offender at once."""
+def test_an_analysis_astra_finds_invalid_is_refused_in_its_words(tmp_path: Path) -> None:
+    """What makes an analysis invalid is ASTRA's to say: lc refuses before
+    anything runs, with every broken rule ASTRA names, each at its place."""
     spec = _SPEC.replace("    format: json\n", "").replace("    format: md\n", "")
-    with pytest.raises(ProjectError, match="MISSING_FIELD") as raised:
+    with pytest.raises(ProjectError, match="(?s)does not validate.*MISSING_FIELD") as raised:
         _build(_project(tmp_path, spec))
     assert "fit" in str(raised.value) and "report" in str(raised.value)
-
-
-def test_a_cycle_is_refused_by_astra(tmp_path: Path) -> None:
-    spec = _SPEC.replace("    inputs: [catalog]", "    inputs: [report]").replace(
-        "{inputs.catalog}", "{inputs.report}"
-    )
-    with pytest.raises(ProjectError, match="OUTPUT_CYCLE"):
-        _build(_project(tmp_path, spec))
 
 
 def test_what_astra_notes_is_kept_for_the_run_to_report(tmp_path: Path) -> None:

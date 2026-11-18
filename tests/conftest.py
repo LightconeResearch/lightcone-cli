@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
+import tomllib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -287,6 +288,29 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
         return root
 
     return build
+
+
+def with_idna(root: Path) -> Path:
+    """Have the project at *root* depend on idna, locked, synced and committed.
+
+    A recipe that imports it runs only in the environment the lock
+    describes: an empty one, which `uv run --no-sync` creates where there
+    is none, fails the import. Resolving it needs the package index.
+    """
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
+    )
+    for argv in (["uv", "lock", "-q"], ["uv", "sync", "-q", "--locked", "--exact"]):
+        _must(project._run([*argv, "--project", str(root)], cwd=root), argv)
+    dataset.save(root, [root], "depend on idna")
+    return root
+
+
+def locked_version(root: Path, name: str) -> str:
+    """The version the lock at *root* pins the package *name* at."""
+    lock = tomllib.loads((root / "uv.lock").read_text())
+    return str(next(package["version"] for package in lock["package"] if package["name"] == name))
 
 
 def _must(proc: object, argv: list[str]) -> None:

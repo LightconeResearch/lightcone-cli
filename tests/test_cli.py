@@ -7,6 +7,7 @@ Convergence *semantics* are tested against the engine in
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -18,27 +19,16 @@ from lightcone.cli.commands import main
 # ---- top level ------------------------------------------------------------
 
 
-def test_help_lists_the_implemented_verb(runner: CliRunner) -> None:
-    result = runner.invoke(main, ["--help"])
-    assert result.exit_code == 0
-    assert "init" in result.output
-
-
 def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
-    """`lc --help` advertises only verbs that work — advertising others
-    before they do would be a lie."""
+    """`lc --help` advertises only verbs that work. The unit a run record
+    names is machinery, not a verb: it makes a result unconditionally,
+    commits nothing, and leaves the tree dirty by design — the state
+    `lc materialize` refuses to start from."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("init", "build", "materialize", "run", "status"):
-        assert f"  {verb}" in result.output
-    for verb in ("verify", "export"):
-        assert f"  {verb}" not in result.output
 
-
-def test_help_does_not_advertise_the_worker(runner: CliRunner) -> None:
-    """The unit a run record names is machinery, not a verb: it makes the
-    output unconditionally, commits nothing, and leaves the tree dirty by
-    design — the state `lc materialize` refuses to start from."""
-    assert "worker" not in runner.invoke(main, ["--help"]).output
+    assert result.exit_code == 0
+    listed = re.findall(r"^  (\S+)  ", result.output.partition("Commands:")[2], re.MULTILINE)
+    assert listed == ["build", "compute", "init", "materialize", "run", "status"]
 
 
 def test_engine_errors_render_cleanly(
@@ -197,11 +187,6 @@ def spawned(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
 
     monkeypatch.setattr(engine_run, "probe", fake_probe)
     return calls
-
-
-def test_run_is_advertised(runner: CliRunner) -> None:
-    result = runner.invoke(main, ["--help"])
-    assert "run" in result.output
 
 
 @pytest.mark.parametrize("cluster", [CLUSTER_ID, "analysis"])

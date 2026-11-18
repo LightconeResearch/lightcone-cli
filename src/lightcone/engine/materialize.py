@@ -389,7 +389,7 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
-    worker.require_recreatable(root)
+    worker.require_in_commit(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
@@ -417,6 +417,7 @@ def materialize(
     with cluster_for_run(cluster_id) as scheduler:
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
+        unreadable = _not_as_recorded(root, graph, wanted)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
         # one. Resolved once, then handed to every task.
@@ -460,6 +461,13 @@ def materialize(
         # dependency order.
         for found in classified:
             task = found.task
+            if why := unreadable.get(task.id):
+                # What reads it is blocked, and with its bytes in this clone
+                # now, ASTRA's checker sees what they are.
+                pending[task.id] = worker.TaskOutcome(task.id, "failed", reason=why)
+                report.failed.append(task.id)
+                report.warnings.append(f"{task.id}: {why}")
+                continue
             if not found.may_run(refresh=refresh):
                 pending[task.id] = _left_alone(found, report)
                 continue
@@ -497,11 +505,17 @@ def materialize(
         # the graph ran — and every record names the starting commit,
         # which no longer describes that code. A warning: the driver does
         # not rewrite records the worker wrote.
-        if edited := dataset.status(root):
-            names = ", ".join(sorted(path for _, path in edited))
+        changed = sorted(path for _, path in dataset.status(root))
+        if left := [path for path in changed if path.startswith(_WRITTEN)]:
             report.warnings.append(
-                f"edited while the run was in flight: {names} — the records name "
-                "the starting commit, which no longer describes this code"
+                f"left uncommitted where results go: {', '.join(left)} — no output "
+                "declares them, so no record names them. Remove them: the next run "
+                "refuses a tree that holds them."
+            )
+        if edited := [path for path in changed if not path.startswith(_WRITTEN)]:
+            report.warnings.append(
+                f"edited while the run was in flight: {', '.join(edited)} — the records "
+                "name the starting commit, which no longer describes this code"
             )
         return report
 
@@ -514,11 +528,13 @@ def _left_alone(found: _Classified, report: MaterializeReport) -> worker.TaskOut
         report.behind[found.task.id] = found.verdict.why
     else:
         report.unchanged.append(found.task.id)
+    path = found.task.path
     return worker.TaskOutcome(
         found.task.id,
         found.verdict.state,
         record.content_hash,
         record.size,
+        stamp=content.stamp(path) if path.exists() else None,
         reason=found.verdict.why,
     )
 
@@ -540,7 +556,24 @@ def _consume(
         report.notes.extend([f"{name}:", *outcome.notes])
 
     if outcome.status == "made":
-        dataset.save(root, _owned(root, task), run_record(root, task, dsid, runtime))
+        owned = [plan.declared_path(root, path) for path in (task.path, *task.record_paths)]
+        # The file the last run of this result committed, where that is not
+        # its file now: its format was declared again, and the earlier file
+        # goes with the commit that makes the new one.
+        earlier = [
+            path
+            for path in _last_committed(root, task)
+            if path not in owned and dataset._git_ok(["cat-file", "-e", f"HEAD:{path}"], cwd=root)
+        ]
+        for path in earlier:
+            (root / path).unlink(missing_ok=True)
+        dataset.save(
+            root,
+            [*_owned(root, task), *(f":(literal){path}" for path in earlier)],
+            run_record(root, task, dsid, runtime),
+            annexed=[task.path],
+            in_git=task.record_paths,
+        )
         report.made.append(name)
         return
 
@@ -743,6 +776,46 @@ def _fetch_inputs(root: Path, wanted: Sequence[str], report: MaterializeReport) 
         )
 
 
+def _not_as_recorded(root: Path, graph: Graph, fetched: Sequence[str]) -> dict[ResultId, str]:
+    """The results a run fetched whose bytes are not the ones their records give.
+
+    ASTRA's checker compares a result's bytes with its record before they
+    are fetched only where their stand-in gives a SHA-256, and takes one
+    that gives none — git-annex's, for a key of another backend — to stand
+    for the recorded bytes. What reads a result is recorded as reading the
+    bytes its record gives, so what a run fetched for a recipe to read is
+    hashed before any recipe reads it. Hashing what was just fetched costs a
+    fraction of fetching it.
+
+    Args:
+        root: The project root.
+        graph: The run's graph, with the checker's report.
+        fetched: The files the run fetched, from the project root.
+
+    Returns:
+        Why each such result cannot be read, by id. A file the fetch did not
+        bring is left to what reads it to report.
+    """
+    wanted = set(fetched)
+    unreadable = {}
+    for task in graph.tasks.values():
+        record = graph.checked.statuses[task.id].record
+        if record is None or plan.declared_path(root, task.path) not in wanted:
+            continue
+        try:
+            content.require_fetched(task.path)
+            digest = content.digest_file(task.path)
+        except (OSError, ProjectError):
+            continue
+        if digest != (record.content_hash, record.size):
+            unreadable[task.id] = (
+                "the bytes fetched for it are not the ones its record gives, so nothing "
+                "can read it as recorded — with them in this clone, the next run makes "
+                "it again"
+            )
+    return unreadable
+
+
 def _require_storable(root: Path, graph: Graph) -> None:
     """Refuse a project whose results git would not store as lc means them.
 
@@ -752,11 +825,22 @@ def _require_storable(root: Path, graph: Graph) -> None:
     no line sends to the annex lands in git itself, in every clone
     forever; one another filter takes (Git LFS) is stored where lc reads
     and fetches nothing; and a record that leaves git cannot be read on a
-    clone that holds no content.
+    clone that holds no content. In a clone where git-annex was never set
+    up, no line sends anything to the annex.
+
+    What the attributes settle is refused here, before anything runs. An
+    ``annex.largefiles`` expression can turn on the bytes themselves, so
+    where one decides, what git staged is the answer, and every save
+    checks it (``dataset.save``).
 
     Raises:
         ProjectError: Naming each such path.
     """
+    if not dataset.is_annexed(root):
+        raise ProjectError(
+            "git-annex is not set up in this clone, so git would commit every result "
+            "to git itself — `lc init` sets it up."
+        )
     files = [plan.declared_path(root, task.path) for task in graph.tasks.values()]
     records = [
         plan.declared_path(root, record)
@@ -780,39 +864,35 @@ def _require_storable(root: Path, graph: Graph) -> None:
         for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)
     }
 
-    def stored(path: str) -> str:
-        """Where a `git add` of *path* puts its bytes."""
-        taken_by = attributes.get((path, "filter"), "unspecified")
-        if taken_by not in ("annex", "unspecified", "unset"):
-            return taken_by
-        if taken_by == "annex" and attributes.get((path, "annex.largefiles")) == "anything":
-            return "annex"
-        return "git"
-
     refusals = [
         f"{path} is git-ignored, so it would never be committed — remove the "
         ".gitignore rule that covers it"
         for path in ignored
     ]
     for path in files:
-        if (where := stored(path)) == "git":
+        taken_by = attributes.get((path, "filter"), "unspecified")
+        if taken_by not in ("annex", "unspecified", "unset"):
+            refusals.append(
+                f"{path} would be stored by `filter={taken_by}`, not git-annex — a "
+                ".gitattributes line below lightcone's sets its filter"
+            )
+        elif taken_by != "annex" or attributes.get((path, "annex.largefiles")) == "nothing":
             refusals.append(
                 f"{path} would be committed to git itself — the last .gitattributes line "
                 "that matches it does not send it to the annex"
             )
-        elif where != "annex":
-            refusals.append(
-                f"{path} would be stored by `filter={where}`, not git-annex — a "
-                ".gitattributes line below lightcone's sets its filter"
-            )
     for path in records:
-        if (where := stored(path)) != "git":
-            how = "annexed" if where == "annex" else f"stored by `filter={where}`"
-            refusals.append(
-                f"{path} would be {how} — the last .gitattributes line that matches it "
-                "says so, and a record has to stay in git, where a clone with no content "
-                "can read it"
-            )
+        taken_by = attributes.get((path, "filter"), "unspecified")
+        if taken_by not in ("annex", "unspecified", "unset"):
+            how = f"stored by `filter={taken_by}`"
+        elif taken_by == "annex" and attributes.get((path, "annex.largefiles")) == "anything":
+            how = "annexed"
+        else:
+            continue
+        refusals.append(
+            f"{path} would be {how} — the last .gitattributes line that matches it says "
+            "so, and a record has to stay in git, where a clone with no content can read it"
+        )
     if refusals:
         raise ProjectError(
             "this project's results would not be stored as lc stores them:\n  "
@@ -878,12 +958,14 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
     if runtime.mode == "containerized":
         info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
-    return (
-        f"[DATALAD RUNCMD] {task.id}\n\n"
-        "=== Do not change lines below ===\n"
-        f"{body}\n"
-        "^^^ Do not change lines above ^^^"
-    )
+    return f"{_RUN_SUBJECT} {task.id}\n\n{_RECORD_BEGINS}\n{body}\n{_RECORD_ENDS}"
+
+
+#: How datalad frames a run record in a commit message: the subject's
+#: prefix, and the lines either side of the record.
+_RUN_SUBJECT = "[DATALAD RUNCMD]"
+_RECORD_BEGINS = "=== Do not change lines below ==="
+_RECORD_ENDS = "^^^ Do not change lines above ^^^"
 
 
 def _engine_requirement() -> str:
@@ -973,21 +1055,36 @@ def _graph(
     return graph, environment
 
 
-def _owned(root: Path, task: Task) -> list[str]:
-    """Every path one result owns, as git pathspecs.
+def _last_committed(root: Path, task: Task) -> list[str]:
+    """What the last run of *task*'s result committed, from the project root.
 
-    A glob for the bytes, so it covers whatever format the *previous*
-    run wrote and a re-declared serialization stages the old file's
-    deletion instead of leaving it behind untracked. A record's path is
-    taken to the letter.
+    lc's own run record says, in the last commit that wrote the result's
+    record: its ``outputs`` are the result's file and its records as they
+    were then. A commit that is not this result's run record names nothing,
+    and nothing else is read from history. A file merely named like the
+    result is no output's, so it is never taken for its earlier file.
+    """
+    record = plan.declared_path(root, task.record_paths[0])
+    message = dataset._git(["log", "-1", "--format=%B", "--", record], cwd=root)
+    if not message.startswith(f"{_RUN_SUBJECT} {task.id}\n"):
+        return []
+    body = message.partition(f"{_RECORD_BEGINS}\n")[2].partition(f"\n{_RECORD_ENDS}")[0]
+    try:
+        outputs = json.loads(body)["outputs"]
+    except (ValueError, KeyError, TypeError):
+        return []
+    return [path for path in outputs if isinstance(path, str)]
+
+
+def _owned(root: Path, task: Task) -> list[str]:
+    """Every path one result owns, as git pathspecs taken to the letter:
+    its file and its records (`Task.owns`).
 
     Never the parent directory: siblings share it, and under Dask they are
     in flight — ``git clean`` on it would delete a running task's bytes.
     """
-    parent = plan.declared_path(root, task.path.parent)
     return [
-        f":(glob){parent}/{task.name}.*",
-        *(f":(literal){plan.declared_path(root, record)}" for record in task.record_paths),
+        f":(literal){plan.declared_path(root, path)}" for path in (task.path, *task.record_paths)
     ]
 
 

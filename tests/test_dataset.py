@@ -265,6 +265,52 @@ def test_save_sees_nothing_to_commit_past_foreign_staged_work(repo: Path) -> Non
     assert not dataset.save(repo, [repo / "results"], "nothing here")
 
 
+def test_a_save_refuses_what_git_staged_where_it_must_not_go(repo: Path) -> None:
+    """Where bytes go is what git staged, whatever the attributes seem to
+    say: an expression can turn on the bytes. Refused, nothing is committed
+    and nothing is left staged."""
+    (repo / ".gitattributes").write_text(
+        (repo / ".gitattributes").read_text()
+        + "results/** annex.largefiles=largerthan=1kb\n"
+        + ".astra/** annex.largefiles=largerthan=1b\n"
+    )
+    dataset.save(repo, [repo / ".gitattributes"], "route by size")
+    result = repo / "results" / "fit.csv"
+    result.write_text("a,b\n")
+    record = repo / ".astra" / "records" / "fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{}\n")
+    head = dataset.head(repo)
+
+    with pytest.raises(project.ProjectError) as raised:
+        dataset.save(repo, [result, record], "fit", annexed=[result], in_git=[record])
+
+    assert "results/fit.csv was staged in git itself" in str(raised.value)
+    assert ".astra/records/fit.json was staged in the annex" in str(raised.value)
+    assert dataset.head(repo) == head
+    assert not dataset._git(["diff", "--cached", "--name-only"], cwd=repo).strip()
+
+
+def test_a_clone_made_right_after_a_save_can_fetch_what_it_stored(
+    repo: Path, tmp_path: Path
+) -> None:
+    """git-annex journals where content is when an add stores it, and a
+    clone made before that is committed to its branch is told of no copy
+    (*measured*)."""
+    result = repo / "results" / "fit.csv"
+    result.write_text("a,b\n1,2\n")
+    dataset.save(repo, [result], "fit")
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
+    dataset.init_annex(clone)
+
+    dataset._git(["annex", "get", "-q", "--", "results/fit.csv"], cwd=clone)
+
+    assert (clone / "results" / "fit.csv").read_text() == "a,b\n1,2\n"
+
+
 def test_save_reports_when_there_was_nothing_to_commit(repo: Path) -> None:
     """`lc materialize` may not leave an empty commit behind for an output
     that produced nothing new."""

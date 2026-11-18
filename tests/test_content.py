@@ -72,6 +72,35 @@ def test_a_git_lfs_pointer_is_refused_too(tmp_path: Path) -> None:
         content.require_fetched(pointer)
 
 
+def test_text_that_only_opens_like_a_git_lfs_pointer_is_content(tmp_path: Path) -> None:
+    """ASTRA reads a Git LFS pointer by all of it — the version line, then
+    an `oid` that is a SHA-256 and a `size` — and so does lc: a file that
+    only opens like one is what a recipe reads."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("version https://git-lfs.github.com/spec/v1\nis how a pointer opens\n")
+
+    content.require_fetched(notes)
+    assert content.standin(notes) is None
+
+
+def test_a_path_into_the_annex_followed_by_more_lines_is_content(tmp_path: Path) -> None:
+    """git-annex's pointer is one line, and ASTRA reads nothing longer as one."""
+    listing = tmp_path / "objects.txt"
+    listing.write_text("/annex/objects/SHA256E-s1--aa.txt\n/annex/objects/SHA256E-s2--bb.txt\n")
+
+    content.require_fetched(listing)
+    assert content.standin(listing) is None
+
+
+def test_each_pointer_file_is_named_by_its_tool(tmp_path: Path) -> None:
+    lfs = tmp_path / "lfs.bin"
+    lfs.write_text(f"version https://git-lfs.github.com/spec/v1\noid sha256:{'a' * 64}\nsize 7\n")
+    annexed = tmp_path / "annexed.bin"
+    annexed.write_text("/annex/objects/MD5E-s7--d41d8cd98f00b204e9800998ecf8427e.bin\n")
+
+    assert (content.standin(lfs), content.standin(annexed)) == ("Git LFS", "git-annex")
+
+
 def test_a_file_that_merely_mentions_the_prefix_is_content(tmp_path: Path) -> None:
     """The test is the prefix at the very start, as git-annex's own is —
     a script that talks about annex paths is not a pointer."""
@@ -82,10 +111,10 @@ def test_a_file_that_merely_mentions_the_prefix_is_content(tmp_path: Path) -> No
 
 
 def test_a_large_file_is_never_a_pointer(tmp_path: Path) -> None:
-    """git-annex's own bound: a pointer is small, so real content that
-    happens to begin like one is still content."""
+    """ASTRA's bound: no pointer is longer than 1024 bytes, so real content
+    that happens to begin like one is still content."""
     big = tmp_path / "big.bin"
-    big.write_bytes(b"/annex/objects/" + b"0" * (32 * 1024))
+    big.write_bytes(b"/annex/objects/" + b"0" * 1024)
 
     content.require_fetched(big)
 

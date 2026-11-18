@@ -100,12 +100,11 @@ class Task:
         return tuple(dict.fromkeys(self.produced_by.values()))
 
     def owns(self, path: Path) -> bool:
-        """Whether *path* is one of this result's own files.
+        """Whether *path* is one of this result's own files: its file, at
+        the place ASTRA gives it, or one of its records.
 
-        Its record, or a file named after it beside its bytes — the name
-        and not the one declared path, so the payload a previous format
-        left behind is the result's too. ``<name>.`` cannot reach a
-        sibling: a name is an output's id, which holds no dot.
+        Nothing else a recipe writes beside its result is the result's:
+        no output declares it, and no record names it.
 
         Args:
             path: A file, from the filesystem root.
@@ -113,9 +112,7 @@ class Task:
         Returns:
             True for a file this result's run writes or replaces.
         """
-        return path in self.record_paths or (
-            path.parent == self.path.parent and path.name.startswith(f"{self.name}.")
-        )
+        return path == self.path or path in self.record_paths
 
 
 @dataclass(frozen=True)

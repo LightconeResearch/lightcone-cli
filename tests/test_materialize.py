@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 from astra.api import Bytes
-from conftest import CLUSTER_ID, _Inline
+from conftest import CLUSTER_ID, _Inline, locked_version, with_idna
 
 from lightcone.engine import content, dataset, identity, plan
 from lightcone.engine import materialize as engine
@@ -590,10 +590,10 @@ def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
     _cluster(monkeypatch, _Inline())
     save = dataset.save
 
-    def fail(root: Path, paths: list[Path], message: str) -> None:
+    def fail(root: Path, paths: list[Path], message: str, **stored: list[Path]) -> None:
         if message.startswith(f"[DATALAD RUNCMD] {failing}"):
             raise ProjectError("git commit failed")
-        save(root, paths, message)
+        save(root, paths, message, **stored)
 
     monkeypatch.setattr(dataset, "save", fail)
     with pytest.raises(ProjectError, match="git commit failed") as raised:
@@ -748,6 +748,23 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     assert "notes.py" not in ever_committed
 
 
+def test_an_analysis_git_does_not_hold_is_refused(root: Path, inline: None) -> None:
+    """ASTRA reads the analysis from the working tree, and a record names
+    the commit it is compared at. An ignored, untracked `astra.yaml` leaves
+    the tree clean and that commit without an analysis: whatever a run made
+    would be stale at once."""
+    (root / ".gitignore").write_text((root / ".gitignore").read_text() + "astra.yaml\n")
+    dataset._git(["rm", "-q", "--cached", "astra.yaml"], cwd=root)
+    dataset._git(["add", ".gitignore"], cwd=root)
+    dataset._git(["commit", "-q", "-m", "stop tracking the analysis"], cwd=root)
+    assert not dataset.status(root)
+
+    with pytest.raises(ProjectError, match="astra.yaml is not in git as a file of its own"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert not (root / "results/baseline").exists()
+
+
 def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not any("in flight" in w for w in report.warnings)
@@ -897,6 +914,119 @@ def test_a_record_another_filter_takes_is_refused(root: Path, inline: None) -> N
     )
 
 
+def test_a_record_an_expression_annexes_is_refused_before_it_is_committed(
+    root: Path, inline: None
+) -> None:
+    """An `annex.largefiles` expression can turn on the bytes, which do not
+    exist before the run, so what git staged is the answer: a record that
+    would land in the annex is committed by nothing, and nothing is left
+    staged."""
+    _rules(root, ".gitattributes", lambda text: text + ".astra/** annex.largefiles=largerthan=1b\n")
+    head = dataset.head(root)
+
+    with pytest.raises(ProjectError, match="staged in the annex") as raised:
+        engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+
+    assert ".astra/records/baseline/first.json" in str(raised.value)
+    assert dataset.head(root) == head
+    assert not dataset._git(["diff", "--cached", "--name-only"], cwd=root).strip()
+
+
+def test_a_clone_where_git_annex_was_never_set_up_is_refused(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clone holds `.gitattributes` but not the filter `git annex init`
+    configures, and git takes `filter=annex` naming no filter for none at
+    all: every result would be committed to git itself."""
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("a refused run contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+
+    with pytest.raises(ProjectError, match="git-annex is not set up in this clone"):
+        engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+
+def test_a_clone_made_right_after_a_run_can_fetch_what_it_committed(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """git-annex journals that this repository holds what a `git add`
+    stored, and commits that to its branch only at its next command: a
+    clone made before then is told of no copy. Each save is that command."""
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+    clone = _clone(root, tmp_path)
+
+    dataset._git(["annex", "get", "-q", "--", "results/baseline/first.txt"], cwd=clone)
+
+    assert (clone / "results/baseline/first.txt").read_text() == "alpha\n"
+
+
+# ---- what a result owns ------------------------------------------------------
+
+
+def test_a_result_declared_in_another_format_takes_its_earlier_file_with_it(
+    root: Path, inline: None
+) -> None:
+    """The format names the file, so a re-declared one is a new file: the
+    file the last run of the result committed goes with the commit that
+    makes the new one. A file merely named like the result is no output's,
+    and stays, committed or not."""
+    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+    notes = root / "results/baseline/first.notes"
+    notes.write_text("kept beside the result by hand\n")
+    dataset.save(root, [notes], "notes on first")
+    spec = root / "astra.yaml"
+    spec.write_text(
+        spec.read_text().replace("format: txt\n    decisions", "format: csv\n    decisions")
+    )
+    dataset.save(root, [spec], "first as csv")
+
+    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["first#baseline"], (report.failed, report.warnings)
+    held = dataset._git(["ls-tree", "--name-only", "HEAD", "--", "results/baseline/"], cwd=root)
+    assert held.split() == ["results/baseline/first.csv", "results/baseline/first.notes"]
+    assert not (root / "results/baseline/first.txt").exists()
+    assert notes.read_text() == "kept beside the result by hand\n"
+    assert not dataset.status(root)
+
+
+_BESIDE = """
+spec_version: "0.1.0"
+
+outputs:
+  fit:
+    type: data
+    format: txt
+    recipe:
+      command: echo fit > {output} && echo index > {output}.idx
+"""
+
+
+def test_a_file_a_recipe_writes_beside_its_result_is_not_the_results(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A result is the one file at its place. What else its recipe writes
+    there no output declares and no record names, so it is neither
+    committed as the result's nor removed as it: the run says it was left."""
+    root = analysis(_BESIDE)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["fit"], (report.failed, report.warnings)
+    committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=root).split()
+    assert sorted(committed) == [".astra/records/fit.json", "results/fit.txt"]
+    assert (root / "results/fit.txt.idx").read_text() == "index\n"
+    assert any(
+        "results/fit.txt.idx" in w and "left uncommitted" in w for w in report.warnings
+    ), report.warnings
+
+
 # ---- the commit message ----------------------------------------------------
 
 
@@ -1000,20 +1130,6 @@ def test_every_record_of_one_run_names_the_commit_it_started_from(
         for name in ("first", "second")
     }
     assert commits == {started_from}
-
-
-def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
-    root: Path, inline: None, tmp_path: Path
-) -> None:
-    """Records are in git, so a result whose bytes were never fetched is
-    still classifiable — ASTRA's checker reads the pointer file sitting in
-    its place as a stand-in for the content, never as the content."""
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    clone = _clone(root, tmp_path)
-    pointer = (clone / "results/baseline/first.txt").read_text()
-    assert pointer.startswith("/annex/objects/")  # content really is absent
-
-    assert engine.check(clone, []).planned == {}
 
 
 def _clone(root: Path, into: Path) -> Path:
@@ -1122,6 +1238,115 @@ def test_content_another_tool_keeps_is_refused_before_anything_runs(
     assert not dataset.status(root)
 
 
+def test_text_that_only_opens_like_a_git_lfs_pointer_is_read(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """ASTRA reads a Git LFS pointer by all of it, and so does lc: a file
+    that only opens like one is content, which its recipe reads."""
+    text = "version https://git-lfs.github.com/spec/v1\nis how a pointer opens\n"
+    root = analysis(_FETCH_SPEC, files={"data/catalog.fits": text})
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["copy"], (report.failed, report.warnings)
+    assert (root / "results/copy.txt").read_text() == text
+
+
+#: A Git LFS pointer, as printf's format: each `\\n` a line break.
+_LFS = "version https://git-lfs.github.com/spec/v1\\noid sha256:" + "a" * 64 + "\\nsize 12\\n"
+
+_POINTER = f"""
+spec_version: "0.1.0"
+
+outputs:
+  pointer:
+    type: data
+    format: txt
+    recipe:
+      command: printf '{_LFS}' > {{output}}
+"""
+
+
+def test_a_result_that_reads_as_a_stand_in_is_not_recorded(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """ASTRA reads a file shaped like a Git LFS pointer as one, for bytes a
+    record of the file itself does not give: recorded, the result could
+    never be checked, and every check would plan it again."""
+    root = analysis(_POINTER)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.failed == ["pointer"]
+    assert any("Git LFS stand-in" in w for w in report.warnings), report.warnings
+    assert not (root / ".astra/records/pointer.json").exists()
+    assert not dataset.status(root)
+
+
+def test_a_fetched_result_whose_bytes_are_not_its_records_is_read_by_nothing(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """A git-annex key of another backend than SHA256 gives no SHA-256, so
+    ASTRA's checker takes it to stand for the recorded bytes until they are
+    here. Bytes committed over a result that way, and fetched for what reads
+    it, are hashed before anything reads them: nothing is recorded as reading
+    the record's bytes while it read others, and with them in the clone, the
+    next run makes the result again."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    # git-annex keeps a modified file's backend, so the new bytes go in as
+    # a new file.
+    first = root / "results/baseline/first.txt"
+    first.unlink()
+    dataset.save(root, [first], "remove first")
+    first.write_text("written over by hand\n")
+    dataset._git(["config", "annex.backend", "MD5E"], cwd=root)
+    dataset.save(root, [first], "write over first")
+    clone = _clone(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(
+        spec.read_text().replace(
+            "cat {inputs.first} > {output}", "cat {inputs.first} > {output} && true"
+        )
+    )
+    dataset.save(clone, [spec], "change only the second recipe")
+    assert set(engine.check(clone, []).planned) == {"second#baseline"}
+
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert (report.failed, report.blocked) == (["first#baseline"], ["second#baseline"])
+    assert any("not the ones its record gives" in w for w in report.warnings)
+    assert not dataset.status(clone)
+    assert set(engine.check(clone, []).planned) == {"first#baseline", "second#baseline"}
+    again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+    assert again.made == ["first#baseline", "second#baseline"], (again.failed, again.warnings)
+    assert (clone / "results/baseline/second.txt").read_text() == "alpha\n"
+
+
+def test_on_a_bytes_free_clone_check_and_status_fetch_nothing_and_plan_what_a_run_makes(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """Records are in git and ASTRA's checker reads each pointer as a
+    stand-in, so a clone holding only pointers is classified as it is:
+    `status` and `--check` report an unfetched input as a fact, never a
+    transfer, and what `--check` plans there is what a run then makes."""
+    root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = _clone(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(spec.read_text().replace("cat {inputs.catalog}", "cat -u {inputs.catalog}"))
+    dataset.save(clone, [spec], "change the recipe")
+
+    states = [(found.result, found.state) for found in engine.status(clone).results]
+    planned = engine.check(clone, []).planned
+
+    assert states == [("copy", "stale")]
+    assert set(planned) == {"copy"}
+    for unfetched in ("data/catalog.fits", "results/copy.txt"):
+        with pytest.raises(content.ContentNotFetchedError):
+            content.require_fetched(clone / unfetched)
+    assert engine.materialize(clone, [], cluster_id=CLUSTER_ID).made == list(planned)
+
+
 def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
     analysis: Callable[..., Path], inline: None, tmp_path: Path
 ) -> None:
@@ -1131,6 +1356,7 @@ def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
     clone = _clone(root, tmp_path)
+    assert engine.check(clone, []).planned == {}
     again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert again.up_to_date, (again.failed, again.warnings)
@@ -1217,18 +1443,6 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     assert any("could not be fetched" in w for w in report.warnings)
 
 
-def test_check_mode_never_fetches(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`--check` and `status` are read-only verbs: an unfetched input is a
-    reported fact there, never a network transfer."""
-
-    def refuse(*args: Any) -> None:
-        raise AssertionError("check mode fetched")
-
-    monkeypatch.setattr(engine, "_fetch_inputs", refuse)
-    engine.check(root, [])
-    engine.status(root)
-
-
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
@@ -1297,8 +1511,20 @@ def test_the_recorded_command_reproduces_the_result(
     assert not dataset.status(root)
 
 
+_IMPORTS = """
+spec_version: "0.1.0"
+
+outputs:
+  version:
+    type: data
+    format: txt
+    recipe:
+      command: python -c 'import idna; print(idna.__version__)' > {output}
+"""
+
+
 def test_the_recorded_command_holds_on_a_fresh_clone(
-    root: Path,
+    analysis: Callable[..., Path],
     inline: None,
     tmp_path: Path,
     engine_dist: tuple[str, Path],
@@ -1308,12 +1534,14 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     against a missing environment silently creates an *empty* one — so the
     record only reproduces the output because the worker converges the
     environment for itself. The in-place rerun above cannot catch a missing
-    sync; this is the test that does."""
+    sync; this is the test that does. The recipe imports what the lock
+    pins and writes its version, which no empty environment holds."""
     pytest.importorskip("datalad")
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
-    engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-    original = json.loads((root / _FIRST_RECORD).read_text())
+    root = with_idna(analysis(_IMPORTS))
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    original = json.loads((root / ".astra/records/version.json").read_text())
 
     clone = _clone(root, tmp_path)
     assert not (clone / ".venv").exists()
@@ -1327,9 +1555,10 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     )
 
     assert proc.returncode == 0, proc.stderr
-    rerun = json.loads((clone / _FIRST_RECORD).read_text())
+    rerun = json.loads((clone / ".astra/records/version.json").read_text())
     assert rerun["content_hash"] == original["content_hash"]
-    assert (clone / ".venv").exists()
+    made = (clone / "results/version.txt").read_text().strip()
+    assert made == locked_version(clone, "idna")
 
 
 # ---- the scheduler seam ----------------------------------------------------
