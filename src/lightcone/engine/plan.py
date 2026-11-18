@@ -129,10 +129,6 @@ class Graph:
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
-    #: The analysis's ``label`` and ``description``, as its file writes
-    #: them: what a publication of its results is titled with.
-    label: str = ""
-    description: str = ""
 
     def closure(self, targets: list[Key]) -> Graph:
         """Narrow the graph to *targets* and what they depend on.
@@ -259,8 +255,6 @@ def build(root: Path) -> Graph:
         tasks=tasks,
         found={key: report.statuses[key] for key in tasks},
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
-        label=driving.label or "",
-        description=driving.description or "",
     )
 
 

@@ -453,7 +453,7 @@ def test_a_remake_with_other_bytes_remakes_its_dependents(
 def test_a_payload_from_an_earlier_format_does_not_survive_a_rebuild(root: Path) -> None:
     """The reset takes every file named after the output, not just the one
     the spec declares today — so re-declaring the serialization leaves no
-    orphan behind for the publication view to trip over."""
+    orphan behind."""
     _make(root, "first#baseline")
     earlier = root / "results/baseline/first.json"
     earlier.write_text("from a run that declared another format\n")

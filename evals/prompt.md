@@ -133,21 +133,8 @@ everything the commands name. For each output:
 Build iteratively from upstream outputs to downstream. `lc status` shows
 where every output stands.
 
-## Publication
-
-Once every output is materialized, prepare the repository for
-publication:
-
-1. Declare a license in `pyproject.toml`, as an SPDX expression under
-   `[project]` — e.g. `license = "CC-BY-4.0"`. Declaring one is what
-   turns publication on: from then on `lc materialize` also maintains
-   `ro-crate-metadata.json` at the project root, an RO-Crate view of
-   the project and its provenance.
-2. Commit the edit, then run `lc materialize <cluster_id>` once more — nothing is
-   remade, but the crate document is generated and committed.
-
 You're done when `astra validate astra.yaml` and
-`lc materialize --check` pass and `ro-crate-metadata.json` exists.
+`lc materialize --check` pass.
 Release your allocation with `lc compute down <cluster_id>` when finished.
 
 Skip plan approval and interactive confirmations — this is an automated

@@ -439,7 +439,6 @@ def status(as_json: bool) -> None:
         }[state]
         lines.append(f"  image:   {tag} — {described}")
     lines.append(f"  sandbox: {escape(report.sandbox)}")
-    lines.append(f"  crate:   {escape(report.crate)}")
     lines.append("")
     marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
     width = max((len(o.output) for o in report.outputs), default=0)

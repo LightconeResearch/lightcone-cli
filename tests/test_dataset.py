@@ -292,20 +292,6 @@ def test_save_stages_what_a_rebuild_deleted(repo: Path) -> None:
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
-def test_tracked_records_are_only_the_ones_under_astra_records(repo: Path) -> None:
-    """`.astra/records/` is the only place a record is; a JSON file
-    elsewhere is the user's own, whatever it is called."""
-    ours = repo / ".astra" / "records" / "baseline" / "fit.json"
-    ours.parent.mkdir(parents=True)
-    ours.write_text("{}\n")
-    theirs = repo / "data" / "records" / "baseline" / "fit.json"
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("[1, 2, 3]\n")
-    dataset.save(repo, [repo / ".astra", repo / "data"], "both")
-
-    assert dataset.tracked_records(repo) == [".astra/records/baseline/fit.json"]
-
-
 def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
     """The invariant that makes the dirty-tree refusal survivable: a recipe
     that truncates a committed output and then fails must not leave the
@@ -810,52 +796,6 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
 
 
 # ---- who last wrote a path -------------------------------------------------
-
-
-def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -> None:
-    """The crate's per-file checksums come from here, and they must
-    answer on a clone that holds none of the bytes — `--include=*` is
-    what turns `find` from "present files" into "annexed files"."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "value.dat").write_bytes(b"x" * 300)
-    dataset.save(repo, [out], "make fit")
-
-    keys = dataset.annex_keys(repo)
-    key = keys["results/fit/value.dat"]
-    assert key.startswith("SHA256E-s300--"), key
-    assert ".gitattributes" not in keys, "git-carried files have no key"
-
-    clone = repo.parent / "clone"
-    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=repo.parent)
-    # A clone inherits no local config, and annex init in a *clone* has
-    # remote git-annex branch state to commit — identity required, where
-    # a fresh repo's init tolerates its absence.
-    for key_, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key_, value], cwd=clone)
-    dataset.init_annex(clone)
-    assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
-        "keys are repository state, bytes not required"
-    )
-
-
-def test_annex_keys_survives_a_tab_in_a_filename(repo: Path) -> None:
-    """git-annex emits ${file} unescaped, so the parse splits from the
-    *last* tab — keys never contain one, filenames legally can."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "run\t1.dat").write_bytes(b"x" * 300)
-    dataset.save(repo, [out], "make fit")
-
-    keys = dataset.annex_keys(repo)
-    assert keys["results/fit/run\t1.dat"].startswith("SHA256E-s300--")
-
-
-def test_annex_keys_of_a_plain_directory_is_empty(tmp_path: Path, real_tools: None) -> None:
-    """Cannot say is empty, never an error — the last_writer discipline."""
-    bare = tmp_path / "bare"
-    bare.mkdir()
-    assert dataset.annex_keys(bare) == {}
 
 
 def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:

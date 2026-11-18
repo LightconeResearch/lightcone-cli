@@ -212,12 +212,6 @@ def test_what_astra_notes_is_kept_for_the_run_to_report(tmp_path: Path) -> None:
     assert any("elsewhere" in note for note in notes)
 
 
-def test_the_analysis_label_and_description_are_kept(tmp_path: Path) -> None:
-    spec = _SPEC.replace("label: demo", "label: demo\ndescription: A test.")
-    graph = _build(_project(tmp_path, spec))
-    assert (graph.label, graph.description) == ("demo", "A test.")
-
-
 # ---- ordering, closure, targets --------------------------------------------
 
 

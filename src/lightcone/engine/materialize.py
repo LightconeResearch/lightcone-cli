@@ -31,7 +31,6 @@ task — that is what puts git back in the workers.
 
 from __future__ import annotations
 
-import functools
 import json
 import re
 import shlex
@@ -138,7 +137,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             target matches nothing.
     """
     report = MaterializeReport()
-    graph, environment, _ = _graph(root, targets, report)
+    graph, environment = _graph(root, targets, report)
     for found in _classify(root, graph, environment, refresh=refresh):
         verdict = found.verdict
         if verdict.calls_for_a_remake(refresh=refresh):
@@ -305,10 +304,6 @@ class StatusReport:
     #: The project's environment as a record made now would name it. A
     #: result whose own ``environment`` differs is the one that is behind.
     environment: str = ""
-    #: Where the publication view stands — maintained, and if so whether
-    #: it still reflects the outputs. Repository facts only, like the
-    #: rest of the header.
-    crate: str = ""
 
     @property
     def counts(self) -> dict[str, int]:
@@ -329,7 +324,6 @@ class StatusReport:
             "image": self.image,
             "sandbox": self.sandbox,
             "environment": self.environment,
-            "crate": self.crate,
             "counts": self.counts,
             "outputs": [output.as_dict() for output in self.outputs],
             "warnings": self.warnings,
@@ -360,8 +354,7 @@ def status(root: Path) -> StatusReport:
     if state != "direct":
         result.image = {"tag": tag, "state": state, "archive": archive}
     result.sandbox = _sandbox_line(result.mode)
-    stamps = []
-    graph, environment, _ = _graph(root, [], report)
+    graph, environment = _graph(root, [], report)
     result.environment = environment
     for found in _classify(root, graph, environment, refresh=False):
         verdict = found.verdict
@@ -370,9 +363,6 @@ def status(root: Path) -> StatusReport:
             # made again, whatever it is in itself.
             verdict = assets.Verdict("stale", f"`{found.upstream}`, which it reads, is stale")
         run = found.record.generated_by if found.record else None
-        # The crate's date is its newest published record's (`_published`).
-        if run and run.finished and not found.may_run(refresh=False):
-            stamps.append(run.finished)
         result.outputs.append(
             OutputStatus(
                 output=found.task.key,
@@ -384,59 +374,8 @@ def status(root: Path) -> StatusReport:
                 foreign_write=found.foreign.sha if found.foreign else "",
             )
         )
-    result.crate = _crate_line(root, max(stamps, default=""))
     result.warnings = report.warnings
     return result
-
-
-def _published(root: Path, graph: Graph) -> dict[Key, ProvenanceRecord]:
-    """The results the publication view describes as made, with their records.
-
-    Those a run would leave alone, and no others: a result that is stale —
-    by ASTRA's checker, by its bytes, or by a foreign write — or made from
-    one that is, is described by a record the project no longer bears out.
-    The one rule, for the crate and for `lc status`'s line about it.
-    """
-    return {
-        found.task.key: found.record
-        for found in _classify(root, graph, identity.environment(root), refresh=False)
-        if found.record is not None and not found.may_run(refresh=False)
-    }
-
-
-def _crate_line(root: Path, newest: str) -> str:
-    """One line placing the publication view, from repository facts alone.
-
-    Lag is read off the document itself, not history: the render pins
-    ``datePublished`` to the newest record's ``finished``, so a date
-    that no longer matches the records — in either direction, a rerun
-    adds a result the view predates and a dropped output regresses the
-    newest — means the view no longer describes the results. That is the
-    line's whole claim, and it is worded to it: a crate-affecting edit
-    that moves no record (the lock's bytes, the spec) is invisible
-    here, and fine — the next materialize converges those anyway, where
-    a rerun's lag has no other surface. No rocrate import (the crate is
-    the one materialize-only dependency on status's path) and no git:
-    the records were already read by the walk.
-    """
-    spdx = project.license_of(root)
-    path = root / project.CRATE_FILENAME
-    if not spdx:
-        if path.is_file():
-            return "no longer maintained — pyproject.toml declares no [project].license"
-        return "not maintained — declare [project].license to enable it"
-    if not path.is_file():
-        return "will be created by the next `lc materialize`"
-    try:
-        entities = json.loads(path.read_text()).get("@graph", [])
-        published = next(
-            (str(e.get("datePublished", "")) for e in entities if e.get("@id") == "./"), ""
-        )
-    except (OSError, ValueError, AttributeError):
-        return "unreadable — the next `lc materialize` rewrites it"
-    if newest and published != newest:
-        return "behind the outputs — `lc materialize` refreshes it"
-    return "up to date with the outputs"
 
 
 def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
@@ -516,19 +455,16 @@ def materialize(
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
-    graph, environment, full = _graph(root, targets, report)
-    dsid = dataset.dataset_id(root)
+    graph, environment = _graph(root, targets, report)
     classified = _classify(root, graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
-        # Nothing to make is not nothing to do: the crate describes the
-        # project, and this is its only maintainer. Nothing is submitted,
-        # so no allocation is needed.
+        # Nothing is submitted, so no allocation is needed.
         for found in classified:
             _left_alone(found, report)
-        _converge_crate(root, report, full, dsid)
         return report
     _require_storable(root, graph)
+    dsid = dataset.dataset_id(root)
     with cluster_for_run(cluster_id) as scheduler:
         requirements = scheduler.validate(running)
         # A result certain to be remade is the one thing a run need not
@@ -632,7 +568,6 @@ def materialize(
                 f"edited while the run was in flight: {names} — the records name "
                 "the starting commit, which no longer describes this code"
             )
-        _converge_crate(root, report, full, dsid)
         return report
 
 
@@ -920,103 +855,6 @@ def _require_storable(root: Path, graph: Graph) -> None:
 
 
 # =============================================================================
-# The publication view
-# =============================================================================
-
-
-def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: str) -> None:
-    """Bring ``ro-crate-metadata.json`` in line with the repository.
-
-    A derived artifact, converged the way ``uv.lock`` is: rendered from
-    repository state, compared, and committed only on a difference — so
-    an idempotent re-run commits nothing and nobody has to remember a
-    verb. Maintenance is derived from publication intent: a declared
-    ``[project].license`` turns it on, the same shape as
-    ``[tool.lightcone.image]`` deriving containerized mode. Runs after
-    the consume loop, driver-side, on the full graph rather than the
-    run's targets — the crate describes the project, not one invocation.
-    (The rerun entry point does not come through here: it is one task's
-    executor, so the crate lags until the next materialize.)
-
-    Contained on purpose: by the time this runs every output is already
-    committed, so a failure here becomes a warning and the report still
-    reaches the user — the crate is the publication view, not the run.
-    An interrupt between the write and its commit restores the file, so
-    the tree ends as clean as the loop left it; and the save runs even
-    when the text already matches, healing a previously interrupted
-    converge whose write survived uncommitted.
-
-    Args:
-        root: The project root.
-        report: Collects the one maintenance line and any warnings.
-        full: The whole-project graph, as read before the run — never a
-            run's narrowed one.
-        dsid: The dataset's UUID, already read by the caller.
-    """
-    # Deferred so `lc status` and `--check` never import rocrate — the
-    # crate is the one materialize-only dependency on their shared path.
-    from lightcone.engine import crate
-
-    spdx = project.license_of(root)
-    path = root / project.CRATE_FILENAME
-    if not spdx:
-        report.warnings.append(
-            f"pyproject.toml no longer declares [project].license, so "
-            f"{project.CRATE_FILENAME} is no longer maintained"
-            if path.exists()
-            else "no [project].license in pyproject.toml, so no RO-Crate "
-            "publication view is maintained — declare one to enable it"
-        )
-        return
-    if dataset.status(root):
-        # The crate is a function of what is committed, and it is read off
-        # the working tree: one being edited would publish the edit.
-        report.warnings.append(
-            "the project has uncommitted changes, so the RO-Crate publication view "
-            "was not brought up to date — the next `lc materialize` does it"
-        )
-        return
-    # A set difference rather than a walk driven by the spec: what is on
-    # disk is exactly what the *previous* spec planned, so the edit that
-    # orphans a record is the same edit that drops it from the graph.
-    # Enumerated from git, which answers for the tree as committed.
-    expected = {
-        plan.declared_path(root, record) for task in full.tasks.values() for record in task.records
-    }
-    for record in sorted(set(dataset.tracked_records(root)) - expected):
-        report.warnings.append(
-            f"{record} is the record of a result the analysis no longer plans, "
-            "so that result is not in the publication view"
-        )
-    try:
-        # The graph holds the records as they were when the run started;
-        # what the run made has new ones, so they are read again.
-        if report.made:
-            full = plan.build(root)
-        document = crate.render(
-            root,
-            full,
-            _published(root, full),
-            license=spdx,
-            dsid=dsid,
-            writer=functools.partial(dataset.last_writer, root),
-            keys=dataset.annex_keys(root),
-        )
-        if not (path.is_file() and path.read_text() == document):
-            path.write_text(document)
-        try:
-            dataset.save(root, [path], "Update the RO-Crate publication view")
-        except BaseException:
-            # An interrupt or a git failure between the write and its
-            # commit must not leave a file lc wrote for the next run's
-            # dirty refusal to blame on the user.
-            dataset.restore(root, [path])
-            raise
-    except Exception as e:
-        report.warnings.append(f"the RO-Crate publication view could not be updated: {e}")
-
-
-# =============================================================================
 # The commit
 # =============================================================================
 
@@ -1139,14 +977,12 @@ def _repository_url() -> str:
 
 def _graph(
     root: Path, targets: Sequence[str], report: MaterializeReport
-) -> tuple[Graph, str, Graph]:
+) -> tuple[Graph, str]:
     """The tasks a run covers, and the environment they will be compared to.
 
     The lock scan runs here, once, for both modes: what it refuses is a
     dependency whose bytes the lock does not pin, which makes every hash
-    below it a claim nobody can check. The unnarrowed graph is returned
-    beside the narrowed one, because the crate describes the whole
-    project and must not pay a second spec validation to see it.
+    below it a claim nobody can check.
     """
     scan = identity.scan_lock(root)
     if scan.refusals:
@@ -1174,10 +1010,11 @@ def _graph(
         )
 
     environment = identity.environment(root)
-    full = plan.build(root)
-    report.warnings.extend(full.notes)
-    graph = full.closure(full.resolve(list(targets))) if targets else full
-    return graph, environment, full
+    graph = plan.build(root)
+    report.warnings.extend(graph.notes)
+    if targets:
+        graph = graph.closure(graph.resolve(list(targets)))
+    return graph, environment
 
 
 def _owned(root: Path, task: Task) -> list[str]:

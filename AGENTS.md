@@ -11,7 +11,7 @@ User documentation lives in a separate repository (LightconeResearch/docs), not 
 ## Commands
 
 ```bash
-uv sync --group dev                 # pytest, ruff, mypy, datalad, roc-validator
+uv sync --group dev                 # pytest, ruff, mypy, datalad
 uv run pytest                       # whole suite
 uv run pytest tests/test_plan.py::test_name   # one test
 uv run ruff check src/ tests/       # --fix to apply
@@ -28,7 +28,6 @@ Several suites skip when their prerequisite is absent, and CI turns each skip in
 |---|---|---|
 | `LC_SANDBOX_TESTS_REQUIRED=1` | `test_sandbox_enforcement.py` | Landlock (Linux) or Seatbelt (macOS) |
 | `LC_CONTAINER_TESTS_REQUIRED=1` | `test_container_smoke.py` | podman or docker |
-| `LC_CRATE_TESTS_REQUIRED=1` | `test_crate_smoke.py` | `rocrate-validator` (in the dev group) |
 
 The `uv-floor` CI job reruns the uv-touching suites against uv 0.7.0. That version must equal the `required-version` floor in `src/lightcone/engine/templates/files/pyproject.toml.tmpl`; change both together.
 
@@ -53,7 +52,6 @@ A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml`, in
 - **Exec boundary** (`sandbox/`): `policy.py` builds mechanism-free path sets; a `Backend` is a pure `wrap(policy, argv) -> argv`; `boundary.py` picks the backend, runs it and returns an `Attestation` of what was actually enforced. The backends are Landlock (through the stdlib-only shim `_sandbox_exec.py`), Seatbelt (generated SBPL), and OCI (podman, podman-hpc, docker), where the mount table is the mechanism. The tree is read-only apart from the write scope. Network is deliberately not controlled. `lc run` puts a probe under the same boundary a recipe gets.
 - **Containers** (`image.py` pure, `container.py` impure): declaring `[tool.lightcone.image]` in `pyproject.toml` switches the project to containerized mode. Nobody authors a Containerfile. The built image is saved as a docker-archive, annexed and committed in the repository; runtimes load it from there, and their local stores are only caches.
 - **Compute** (`compute/`): allocation is explicit. `lc compute launch` starts a local or Slurm Dask cluster from an offer in the catalog, and `lc run` / `lc materialize` take its name or ID as their first argument. Providers own the native lifecycle; the engine borrows a standard Dask client.
-- **Publication** (`crate.py`): `ro-crate-metadata.json` is a pure function of repository state (sorted iteration, no clock), converged by `materialize` like `uv.lock`. There is no export verb.
 
 ### The runner's rules
 
@@ -89,11 +87,11 @@ These came out of review and apply to every change.
 - Ruff (E, F, I, N, W, UP), line length 100, target py311. mypy strict with `namespace_packages` and `explicit_package_bases`.
 - Google-style docstrings on public functions. Click command callbacks are the exception: their docstring is the `--help` text and stays prose.
 - `worker.py` and `_sandbox_exec.py` are on the `python -m` path of every task. Keep `worker.py` free of click and rich; keep `_sandbox_exec.py` stdlib-only with no lightcone imports.
-- `image.py` and `crate.py` are pure. Test their structure and ordering, not byte goldens; the one byte-level claim is that rendering twice gives identical output.
+- `image.py` is pure. Test its structure and ordering, not byte goldens; the one byte-level claim is that rendering twice gives identical output.
 
 ## Testing patterns
 
-- Tests mirror `src/`. Pure suites (`test_identity`, `test_assets`, `test_plan`, `test_image`, `test_crate`, `test_sandbox_policy`, `test_sandbox_wrap`, `test_sandbox_denial`, `test_sandbox_oci`) spawn nothing and run on any OS.
+- Tests mirror `src/`. Pure suites (`test_identity`, `test_assets`, `test_plan`, `test_image`, `test_sandbox_policy`, `test_sandbox_wrap`, `test_sandbox_denial`, `test_sandbox_oci`) spawn nothing and run on any OS.
 - `test_dataset`, `test_worker` and `test_materialize` run real git, git-annex and uv on purpose. Whether bytes land in the annex and whether the tree ends clean are questions a stub cannot answer.
 - `materialize.cluster_for_run` is the monkeypatch point for graph tests that should not launch a real cluster.
 - `test_runner_rules.py` has one test per rule of the specification's runner layer lc keeps, named after its code, on a real project; `test_false_record` asks ASTRA's own checker (`astra.api.status`) whether what lc wrote holds.
@@ -145,6 +143,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 - The driver and a task differ by one input value to `classify()`, never by logic: `read`, the bytes of each result this one reads. A task gives what its upstreams actually produced; the driver gives what their records say, or `None` while one of them may still be remade, in which case only the task can decide. A foreign write enters the same way, as a fact computed by whoever has git.
 - ASTRA's checker says what a result breaks in itself (`Status.why`) and, separately, which results it reads were not unchanged when it looked (`Status.stale_inputs`). lc reads the first and not the second: by the time `classify()` is asked, a run may have remade those results, so it compares the bytes they have now with the bytes the record says were read. This is what lets a byte-identical rebuild stop a cascade. What stales from `why` is an error, or the warning `ABSENT_RESULT`: bytes at the result's place that are neither the record's nor a stand-in for them, so what is there is not what the record describes. Unfetched content stood in for is no diagnostic at all.
 - A skip returns the recorded digest, never a recomputed one, so bytes-free clones classify correctly.
+- A foreign write is detected when the commit that last touched an output does not carry its run-record subject. `materialize.datalad_run_subject` is the one spelling of that subject.
 - `--refresh` widens a run by exactly one state. There is no flag that suppresses remaking a stale output.
 - `lc status` always exits 0 and tolerates a dirty tree; `materialize --check` is the gate. `up_to_date` ignores `behind` and is false for a failed run.
 - A result's name is its output's id, which ASTRA's grammar keeps free of dots, while a format may hold one (`tar.gz`): `assets.record_path` finds a result file's record by splitting its name on the first dot.
@@ -211,21 +210,12 @@ Each of these was learned from a real failure or a measurement, and most are not
 - Recipe resources are cooperative Dask reservations, not OS limits. A recipe `time_limit` is refused. A GPU recipe takes the worker's whole GPU mask. GPU visibility comes from the allocation's `CUDA_VISIBLE_DEVICES`; nothing probes hardware.
 - At NERSC, `UV_CACHE_DIR` must be off `$HOME`, since compute nodes cannot lock files there. The user exports it before `lc compute launch`.
 
-### Crate
-
-- A `[project].license` turns crate maintenance on. Nothing invents a license.
-- `datePublished` is the newest record's `finished`, overriding rocrate's default of construction time. It keeps the clock out of the render and is what lets `lc status` see a lagging crate.
-- A published `sha256` is always a raw digest that `sha256sum` can verify. Out-of-tree inputs publish none. `dataset.annex_keys` uses `git annex find --include=*`, because a bare `find` lists only files present locally.
-- The crate's `Person` is the author of the result's saving commit, not of the commit its record names.
-- The crate is rendered from the records ASTRA's checker read, so the graph is read again after a run that made something. It describes as made exactly the results a run would leave alone (`materialize._published`), and `lc status` dates the crate by the same ones; any other is a step of the workflow only. It is rendered only from a tree that is its commit, since it is read off the working tree. Nothing is read from the clone's own configuration, such as its `origin` URL: two clones of one commit render one document.
-- A foreign write is detected when the commit that last touched an output does not carry its run-record subject. `materialize.datalad_run_subject` is the one spelling of that subject.
-
 ## Decided against
 
 Do not reintroduce these without a new reason.
 
 - **A launcher, or the engine as a project dependency.** The `lc` that was invoked is the engine. Project locks carry only what the analysis imports.
-- **`lc verify` and `lc export`.** A full rehash is O(bytes) and blind on unfetched outputs, while history answers on a bytes-free clone. The repository already is the crate.
+- **`lc verify` and `lc export`.** A full rehash is O(bytes) and blind on unfetched outputs, while history answers on a bytes-free clone.
 - **Bare-recipe run records.** `datalad rerun` executes the recorded string literally, so a recipe would replay unconfined and write no record.
 - **bubblewrap.** Its advantage is rights subtraction, which the policy never needs. Reconsider only if a policy shape needs subtraction or `bwrap` becomes universal.
 - **Controlling the network.** Every mechanism attests `network: allowed`. `denied` stays in the type for a mechanism that really denies.

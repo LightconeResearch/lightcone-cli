@@ -291,8 +291,8 @@ def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
     repository — and since nothing parses paths out of its output, no
     prefix handling is needed.
 
-    "Cannot say" is the empty answer, never an error: the callers are
-    ``lc status`` and the crate render, and a read-only verb must not
+    "Cannot say" is the empty answer, never an error: the caller is
+    ``lc status``, and a read-only verb must not
     refuse a project over an unborn HEAD, a deposit stripped of its
     ``.git``, or a host without git — states such projects are actually
     in.
@@ -325,36 +325,6 @@ def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
     return LastWrite(*out.split("\0"))
 
 
-def annex_keys(directory: Path) -> dict[str, str]:
-    """Map every annexed file to its key, repository-relative.
-
-    One process for the whole tree. ``--include=*`` is load-bearing: a
-    bare ``find`` lists only files whose *content* is present, and the
-    crate must answer on a clone that holds none of the bytes — the keys
-    are repository state, which is what keeps the render pure.
-
-    "Cannot say" — no annex, no git, an unborn repository — is the empty
-    answer, never an error, the :func:`last_writer` discipline.
-
-    Args:
-        directory: The project root.
-
-    Returns:
-        ``{relative path: key}`` for every annexed file.
-    """
-    out = _ask(["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"], cwd=directory)
-    keys: dict[str, str] = {}
-    for line in (out or "").splitlines():
-        # From the *last* tab: git-annex emits ${file} unescaped, so a
-        # tab in a filename would otherwise split inside the path and
-        # hand back a truncated file with a corrupted key. Keys never
-        # contain tabs, so the rightmost split is always the real one.
-        file, sep, key = line.rpartition("\t")
-        if sep and file and key:
-            keys[file] = key
-    return keys
-
-
 def untracked(directory: Path, paths: Iterable[str]) -> list[str]:
     """Find which of *paths* git is not tracking.
 
@@ -372,23 +342,6 @@ def untracked(directory: Path, paths: Iterable[str]) -> list[str]:
     paths = list(paths)
     listed = _git(["ls-files", "-z", "--", *paths], cwd=directory).split("\0")
     return [path for path in paths if path not in listed]
-
-
-def tracked_records(directory: Path) -> list[str]:
-    """Every record git is tracking under the project's ``.astra/``.
-
-    From the index rather than a directory walk: it is exact and it costs
-    one process. Untracked strays are the dirty check's business, not
-    this one's.
-
-    Args:
-        directory: The project root.
-
-    Returns:
-        Paths from the project root, unordered.
-    """
-    listed = _git(["ls-files", "-z", "--", ":(glob).astra/records/**/*.json"], cwd=directory)
-    return [name for name in listed.split("\0") if name]
 
 
 def require_free_index(directory: Path) -> None:

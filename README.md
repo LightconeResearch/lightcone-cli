@@ -47,7 +47,6 @@ drafted with any AI coding assistant.
 - **Provenance by construction** — every output is committed to git together with its ASTRA provenance record and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
 - **Locked, isolated execution** — a project's environment is `pyproject.toml` + `uv.lock`; recipes run in it under a sandbox (Landlock on Linux, Seatbelt on macOS) that keeps undeclared files out and stray writes contained
 - **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; allocate local or Slurm Dask clusters explicitly with `lc compute`, then pass the cluster name or full ID to `run` or `materialize`
-- **Publication view** — declare a license and `lc materialize` maintains an [RO-Crate](https://www.researchobject.org/ro-crate/) of the project and its provenance, ready to archive or deposit
 
 → [Full documentation](https://docs.lightconeresearch.org)
 

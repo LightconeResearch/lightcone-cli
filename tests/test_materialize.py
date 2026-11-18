@@ -566,7 +566,6 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
     root = analysis(
         'spec_version: "0.1.0"\n',
     )
-    _declare_license(root)
 
     def unexpected(*args: object) -> None:
         pytest.fail("a run that submits nothing contacted the cluster")
@@ -575,7 +574,6 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok and report.up_to_date
-    assert (root / "ro-crate-metadata.json").is_file()
 
 
 def test_a_project_with_nothing_to_make_needs_no_cluster(
@@ -739,9 +737,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     """`dataset.save` stages scoped and commits scoped — a partial
     commit — so work the user staged while the graph ran ends the run
     exactly where they left it: staged, warned about, and in none of
-    lc's commits (the per-output saves and the trailing crate commit
-    alike)."""
-    _declare_license(root)
+    lc's commits."""
 
     class Staging(_Inline):
         def completed(self, handles: list[object]) -> Iterator[object]:
@@ -1649,170 +1645,3 @@ def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None)
     assert "first#baseline" in report.made
     assert forged.read_text() == "alpha\n"  # the recipe's bytes, not the hand's
     assert all(not o.foreign_write for o in engine.status(root).outputs)
-
-
-# ---- the publication view --------------------------------------------------
-
-
-def _declare_license(root: Path) -> None:
-    """Declare publication intent the way a researcher would: one key,
-    committed like any other edit."""
-    pyproject = root / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
-    dataset.save(root, [pyproject], "declare a license")
-
-
-def test_an_unlicensed_project_gets_no_crate_and_one_report_line(
-    root: Path, inline: None
-) -> None:
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert not (root / "ro-crate-metadata.json").exists()
-    assert any("[project].license" in w for w in report.warnings)
-
-
-def test_a_licensed_materialize_converges_the_crate_and_commits_it(
-    root: Path, inline: None
-) -> None:
-    _declare_license(root)
-
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    crate_path = root / "ro-crate-metadata.json"
-    assert crate_path.is_file()
-    assert not dataset.status(root)  # committed, tree exactly as clean as before
-    assert dataset.last_writer(root, crate_path).subject == "Update the RO-Crate publication view"
-    graph = json.loads(crate_path.read_text())["@graph"]
-    types = {e["@id"]: e["@type"] for e in graph}
-    assert "OrganizeAction" in types.values()
-    assert types["results/baseline/first.txt"] == "File"
-
-
-def test_an_idempotent_rerun_commits_nothing(root: Path, inline: None) -> None:
-    """The document is a pure function of repository state — a re-render at
-    the same state is a string compare, not a commit."""
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    before = _commits(root)
-
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert _commits(root) == before
-
-
-def test_declaring_a_license_later_creates_the_crate_then(root: Path, inline: None) -> None:
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert not (root / "ro-crate-metadata.json").exists()
-
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert (root / "ro-crate-metadata.json").is_file()
-
-
-def test_a_removed_license_stops_maintenance_but_keeps_the_file(
-    root: Path, inline: None
-) -> None:
-    """The crate is in committed history either way; deleting a file over a
-    possibly temporary edit is not convergence's call."""
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    pyproject = root / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text().replace('license = "MIT"\n', ""))
-    dataset.save(root, [pyproject], "drop the license")
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert (root / "ro-crate-metadata.json").is_file()
-    assert any("no longer maintained" in w for w in report.warnings)
-
-
-def test_status_places_the_publication_view(root: Path, inline: None) -> None:
-    """The `crate:` header line, through its three plain states."""
-    assert engine.status(root).crate == "not maintained — declare [project].license to enable it"
-
-    _declare_license(root)
-    assert engine.status(root).crate == "will be created by the next `lc materialize`"
-
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert engine.status(root).crate == "up to date with the outputs"
-
-
-def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> None:
-    """The recorded residue made visible: a rerun rewrites a record but
-    never regenerates the view. Status reads the mismatch off the
-    document's own datePublished against the records it already read —
-    no git, no rocrate import."""
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    path = root / ".astra/records/baseline/second.json"
-    record = json.loads(path.read_text())
-    record["generated_by"]["finished"] = "2027-01-01T00:00:00.000Z"
-    path.write_text(json.dumps(record))
-    dataset.save(root, [path], engine.datalad_run_subject("second#baseline"))
-
-    assert engine.status(root).crate.startswith("behind")
-
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert engine.status(root).crate == "up to date with the outputs"
-
-
-def test_a_result_the_project_no_longer_bears_out_is_not_published(
-    root: Path, inline: None
-) -> None:
-    """Its record describes bytes that are no longer there, so the crate
-    describes no run of it — and `lc status` dates the crate by the same
-    results, or it would call the crate behind on every run that leaves
-    the forgery alone."""
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    forged = root / "results" / "baseline" / "second.txt"
-    _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged], "tweak colors")
-
-    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-
-    assert report.current == ["first#baseline"] and not report.made
-    document = (root / "ro-crate-metadata.json").read_text()
-    assert "results/baseline/first.txt" in document
-    assert "results/baseline/second.txt" not in document
-    assert engine.status(root).crate == "up to date with the outputs"
-
-
-def test_the_crate_waits_for_a_tree_that_is_the_commit(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The crate is read off the working tree and committed: rendered
-    beside an edit, it would publish what no commit holds."""
-    _declare_license(root)
-
-    class Editing(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            yield from handles
-            (root / "astra.yaml").write_text(
-                (root / "astra.yaml").read_text().replace("alpha: {}", "alpha: {}\n      gamma: {}")
-            )
-
-    _cluster(monkeypatch, Editing())
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert report.made == ["first#baseline", "second#baseline"]
-    assert not (root / "ro-crate-metadata.json").exists()
-    assert any("not brought up to date" in w for w in report.warnings)
-
-
-def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:
-    _declare_license(root)
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    spec_path = root / "astra.yaml"
-    spec = spec_path.read_text()
-    block = spec[spec.index("  second:") : spec.index("universes:")]
-    spec_path.write_text(spec.replace(block, ""))
-    dataset.save(root, [spec_path], "drop the second output")
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert any(".astra/records/baseline/second.json" in w for w in report.warnings)
-    document = (root / "ro-crate-metadata.json").read_text()
-    assert "results/baseline/second.txt" not in document
