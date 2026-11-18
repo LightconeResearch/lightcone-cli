@@ -28,18 +28,18 @@ owning the loop.
 from __future__ import annotations
 
 import functools
+import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import container, content, dataset, identity, plan, sandbox
+from lightcone.engine import commits, container, content, dataset, identity, plan, sandbox
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import (
-    SPEC_FILENAME,
     ProjectError,
     child_env,
     declared_project,
@@ -122,12 +122,13 @@ class RunContext:
     )
 
 
-def require_in_commit(root: Path) -> None:
+def require_in_commit(root: Path, specs: Sequence[str]) -> None:
     """Refuse a run whose commit would not hold what its records name it for.
 
     A record names a commit, and two things are read back from it: the
-    analysis, which ASTRA's checker compares the result with, and the
-    files lc recreates the environment from, which its IRI names. A clean
+    analysis, and each it declares from the working tree, which ASTRA's
+    checker compares the result with, and the files lc recreates the
+    environment from, which its IRI names. A clean
     tree does not say either is there: an ignored file is clean, a symlink
     is committed as the path it points to, and an annexed file as a
     pointer, not as the bytes read through either. Asked by whoever owns a
@@ -135,18 +136,20 @@ def require_in_commit(root: Path) -> None:
 
     Args:
         root: The project root.
+        specs: The file of each analysis read from the working tree, from
+            the project root (`Graph.specs`).
 
     Raises:
         ProjectError: Naming each file the commit would not hold.
     """
     environment = identity.files(root)
-    missing = dataset.not_in_git(root, [SPEC_FILENAME, *environment])
-    if SPEC_FILENAME in missing:
+    missing = dataset.not_in_git(root, [*specs, *environment])
+    if analyses := [path for path in missing if path in specs]:
         raise ProjectError(
-            f"{SPEC_FILENAME} is not in git as a file of its own — untracked, a symlink "
-            "or annexed — so the commit a record names would hold no analysis to check "
-            "the result against. Commit the file itself, in git, and remove whatever "
-            ".gitignore rule keeps it out."
+            f"{', '.join(analyses)} — not in git as files of their own (untracked, a "
+            "symlink or annexed), so the commit a record names would hold no analysis to "
+            "check its results against. Commit each file itself, in git, and remove "
+            "whatever .gitignore rule keeps it out."
         )
     if missing:
         raise ProjectError(
@@ -330,15 +333,17 @@ def execute(
     )
     with sandbox.scope(policy):
         # Validate device visibility and container support before removing what it owns.
-        for owned in (task.path, *task.record_paths):
+        for owned in (*task.paths, *task.record_paths):
             if owned.is_file() or owned.is_symlink():
                 owned.unlink()
         started = datetime.now(UTC)
+        # In its own analysis's folder, even where the project drives it
+        # (WRONG_WORKING_DIRECTORY).
         outcome = sandbox.run(
-            container.backend(context.runtime),
+            container.backend(context.runtime, workdir=task.workdir),
             policy,
             [_SHELL, "-c", task.command],
-            cwd=root,
+            cwd=task.workdir,
             prefix=uv_prefix(root),
             env=child_env(),
             output=output,
@@ -406,6 +411,11 @@ def execute(
         )
 
     try:
+        # A result with two names is one file: the recipe writes the first
+        # place, and the others are given its bytes.
+        for other in task.paths[1:]:
+            other.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(made, other)
         stamp = content.stamp(made)
         content_hash, size = content.digest_file(made)
         # ASTRA's record, at each place the result has: what a checker
@@ -533,7 +543,14 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
-        require_in_commit(root)
+        require_in_commit(root, graph.specs)
+        # What the recipe reads at another commit is given as a run gives it.
+        trees: dict[str, list[str]] = {}
+        for path in task.inputs.values():
+            if (at := plan.at_commit(root, path)) is not None:
+                trees.setdefault(at[0], []).append(at[1])
+        for commit, paths in trees.items():
+            commits.give(root, commit, graph.commits[commit], paths)
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -569,16 +586,22 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[ResultId, Task
     There is no graph in flight to take them from. Each upstream has to
     have a record of its own, and its bytes are hashed where they lie:
     this run reads what is in the tree, and its record must say so even
-    where that is not what the upstream's record gives.
+    where that is not what the upstream's record gives. A result from a
+    commit is read as a run reads it (:func:`from_commit`).
     """
     upstream = {}
-    for key in task.depends_on:
+    for entry, key in task.produced_by.items():
+        path = task.inputs[entry]
+        if key not in graph.tasks:
+            upstream[key] = from_commit(key, graph.checked.statuses[key], path)
+            if not upstream[key].usable:
+                raise ProjectError(f"`{key}`, which `{task.id}` reads, {upstream[key].reason}")
+            continue
         if graph.checked.statuses[key].record is None:
             raise ProjectError(
                 f"`{key}`, which `{task.id}` reads, has no valid record. "
                 "Run `lc materialize <cluster>` instead."
             )
-        path = graph.tasks[key].path
         try:
             content.require_fetched(path)
             upstream[key] = TaskOutcome(
@@ -590,6 +613,69 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[ResultId, Task
             # traceback at whoever reads that.
             raise ProjectError(f"`{key}`, which `{task.id}` reads, cannot be read: {e}") from e
     return upstream
+
+
+def unreadable(found: Status) -> str:
+    """Say why nothing is built from a result from a commit, from what
+    ASTRA's checker found of it there; empty where something may be.
+
+    Args:
+        found: What ASTRA's checker found of the result at its commit.
+
+    Returns:
+        The reason, or empty.
+    """
+    # Bytes there that are neither its record's nor a stand-in for them:
+    # unfetched content a stand-in vouches for is no diagnostic at all.
+    absent = [d.message for d in found.why if d.code == "ABSENT_RESULT"]
+    if found.state == "unchanged" and found.record is not None and not absent:
+        return ""
+    if found.state == "unchanged":
+        return (
+            "lacks its recorded bytes at its commit, so nothing is built from it "
+            f"(STALE_INPUT): {'; '.join(dict.fromkeys(absent))}"
+        )
+    broken = "; ".join(dict.fromkeys(d.message for d in found.why if d.level == "error"))
+    return (
+        f"is {found.state} at its commit, so nothing is built from it (STALE_INPUT)"
+        + (f": {broken}" if broken else "")
+    )
+
+
+def from_commit(key: ResultId, found: Status, path: Path) -> TaskOutcome:
+    """A result from a commit, as what reads it takes it.
+
+    Never built, and read through its record at its commit
+    (``REBUILT_FROM_COMMIT``): its bytes, where a run gives that commit's
+    tree, are hashed once and have to be the ones its record gives, or
+    nothing is built from it (``STALE_INPUT``).
+
+    Args:
+        key: The result's id.
+        found: What ASTRA's checker found of it at its commit.
+        path: Where a run gives its bytes.
+
+    Returns:
+        ``unchanged``, with its digest and the stamp of the file it is of,
+        or ``failed`` saying why it cannot be read.
+    """
+    if why := unreadable(found):
+        return TaskOutcome(key, "failed", reason=why)
+    record = found.record
+    assert record is not None  # unreadable() said
+    try:
+        content.require_fetched(path)
+        stamp, digest = content.stamp(path), content.digest_file(path)
+    except (OSError, ProjectError) as e:
+        return TaskOutcome(key, "failed", reason=f"cannot be read: {e}")
+    if digest != (record.content_hash, record.size):
+        return TaskOutcome(
+            key,
+            "failed",
+            reason="lacks its recorded bytes at its commit, so nothing is built from it "
+            "(STALE_INPUT)",
+        )
+    return TaskOutcome(key, "unchanged", *digest, stamp=stamp)
 
 
 if __name__ == "__main__":

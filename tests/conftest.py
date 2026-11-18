@@ -290,6 +290,72 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     return build
 
 
+def clone_of(root: Path, into: Path) -> Path:
+    """Clone *root* into a usable annexed repository, as a colleague would.
+
+    The identity is set because `clone` does not copy one and
+    `annex init` makes a commit — so without it this fails on any host
+    with no usable global identity, CI included. No annex content is
+    fetched: a fresh clone holds pointers.
+    """
+    cloned = into / "clone"
+    dataset._git(["clone", "-q", str(root), str(cloned)], cwd=into)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=cloned)
+    dataset._git(["annex", "init", "-q", "clone"], cwd=cloned)
+    return cloned
+
+
+#: An analysis whose one result, made once, says it was made first.
+FIRST = """
+spec_version: "0.1.0"
+outputs:
+  fit:
+    type: data
+    format: txt
+    recipe:
+      command: echo first > {output}
+"""
+
+#: The same analysis later, `fit` made otherwise, and `compare` reading it
+#: beside the `fit` it had at an earlier commit, given as `%s`.
+SINCE = """
+spec_version: "0.1.0"
+analyses:
+  previous: {path: ., commit: "%s"}
+outputs:
+  fit:
+    type: data
+    format: txt
+    recipe:
+      command: echo second > {output}
+  compare:
+    type: report
+    format: txt
+    inputs: [fit, previous.fit]
+    recipe:
+      command: cat {inputs} > {output}
+"""
+
+
+def since(root: Path, *, made: bool = True) -> str:
+    """Commit the project as :data:`FIRST` has it — `fit` made there, unless
+    not *made* — then declare that commit as `previous` (:data:`SINCE`).
+
+    Returns:
+        The commit `previous` is declared at.
+    """
+    if made:
+        from lightcone.engine import materialize
+
+        assert materialize.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(SINCE % at)
+    dataset.save(root, [spec], "compare with an earlier commit")
+    return at
+
+
 def with_idna(root: Path) -> Path:
     """Have the project at *root* depend on idna, locked, synced and committed.
 

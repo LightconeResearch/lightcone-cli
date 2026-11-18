@@ -236,6 +236,18 @@ def require_committer(directory: Path) -> None:
         )
 
 
+def toplevel(directory: Path) -> Path:
+    """Find the top of the repository *directory* is in.
+
+    Args:
+        directory: A folder inside a repository.
+
+    Returns:
+        The repository's top folder.
+    """
+    return Path(_git(["rev-parse", "--show-toplevel"], cwd=directory).strip())
+
+
 def head(directory: Path) -> str:
     """Read the commit ``HEAD`` is at.
 

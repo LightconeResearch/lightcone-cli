@@ -247,7 +247,7 @@ def runtime_name(root: Path) -> str:
     return name
 
 
-def backend(runtime: Runtime) -> sandbox.Backend:
+def backend(runtime: Runtime, *, workdir: Path) -> sandbox.Backend:
     """Pick the exec boundary for a resolved runtime.
 
     The only *mode* branch above the sandbox seam, mirroring
@@ -257,6 +257,9 @@ def backend(runtime: Runtime) -> sandbox.Backend:
 
     Args:
         runtime: A resolved runtime.
+        workdir: The folder the command runs in. A host mechanism runs it
+            where the process is; a container is told, since the runtime
+            decides where its command starts.
 
     Returns:
         The backend the exec goes through.
@@ -273,7 +276,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     return OCIBackend(
         runtime=cast(OCIRuntime, runtime.runtime),
         image_id=runtime.store_id,
-        root=runtime.root,
+        workdir=workdir,
         user_flags=(*uid_flags(runtime.runtime), *pull),
     )
 

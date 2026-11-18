@@ -9,13 +9,22 @@ and the two must agree. None of that is re-derived here, and every path
 is already measured from the project root.
 
 A task is ASTRA's account of one result, with the few facts a run needs
-looked up once: the file each entry reads and what its recipe asks for.
-The checker's report is kept beside the tasks, and :func:`classify` is
-what a run makes of each status in it.
+looked up once: the folder its recipe runs in, the file each entry reads
+and what its recipe asks for. The checker's report is kept beside the
+tasks, and :func:`classify` is what a run makes of each status in it.
 
-lc builds the results of one analysis. One that declares others is
-refused: their results would be made with recipes that run in another
-folder, under names this engine does not place.
+Every result of the working tree is a task, whichever analysis it belongs
+to: the project's, one it declares by path, or one it drives. Each such
+analysis is inside the project's folder, so whatever a run reads or
+writes of the working tree is there, and nowhere else. A result from a
+commit is no task: it is read, never built, as its record at that commit
+gives it. Whatever a recipe reads at another commit, a run gives it in
+that commit's tree, a clone of the repository that holds the commit
+checked out at it under :data:`COMMITS`, and ASTRA's command names it
+there, wherever that analysis is. Refused: an analysis read from the
+working tree outside the project's folder, one in a repository of its
+own, where lc could commit nothing, and a recipe that would run on a
+commit's files.
 
 Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and the graph keeps that order, which is all ``--check``
@@ -24,21 +33,31 @@ needs; at execution time ordering is Dask's job.
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from lightcone.engine import dataset
 from lightcone.engine.content import Digest
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 if TYPE_CHECKING:
-    from astra.api import Result, Status, StatusReport
+    from astra.api import Commit, Result, Source, Status, StatusReport
 
 #: A result's id, as ASTRA gives it — ``fit#baseline``, or ``fit`` for an
-#: output built once — which is also its task's.
+#: output built once; ``stage.fit#u1`` for one of an analysis the project
+#: drives, ``stage:fit#v1`` for one of an analysis it declares — which is
+#: also its task's.
 ResultId = str
+
+#: Where a run gives the tree of each other commit a recipe reads a file
+#: at, from the project root: ``<COMMITS>/<commit id>/`` is a clone of the
+#: repository that holds the commit, checked out at it, and ASTRA names
+#: each such file at its path in that tree.
+COMMITS = ".lightcone/commits"
 
 #: Of what ASTRA notes for an author, the two a run would silently live
 #: with: an output nothing plans, and a command that runs code from
@@ -55,8 +74,12 @@ class Task:
     #: ASTRA's account of the result: its id, its places, what each entry
     #: of its output's ``inputs`` reads, and its command.
     result: Result
+    #: The folder its recipe runs in: its output's analysis's, even when
+    #: the project drives that analysis.
+    workdir: Path
     #: Each entry of the output's ``inputs``, as written → the file it
-    #: reads: an input's own, or the file of the result it reads.
+    #: reads: an input's own, or the file of the result it reads, in the
+    #: working tree or in a commit's tree under :data:`COMMITS`.
     inputs: dict[str, Path]
     #: ASTRA's declaration; executor support is checked only when executing.
     resources: dict[str, Any] = field(default_factory=dict)
@@ -68,8 +91,15 @@ class Task:
 
     @property
     def path(self) -> Path:
-        """The single file this result is, at the place ASTRA gives it."""
+        """The single file this result is, at its first place: the one its
+        recipe writes, and what reads it reads."""
         return self.root / self.result.places[0].file_path
+
+    @property
+    def paths(self) -> tuple[Path, ...]:
+        """Its file at each place it has: a result with two names is one
+        file, at two places."""
+        return tuple(self.root / place.file_path for place in self.result.places)
 
     @property
     def record_paths(self) -> tuple[Path, ...]:
@@ -78,9 +108,9 @@ class Task:
 
     @property
     def name(self) -> str:
-        """The result's name — its output's id — which its files are
-        named after."""
-        return self.result.places[0].address.partition("#")[0]
+        """Its id without the universe, which a target may give instead:
+        ``fit``, ``stage.fit`` or ``stage:fit``."""
+        return self.id.partition("#")[0]
 
     @property
     def command(self) -> str:
@@ -100,8 +130,8 @@ class Task:
         return tuple(dict.fromkeys(self.produced_by.values()))
 
     def owns(self, path: Path) -> bool:
-        """Whether *path* is one of this result's own files: its file, at
-        the place ASTRA gives it, or one of its records.
+        """Whether *path* is one of this result's own files: its file, or
+        its record, at a place it has.
 
         Nothing else a recipe writes beside its result is the result's:
         no output declares it, and no record names it.
@@ -112,7 +142,7 @@ class Task:
         Returns:
             True for a file this result's run writes or replaces.
         """
-        return path == self.path or path in self.record_paths
+        return path in self.paths or path in self.record_paths
 
 
 @dataclass(frozen=True)
@@ -124,6 +154,13 @@ class Graph:
     #: stands and where its bytes are, and where each input's are. The
     #: state a run starts from.
     checked: StatusReport
+    #: Each other commit a task reads a file at → the repository that holds
+    #: it: the URL its analysis is declared with, or None for the project's
+    #: own.
+    commits: dict[str, str | None] = field(default_factory=dict)
+    #: The file of each analysis read from the working tree, from the
+    #: project root: what the commit a record names has to hold.
+    specs: tuple[str, ...] = (SPEC_FILENAME,)
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
@@ -148,7 +185,8 @@ class Graph:
             if key in wanted:
                 continue
             wanted.add(key)
-            pending.extend(self.tasks[key].depends_on)
+            # A result from a commit is read, never made: no task.
+            pending.extend(dep for dep in self.tasks[key].depends_on if dep in self.tasks)
         return replace(self, tasks={k: t for k, t in self.tasks.items() if k in wanted})
 
     def resolve(self, targets: list[str]) -> list[ResultId]:
@@ -188,18 +226,21 @@ def build(root: Path) -> Graph:
         root: The project root.
 
     Returns:
-        One task per result the analysis plans, each after the tasks it
-        reads, with ASTRA's checker's report and the notes a run reports.
+        One task per result of the working tree, each after the tasks it
+        reads, with ASTRA's checker's report, the other commits the tasks
+        read files at, and the notes a run reports.
 
     Raises:
-        ProjectError: If there is no analysis, ASTRA finds it invalid, it
-            declares another analysis, or the repository moved between
-            ASTRA's two answers.
+        ProjectError: If there is no analysis, ASTRA finds it invalid, an
+            analysis read from the working tree is outside the project's
+            folder or in a repository of its own, a recipe would run on a
+            commit's files, or the repository moved between ASTRA's two
+            answers.
     """
     from astra import api
 
     with asking_astra(root):
-        analysis = api.resolve(root)
+        analysis = api.resolve(root, commits=COMMITS)
         report = api.status(root)
     if report.head != analysis.head:
         # The statuses are of another commit's results than the ones resolved.
@@ -207,43 +248,104 @@ def build(root: Path) -> Graph:
             f"The repository moved from {analysis.head} to {report.head} while lc was "
             "reading the analysis. Run again."
         )
-    driving = analysis.analyses[0]
-    if driving.declares:
-        declared = ", ".join(f"`{each}`" for each in driving.declares)
+    if outside := sorted(
+        each.folder
+        for each in analysis.analyses
+        if each.commit is None and (each.folder == ".." or each.folder.startswith("../"))
+    ):
         raise ProjectError(
-            f"{root / SPEC_FILENAME} declares another analysis ({declared}), and lc builds "
-            "the results of a single analysis. Remove the declaration to build this one."
+            f"the analysis in {outside[0]} is outside the project's folder, and lc builds "
+            "and reads from the working tree only what is inside it. Declare it with a "
+            "`commit` to read its results there, or move it into the project."
         )
-    inputs = {each.ref: each.path for each in driving.inputs}
-    outputs = {each.ref: each for each in driving.outputs}
-    made_at = {result.id: result.places[0].file_path for result in analysis.results}
+    # A reference in ASTRA's model is an id: what it names is looked up.
+    of_output = {output.ref: each for each in analysis.analyses for output in each.outputs}
+    of_input = {
+        input_.ref: (each, input_.path) for each in analysis.analyses for input_ in each.inputs
+    }
+    results = {result.id: result for result in analysis.results}
+
+    def read(source: Source) -> tuple[str, Commit | None]:
+        """The file an entry reads, and the commit it is read at, if any."""
+        if source.input is not None:
+            owner, path = of_input[source.input]
+            return path, owner.commit
+        upstream = results[source.result or ""]
+        return upstream.places[0].file_path, upstream.commit
 
     tasks: dict[ResultId, Task] = {}
+    commits: dict[str, str | None] = {}
     for result in analysis.results:
-        # Only a result of an analysis read at a commit has no command, and
-        # there is no other analysis here.
-        assert result.command is not None
-        output = outputs[result.output]
+        if result.commit is not None:
+            # A result from a commit is never built: what reads it reads it
+            # as its record at that commit gives it (REBUILT_FROM_COMMIT).
+            continue
+        owner = of_output[result.output]
+        if result.command is None:
+            # Told where a run gives another commit's files, ASTRA gives
+            # every result a command but one whose recipe runs on them.
+            assert owner.commit is not None
+            raise ProjectError(
+                f"`{result.id}` would be made by the recipe of `{owner.key}` at "
+                f"{owner.commit.id}, on that commit's files: lc builds nothing from an "
+                "analysis declared with a `commit` (NOT_AT_COMMIT). Declare it by `path` "
+                "alone to build it from the working tree, or read its results instead."
+            )
+        inputs = {}
+        for source in result.inputs:
+            path, commit = read(source)
+            if commit is not None:
+                commits[commit.id] = commit.repository
+                path = f"{COMMITS}/{commit.id}/{path}"
+            inputs[source.entry] = root / path
+        output = next(each for each in owner.outputs if each.ref == result.output)
         tasks[result.id] = Task(
             root=root,
             result=result,
-            inputs={
-                source.entry: root / made_at[source.result]
-                if source.result is not None
-                else root / inputs[source.input or ""]
-                for source in result.inputs
-            },
+            workdir=root / owner.folder,
+            inputs=inputs,
             resources=(
                 {k: v for k, v in asdict(output.resources).items() if v is not None}
                 if output.resources
                 else {}
             ),
         )
+    folders = {of_output[task.result.output].folder for task in tasks.values()} - {"."}
+    top = dataset.toplevel(root)
+    if apart := sorted(folder for folder in folders if dataset.toplevel(root / folder) != top):
+        raise ProjectError(
+            f"the analysis in {apart[0]} is a repository of its own, and lc commits "
+            "results in the project's repository only. Declare it with a `commit` to read "
+            "its results, or run lc in it."
+        )
     return Graph(
         tasks=tasks,
         checked=report,
+        commits=commits,
+        specs=tuple(
+            posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
+            for each in analysis.analyses
+            if each.commit is None
+        ),
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
     )
+
+
+def at_commit(root: Path, path: Path) -> tuple[str, str] | None:
+    """Name the commit a file a recipe reads is at, and its path there.
+
+    Args:
+        root: The project root.
+        path: A file a task reads.
+
+    Returns:
+        The commit's id and the file's path in its tree, or None for a file
+        of the working tree.
+    """
+    if not path.is_relative_to(root / COMMITS):
+        return None
+    commit, _, inside = path.relative_to(root / COMMITS).as_posix().partition("/")
+    return commit, inside
 
 
 @contextmanager
