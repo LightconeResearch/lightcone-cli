@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import CLUSTER_ID
+from conftest import CLUSTER_ID, FIRST, since
 
-from lightcone.engine import dataset, identity, worker
+from lightcone.engine import dataset, identity, plan, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError
 
@@ -227,3 +227,131 @@ def test_the_environment_a_record_names_is_in_its_commit(root: Path, inline: Non
 
     assert identity.environment(checkout) == made["environment"]["iri"]
     assert dataset.not_in_git(root, identity.files(root)) == []
+
+
+# ---- what a runner builds, and where -------------------------------------------
+
+#: An analysis the project drives: its output is made with the option the
+#: project's universe selects, and says where its recipe ran.
+_DRIVEN = """
+spec_version: "0.1.0"
+decisions:
+  d:
+    options: {a: {}, b: {}}
+outputs:
+  where:
+    type: data
+    format: txt
+    decisions: [d]
+    recipe:
+      command: echo {decisions.d} > {output} && pwd >> {output}
+"""
+
+#: The project that drives it, declared as `%s`.
+_DRIVES = """
+spec_version: "0.1.0"
+analyses:
+  stage: %s
+outputs:
+  copy:
+    type: report
+    format: txt
+    inputs: [stage.where]
+    recipe:
+      command: cat {inputs} > {output} && pwd >> {output}
+universes:
+  u1:
+    decisions: {stage.d: a}
+"""
+
+
+def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) -> None:
+    """Each recipe runs in its own analysis's folder, even when driven: the
+    project's universe selects `stage`'s option, and `stage`'s recipe runs
+    in `stage`, writing to the project's place."""
+    root = analysis(_DRIVES % "{path: stage}", {"stage/astra.yaml": _DRIVEN})
+    tasks = plan.build(root).tasks
+
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+
+    assert tasks["stage.where#u1"].path.read_text().splitlines() == ["a", str(root / "stage")]
+    assert tasks["copy#u1"].path.read_text().splitlines()[-1] == str(root)
+
+
+def test_not_at_commit(analysis: Callable[..., Path], inline: None) -> None:
+    """Driving `stage` as a commit has it would run its recipe on that
+    commit's files, which lc does not do: the run is refused before
+    anything runs, naming the result."""
+    root = analysis(FIRST, {"stage/astra.yaml": _DRIVEN})
+    spec = root / "astra.yaml"
+    spec.write_text(_DRIVES % f'{{path: stage, commit: "{dataset.head(root)}"}}')
+    dataset.save(root, [spec], "drive stage as a commit has it")
+    head = dataset.head(root)
+
+    with pytest.raises(ProjectError, match="`stage.where#u1`.*NOT_AT_COMMIT"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert dataset.head(root) == head
+
+
+def test_rebuilt_from_commit(analysis: Callable[..., Path], inline: None) -> None:
+    """A result from a commit is never built: `previous.fit` is no task, and
+    what reads it reads it as its record at that commit gives it, which
+    ASTRA's checker then finds unchanged."""
+    root = analysis(FIRST)
+    at = since(root)
+    assert "previous:fit" not in plan.build(root).tasks
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert sorted(report.made) == ["compare", "fit"], (report.failed, report.warnings)
+    assert (root / "results/compare.txt").read_text().splitlines() == ["second", "first"]
+    recorded = plan.build(root).checked.statuses["previous:fit"].record
+    assert recorded is not None
+    read = _record(root, ".astra/records/compare.json")["generated_by"]["inputs"]
+    assert {
+        "entry": "previous.fit",
+        "content_hash": recorded.content_hash,
+        "size": recorded.size,
+    } in read
+    assert recorded.content_hash == _sha256(root / plan.COMMITS / at / "results" / "fit.txt")
+    assert engine.check(root, []).up_to_date
+
+
+def test_stale_input(analysis: Callable[..., Path], inline: None) -> None:
+    """`previous.fit` has no record at the commit `previous` names: nothing
+    is built from it. `--check` says what it blocks, and a run makes what
+    does not read it and blocks what does."""
+    root = analysis(FIRST)
+    since(root, made=False)
+
+    checked = engine.check(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert (checked.blocked, list(checked.planned)) == (["compare"], ["fit"])
+    assert any("previous:fit" in w and "STALE_INPUT" in w for w in checked.warnings)
+    assert (report.made, report.blocked) == (["fit"], ["compare"])
+    assert any("previous:fit" in w and "STALE_INPUT" in w for w in report.warnings)
+    assert not (root / ".astra/records/compare.json").exists()
+    assert not dataset.status(root)
+
+
+def test_stale_input_of_a_result_that_lacks_its_recorded_bytes(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """At the commit `previous` names, `fit`'s bytes are not the ones its
+    record gives. Read where a run gives that commit's tree, they are
+    hashed before anything reads them, and nothing is built from them."""
+    root = analysis(FIRST)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    fit = root / "results/fit.txt"
+    fit.unlink()  # annexed thin: writing it in place would write its annex object
+    fit.write_text("not what the record gives\n")
+    dataset.save(root, [fit], "write over fit, and leave its record")
+    since(root, made=False)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.blocked == ["compare"], (report.made, report.warnings)
+    assert any("lacks its recorded bytes" in w and "STALE_INPUT" in w for w in report.warnings)
+    assert not (root / ".astra/records/compare.json").exists()

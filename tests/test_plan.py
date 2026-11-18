@@ -230,15 +230,143 @@ def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:
         _build(tmp_path)
 
 
-def test_an_analysis_that_declares_another_is_refused_by_name(tmp_path: Path) -> None:
-    """Its results would run in another folder, under names lc does not
-    place — refused whole rather than run in part."""
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    (stage / "astra.yaml").write_text('spec_version: "0.1.0"\n')
-    spec = _SPEC.replace('label: demo', "label: demo\nanalyses:\n  stage: {path: stage}")
-    with pytest.raises(ProjectError, match="declares another analysis \\(`stage`\\)"):
-        _build(_project(tmp_path, spec))
+#: An analysis another declares: one decision, a universe of its own, an
+#: output it builds per universe and one it builds once.
+_STAGE = """
+spec_version: "0.1.0"
+decisions:
+  d:
+    options: {a: {}, b: {}}
+outputs:
+  out:
+    type: metric
+    format: json
+    decisions: [d]
+    recipe:
+      command: python make.py {decisions.d} {output}
+  once:
+    type: metric
+    format: json
+    recipe:
+      command: python make.py {output}
+universes:
+  v1:
+    decisions: {d: b}
+"""
+
+#: A project that declares `stage` and reads what of it `%s` lists. It
+#: drives `stage` only where a universe of its own selects `stage.d`
+#: (:data:`_DRIVES`).
+_DECLARES = """
+spec_version: "0.1.0"
+analyses:
+  stage: %s
+outputs:
+  result:
+    type: table
+    format: csv
+    inputs: [%s]
+    recipe:
+      command: python make.py {inputs} {output}
+"""
+
+_DRIVES = """universes:
+  u1:
+    decisions: {stage.d: a}
+"""
+
+
+def _declaring(root: Path, declaration: str, reads: str) -> Path:
+    """A project that declares `stage`, in a folder of its own, committed
+    first so that a declaration can name that commit (`COMMIT`)."""
+    (root / "stage").mkdir(parents=True)
+    (root / "stage" / "astra.yaml").write_text(textwrap.dedent(_STAGE))
+    _project(root, _DECLARES % ("{path: stage}", "stage.once"))
+    subprocess.run(["git", "commit", "-qm", "stage"], cwd=root, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    spec = _DECLARES % (declaration.replace("COMMIT", commit), reads)
+    driven = "stage.out" in [read.strip() for read in reads.split(",")]
+    (root / "astra.yaml").write_text(textwrap.dedent(spec) + (_DRIVES if driven else ""))
+    return root
+
+
+def test_the_results_of_a_declared_analysis_are_tasks_run_in_its_folder(tmp_path: Path) -> None:
+    """Whether the project drives it or reads its own universe's, a result
+    of `stage` is a task, and its recipe runs in `stage`'s folder
+    (`WRONG_WORKING_DIRECTORY`). A target may name it by id or by name."""
+    root = _declaring(tmp_path, "{path: stage}", "stage.out, stage.out#v1, stage.once")
+
+    graph = _build(root)
+
+    assert {key: task.workdir for key, task in graph.tasks.items()} == {
+        "stage.out#u1": root / "stage",
+        "stage:out#v1": root / "stage",
+        "stage:once": root / "stage",
+        "result#u1": root,
+    }
+    assert graph.tasks["result#u1"].depends_on == ("stage.out#u1", "stage:out#v1", "stage:once")
+    assert graph.resolve(["stage:out", "stage.out"]) == ["stage:out#v1", "stage.out#u1"]
+    assert graph.commits == {} and graph.beside == ()
+
+
+def test_a_result_from_a_commit_is_no_task_and_is_read_in_that_commits_tree(
+    tmp_path: Path,
+) -> None:
+    """Read through its record at its commit, never built
+    (`REBUILT_FROM_COMMIT`): what reads it reads it where a run gives that
+    commit's tree, which ASTRA's command names."""
+    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.out#v1, stage.once")
+    commit = next(iter(_build(root).commits))
+
+    graph = _build(root)
+
+    assert set(graph.tasks) == {"result"}
+    task = graph.tasks["result"]
+    tree = root / plan.COMMITS / commit / "stage" / "results"
+    assert task.inputs == {
+        "stage.out#v1": tree / "v1" / "out.json",
+        "stage.once": tree / "once.json",
+    }
+    assert task.command.startswith(
+        f"python make.py {plan.COMMITS}/{commit}/stage/results/v1/out.json "
+    )
+    assert graph.commits == {commit: None}
+    assert plan.at_commit(root, tree / "once.json") == (commit, "stage/results/once.json")
+    assert plan.at_commit(root, root / "data" / "catalog.fits") is None
+    # A task is only what reads it: narrowing keeps no result from a commit.
+    assert set(graph.closure(["result"]).tasks) == {"result"}
+
+
+def test_a_recipe_that_would_run_on_a_commits_files_is_refused(tmp_path: Path) -> None:
+    """Driven in the project's universe, `stage.out` would be made by
+    `stage`'s recipe at that commit, on that commit's files: lc does not
+    (`NOT_AT_COMMIT`)."""
+    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.out")
+
+    with pytest.raises(ProjectError, match="`stage.out#u1`.*NOT_AT_COMMIT"):
+        _build(root)
+
+
+def test_an_analysis_beside_the_project_is_kept_with_it(tmp_path: Path) -> None:
+    """Its folder is outside the project's, in the same repository: its
+    results are tasks like any other, and its folder is named for what a
+    run has to find unchanged."""
+    for folder, spec in (
+        ("shared", _STAGE),
+        ("project", _DECLARES % ("{path: ../shared}", "stage.once")),
+    ):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "astra.yaml").write_text(textwrap.dedent(spec))
+    root = tmp_path / "project"
+    for argv in (["init", "-q"], ["add", "."]):
+        subprocess.run(["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+
+    graph = _build(root)
+
+    assert graph.tasks["stage:once"].workdir == root / ".." / "shared"
+    assert graph.beside == ("../shared",)
 
 
 def test_an_analysis_with_no_universe_builds_what_is_built_once(tmp_path: Path) -> None:
@@ -277,9 +405,10 @@ def test_the_graph_asks_astra_for_the_analysis_and_its_status_once_each(
     asked: list[str] = []
     resolve, status = api.resolve, api.status
 
-    def resolved(path: Path) -> api.ResolvedAnalysis:
+    def resolved(path: Path, *, commits: str) -> api.ResolvedAnalysis:
         asked.append("resolve")
-        return resolve(path)
+        assert commits == plan.COMMITS
+        return resolve(path, commits=commits)
 
     def checked(path: Path) -> api.StatusReport:
         asked.append("status")

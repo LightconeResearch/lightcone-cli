@@ -42,7 +42,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from lightcone.engine import container, content, dataset, identity, plan, project, worker
+from lightcone.engine import (
+    commits,
+    container,
+    content,
+    dataset,
+    identity,
+    plan,
+    project,
+    worker,
+)
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.plan import Graph, ResultId, Task
 from lightcone.engine.project import ProjectError
@@ -137,9 +146,19 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     """
     report = MaterializeReport()
     graph, environment = _graph(root, targets, report)
+    blocked: set[ResultId] = set()
     for found in _classify(graph, environment, refresh=refresh):
         verdict = found.verdict
-        if verdict.calls_for_a_remake(refresh=refresh):
+        stale = {
+            dep: why
+            for dep in found.task.depends_on
+            if dep not in graph.tasks and (why := worker.unreadable(graph.checked.statuses[dep]))
+        }
+        if stale or blocked.intersection(found.task.depends_on):
+            blocked.add(found.task.id)
+            report.blocked.append(found.task.id)
+            report.warnings.extend(f"{dep}: {why}" for dep, why in stale.items())
+        elif verdict.calls_for_a_remake(refresh=refresh):
             report.planned[found.task.id] = verdict.why
         elif found.upstream:
             # Nothing here can know whether a rebuild comes out
@@ -383,18 +402,19 @@ def materialize(
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
     dataset.require_free_index(root)
-    # The dirty check comes before anything that writes: the image
-    # converge below *commits*, and `dataset.save` stages scoped but
-    # commits the whole index — on a dirty tree the user's staged edits
-    # would be swept into the image commit.
-    if changes := dataset.status(root):
-        raise ProjectError(_dirty(root, changes))
-    worker.require_in_commit(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
+    # The dirty check comes before anything that writes: the image
+    # converge below *commits*, and `dataset.save` stages scoped but
+    # commits the whole index — on a dirty tree the user's staged edits
+    # would be swept into the image commit. It covers the analyses
+    # declared beside the project, whose files its recipes run on too.
+    if changes := dataset.status(root, also=graph.beside):
+        raise ProjectError(_dirty(root, changes))
+    worker.require_in_commit(root)
     classified = _classify(graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
@@ -407,7 +427,7 @@ def materialize(
     # fetch: one that may run only because something it reads may is
     # left alone when that comes out as recorded, and its readers then
     # read its bytes.
-    wanted = _to_fetch(
+    wanted, trees = _to_fetch(
         root,
         graph,
         running,
@@ -418,6 +438,13 @@ def materialize(
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
         unreadable = _not_as_recorded(root, graph, wanted)
+        # A commit that cannot be given is said once; what reads it then
+        # reports that it cannot read it.
+        for commit, paths in trees.items():
+            try:
+                commits.give(root, commit, graph.commits[commit], paths)
+            except ProjectError as exc:
+                report.warnings.append(f"{commit}: {exc}")
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
         # one. Resolved once, then handed to every task.
@@ -471,6 +498,15 @@ def materialize(
             if not found.may_run(refresh=refresh):
                 pending[task.id] = _left_alone(found, report)
                 continue
+            # A result from a commit is a value too, read once for every
+            # task of the run that reads it.
+            for entry, dep in task.produced_by.items():
+                if dep not in graph.tasks and dep not in pending:
+                    pending[dep] = worker.from_commit(
+                        dep, graph.checked.statuses[dep], task.inputs[entry]
+                    )
+                    if not pending[dep].usable:
+                        report.warnings.append(f"{dep}: {pending[dep].reason}")
             # What the checker found goes with the task: downstream of a
             # remake, whether the result still stands is known only once
             # its upstreams are made, and the task answers that from these
@@ -561,7 +597,7 @@ def _consume(
                 root,
                 _owned(root, task),
                 run_record(root, task, dsid, runtime),
-                annexed=[task.path],
+                annexed=task.paths,
                 in_git=task.record_paths,
             )
         except ProjectError:
@@ -700,16 +736,18 @@ _FETCHED_BY = {"Git LFS": "git lfs pull", "DVC": "dvc pull"}
 
 def _to_fetch(
     root: Path, graph: Graph, running: Sequence[Task], certain: set[ResultId]
-) -> list[str]:
-    """What a run has to bring into this clone before its recipes read it.
+) -> tuple[list[str], dict[str, list[str]]]:
+    """What a run has to give its recipes before they read it.
 
     Every file a task that may run reads, bar a result certain to be
     remade: its declared inputs, and each result it reads that may be
-    left alone, whose bytes are then what the recipe reads. Where each
-    one's bytes are, and which tool keeps them, is ASTRA's checker's
-    answer: what git-annex keeps and this clone lacks is to be fetched,
-    and what another tool keeps is refused, before anything runs, since a
-    recipe handed its stand-in would read a few lines of text for its data.
+    left alone, whose bytes are then what the recipe reads. A file of the
+    working tree is fetched where git-annex keeps it and this clone lacks
+    it; a file at another commit is given in that commit's tree
+    (:mod:`commits`), whether git or git-annex keeps it. Which tool keeps
+    each is ASTRA's checker's answer, and what another tool keeps is
+    refused, before anything runs, since a recipe handed its stand-in
+    would read a few lines of text for its data.
 
     Args:
         root: The project root.
@@ -718,13 +756,16 @@ def _to_fetch(
         certain: The ids of those certain to be remade.
 
     Returns:
-        The files for git-annex to fetch, from the project root.
+        The files for git-annex to fetch, from the project root, and the
+        files to give at each other commit, by commit, from the top of its
+        tree.
 
     Raises:
         ProjectError: Naming each file another tool keeps, and the
             command that fetches it.
     """
     wanted: set[str] = set()
+    trees: dict[str, set[str]] = {}
     elsewhere: set[str] = set()
     for task in running:
         for source in task.result.inputs:
@@ -733,23 +774,27 @@ def _to_fetch(
             held = (
                 graph.checked.statuses[source.result].bytes
                 if source.result is not None
-                else graph.checked.inputs[source.input or ""]
+                else graph.checked.inputs.get(source.input or "")
             )
-            if held is None or held.state == "present" or held.kept_by is None:
-                continue
-            path = plan.declared_path(root, task.inputs[source.entry])
-            if held.kept_by == "git-annex":
-                wanted.add(path)
-            else:
-                command = _FETCHED_BY.get(held.kept_by)
-                how = f"`{command}`" if command else held.kept_by
-                elsewhere.add(f"{path} — kept by {held.kept_by}; {how} fetches it")
+            path = task.inputs[source.entry]
+            at = plan.at_commit(root, path)
+            if held is not None and held.state == "absent" and held.kept_by not in (
+                None,
+                "git-annex",
+            ):
+                command = _FETCHED_BY.get(held.kept_by) if at is None else None
+                how = f"; `{command}` fetches it" if command else ""
+                elsewhere.add(f"{plan.declared_path(root, path)} — kept by {held.kept_by}{how}")
+            elif at is not None:
+                trees.setdefault(at[0], set()).add(at[1])
+            elif held is not None and held.state == "absent" and held.kept_by == "git-annex":
+                wanted.add(plan.declared_path(root, path))
     if elsewhere:
         raise ProjectError(
             "this clone holds only a stand-in for what this run's recipes read, and lc "
             "fetches only what git-annex keeps:\n  " + "\n  ".join(sorted(elsewhere))
         )
-    return sorted(wanted)
+    return sorted(wanted), {commit: sorted(paths) for commit, paths in trees.items()}
 
 
 def _fetch_inputs(root: Path, wanted: Sequence[str], report: MaterializeReport) -> None:
@@ -836,7 +881,7 @@ def _require_storable(root: Path, graph: Graph) -> None:
             "git-annex is not set up in this clone, so git would commit every result "
             "to git itself — `lc init` sets it up."
         )
-    files = [plan.declared_path(root, task.path) for task in graph.tasks.values()]
+    files = [plan.declared_path(root, path) for task in graph.tasks.values() for path in task.paths]
     records = [
         plan.declared_path(root, record)
         for task in graph.tasks.values()
@@ -859,6 +904,7 @@ def _require_storable(root: Path, graph: Graph) -> None:
         for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)
     }
 
+    unstored = set(ignored)
     refusals = [
         f"{path} is git-ignored, so it would never be committed — remove the "
         ".gitignore rule that covers it"
@@ -876,6 +922,9 @@ def _require_storable(root: Path, graph: Graph) -> None:
                 f"{path} would be committed to git itself — the last .gitattributes line "
                 "that matches it does not send it to the annex"
             )
+        else:
+            continue
+        unstored.add(path)
     for path in records:
         taken_by = attributes.get((path, "filter"), "unspecified")
         if taken_by not in ("annex", "unspecified", "unset"):
@@ -889,12 +938,28 @@ def _require_storable(root: Path, graph: Graph) -> None:
             "so, and a record has to stay in git, where a clone with no content can read it"
         )
     if refusals:
+        # Lightcone's lines reach the project's own folder; an analysis in
+        # another folder keeps its results in its own `results/`, which the
+        # lines of that folder's `.gitattributes` have to reach.
+        elsewhere = sorted(
+            {
+                plan.declared_path(root, task.workdir)
+                for task in graph.tasks.values()
+                if task.workdir != root
+                and unstored.intersection(plan.declared_path(root, path) for path in task.paths)
+            }
+        )
         raise ProjectError(
             "this project's results would not be stored as lc stores them:\n  "
             + "\n  ".join(refusals)
             + "\n`lc init` adds any of lightcone's .gitattributes lines that is missing. "
             "Where it adds none, a later line overrides them: remove it, or move "
             "lightcone's lines below it."
+            + "".join(
+                f"\nThe analysis in {folder} keeps its results in its own folder: copy the "
+                f"project's .gitattributes into {folder}."
+                for folder in elsewhere
+            )
         )
 
 
@@ -944,9 +1009,15 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         ),
         "dsid": dsid,
         "exit": 0,
-        "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
+        # What datalad fetches before it reruns: the files of the dataset.
+        # One at another commit is the worker's to give, as a run gives it.
+        "inputs": sorted(
+            plan.declared_path(root, path)
+            for path in task.inputs.values()
+            if plan.at_commit(root, path) is None
+        ),
         "outputs": [
-            plan.declared_path(root, path) for path in (task.path, *task.record_paths)
+            plan.declared_path(root, path) for path in (*task.paths, *task.record_paths)
         ],
         "pwd": ".",
     }
@@ -1056,7 +1127,8 @@ def _owned(root: Path, task: Task) -> list[str]:
     in flight — ``git clean`` on it would delete a running task's bytes.
     """
     return [
-        f":(literal){plan.declared_path(root, path)}" for path in (task.path, *task.record_paths)
+        f":(literal){plan.declared_path(root, path)}"
+        for path in (*task.paths, *task.record_paths)
     ]
 
 

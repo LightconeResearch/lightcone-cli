@@ -246,7 +246,7 @@ def test_remote_probe_forwards_both_streams_and_exit_status(
     from lightcone.engine.sandbox.model import Capability
 
     monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: [])
-    monkeypatch.setattr(container, "backend", lambda _: Unavailable(Capability("none")))
+    monkeypatch.setattr(container, "backend", lambda _, **__: Unavailable(Capability("none")))
     outcome = engine_run.probe(
         project,
         [sys.executable, "-c", (
@@ -285,7 +285,7 @@ def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available
     from lightcone.engine.sandbox.boundary import Unavailable
 
     monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: ["/nonexistent-lc-test-uv"])
-    monkeypatch.setattr(container, "backend", lambda _: Unavailable())
+    monkeypatch.setattr(container, "backend", lambda _, **__: Unavailable())
     with pytest.raises(ProjectError, match="cluster execution failed") as raised:
         engine_run.probe(project, ["true"], cluster_id=cluster_id)
     assert "did not stop the allocation" in str(raised.value)
@@ -302,7 +302,7 @@ def test_each_invocation_gets_new_task_keys_and_keeps_the_cluster_alive(
     from lightcone.engine.sandbox.boundary import Unavailable
 
     monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: [])
-    monkeypatch.setattr(container, "backend", lambda _: Unavailable())
+    monkeypatch.setattr(container, "backend", lambda _, **__: Unavailable())
     keys = []
     submit = Client.submit
 

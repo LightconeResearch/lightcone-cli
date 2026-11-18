@@ -91,7 +91,7 @@ def _probe(
     built = container.policy_for(runtime, paths, use_gpus=use_gpus)
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
-            container.backend(runtime), policy, command, cwd=runtime.root,
+            container.backend(runtime, workdir=runtime.root), policy, command, cwd=runtime.root,
             prefix=uv_prefix(runtime.root), env=child_env(), output=output,
         )
     return outcome

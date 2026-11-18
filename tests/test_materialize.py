@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 from astra.api import Bytes
-from conftest import CLUSTER_ID, _Inline, locked_version, with_idna
+from conftest import CLUSTER_ID, _Inline, clone_of, locked_version, with_idna
 
 from lightcone.engine import content, dataset, identity, plan
 from lightcone.engine import materialize as engine
@@ -1000,7 +1000,7 @@ def test_a_clone_made_right_after_a_run_can_fetch_what_it_committed(
     stored, and commits that to its branch only at its next command: a
     clone made before then is told of no copy. Each save is that command."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
 
     dataset._git(["annex", "get", "-q", "--", "results/baseline/first.txt"], cwd=clone)
 
@@ -1176,23 +1176,6 @@ def test_every_record_of_one_run_names_the_commit_it_started_from(
     assert commits == {started_from}
 
 
-def _clone(root: Path, into: Path) -> Path:
-    """Clone *root* into a usable annexed repository, as a colleague would.
-
-    The identity is set because `clone` does not copy one and
-    `annex init` makes a commit — so without it this fails on any host
-    with no usable global identity, CI included. No annex content is
-    fetched: a fresh clone holds pointers, and that is the state these
-    tests are about.
-    """
-    clone = into / "clone"
-    dataset._git(["clone", "-q", str(root), str(clone)], cwd=into)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=clone)
-    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
-    return clone
-
-
 _FETCH_SPEC = """
 spec_version: "0.1.0"
 
@@ -1217,7 +1200,7 @@ def test_a_bytes_free_clone_fetches_the_inputs_a_remade_result_reads(
     had. Without the fetch the worker's hash refuses the pointer file."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     spec = clone / "astra.yaml"
     spec.write_text(
         spec.read_text().replace(
@@ -1243,7 +1226,7 @@ def test_a_bytes_free_clone_fetches_a_result_a_remade_one_reads(
     bytes are fetched like a declared input's. Without the fetch the
     remade task refused the pointer it found in their place."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     spec = clone / "astra.yaml"
     spec.write_text(
         spec.read_text().replace(
@@ -1345,7 +1328,7 @@ def test_a_fetched_result_whose_bytes_are_not_its_records_is_read_by_nothing(
     first.write_text("written over by hand\n")
     dataset._git(["config", "annex.backend", "MD5E"], cwd=root)
     dataset.save(root, [first], "write over first")
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     spec = clone / "astra.yaml"
     spec.write_text(
         spec.read_text().replace(
@@ -1375,7 +1358,7 @@ def test_on_a_bytes_free_clone_check_and_status_fetch_nothing_and_plan_what_a_ru
     transfer, and what `--check` plans there is what a run then makes."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     spec = clone / "astra.yaml"
     spec.write_text(spec.read_text().replace("cat {inputs.catalog}", "cat -u {inputs.catalog}"))
     dataset.save(clone, [spec], "change the recipe")
@@ -1399,7 +1382,7 @@ def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     assert engine.check(clone, []).planned == {}
     again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
@@ -1448,7 +1431,7 @@ def test_a_clone_fetches_a_result_an_identical_rebuild_leaves_standing(
     was among the tasks that might run."""
     root = analysis(_CHAIN, {"data/catalog.txt": "2\n1\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     spec = clone / "astra.yaml"
     spec.write_text(
         spec.read_text()
@@ -1474,7 +1457,7 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     annex would fetch from, and give the recipe a reason to run again."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     dataset._git(["remote", "remove", "origin"], cwd=clone)
     spec = clone / "astra.yaml"
     spec.write_text(spec.read_text().replace("cat {inputs.catalog}", "cat -u {inputs.catalog}"))
@@ -1587,7 +1570,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     original = json.loads((root / ".astra/records/version.json").read_text())
 
-    clone = _clone(root, tmp_path)
+    clone = clone_of(root, tmp_path)
     assert not (clone / ".venv").exists()
 
     proc = subprocess.run(
