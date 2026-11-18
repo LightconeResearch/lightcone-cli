@@ -282,7 +282,13 @@ def _declaring(root: Path, declaration: str, reads: str) -> Path:
     (root / "stage").mkdir(parents=True)
     (root / "stage" / "astra.yaml").write_text(textwrap.dedent(_STAGE))
     _project(root, _DECLARES % ("{path: stage}", "stage.once"))
-    subprocess.run(["git", "commit", "-qm", "stage"], cwd=root, check=True, capture_output=True)
+    # An identity of its own: CI has none to commit with.
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=t@example.com", "commit", "-qm", "stage"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
     ).stdout.strip()
