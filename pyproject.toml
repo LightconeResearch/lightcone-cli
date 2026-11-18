@@ -23,32 +23,31 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
+# astra-tools 0.3 is the first release with `astra.api`, the one surface lc
+# reads an analysis through, and 0.3.0rc4 the first whose `resolve` takes
+# where a run gives another commit's files. astra-spec is a direct
+# dependency only for its specifier: 0.1 is a release candidate, which a
+# resolver takes for a package it is asked for by such a version.
 dependencies = [
-    "astra-tools==0.2.18",
+    "astra-tools>=0.3.0rc4",
+    "astra-spec>=0.1.0rc1,<0.2",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",
     "distributed>=2026.7",
-    "rocrate>=0.15",
     "cryptography>=44",
     "psutil>=6",
     "pydantic>=2.9,<3",
     "pyyaml>=6",
-    "jupyter-server>=2.21",
-    "jupyterlab-server>=2.28",
-    "jupyter-live-content>=0.1.2,<0.2",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
-    "hatchling",
-    "playwright>=1.58",
     "ruff",
     "mypy",
     "datalad",
-    "roc-validator>=0.11.4",
     "types-pyyaml>=6.0.12.20260906",
     "types-psutil>=7.2.2.20260906",
 ]
@@ -79,16 +78,9 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lightcone"]
-# The app's front end, built from ui/ and gitignored.
-artifacts = ["src/lightcone/app/static"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/lightcone", "hatch_build.py"]
-artifacts = ["src/lightcone/app/static"]
-
-# Checkout distributions rebuild all frontend inputs. Prebuilt sdists need
-# no Node, and editable installs leave the optional frontend build explicit.
-[tool.hatch.build.hooks.custom]
+include = ["src/lightcone"]
 
 [tool.ruff]
 target-version = "py311"
@@ -103,17 +95,6 @@ strict = true
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = "src"
-
-[[tool.mypy.overrides]]
-module = ["astra.*", "rocrate.*"]
-ignore_missing_imports = true
-follow_untyped_imports = true
-
-# rocrate ships no type information, and engine/crate.py is a client of
-# little else — one module-scoped relaxation beats an ignore on every call.
-[[tool.mypy.overrides]]
-module = ["lightcone.engine.crate"]
-disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

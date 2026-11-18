@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import assets, dataset, project, templates
+from lightcone.engine import content, dataset, project, templates
 
 
 @pytest.fixture
@@ -69,19 +69,21 @@ def _annexed(repo: Path, path: Path) -> bool:
 # ---- what git-annex stores, and what git carries ---------------------------
 
 
-def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path) -> None:
-    """The whole storage policy, exercised end to end. The manifest has to
-    stay a plain git blob: `lc` reads it on clones that have fetched no
+def test_save_puts_result_bytes_in_the_annex_and_the_record_in_git(repo: Path) -> None:
+    """The whole storage policy, exercised end to end. The record has to
+    stay a plain git blob: ASTRA reads it on clones that have fetched no
     annex content at all."""
     results = repo / "results" / "baseline"
     results.mkdir(parents=True)
     (results / "best_fit.csv").write_text("a,b\n1,2\n")
-    (results / ".best_fit.manifest.json").write_text('{"data_version": "abc"}\n')
+    record = repo / ".astra" / "records" / "baseline" / "best_fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('{"content_hash": "sha256:abc"}\n')
 
-    assert dataset.save(repo, [results], "materialize best_fit")
+    assert dataset.save(repo, [results, record], "materialize best_fit")
 
     assert _annexed(repo, results / "best_fit.csv")
-    assert not _annexed(repo, results / ".best_fit.manifest.json")
+    assert not _annexed(repo, record)
     assert not dataset.status(repo)
 
 
@@ -105,7 +107,7 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     writes into results/, would land as a full blob in git, silently,
     and every clone would carry the bytes forever. `save` opts in
     unconditionally, so the attributes alone decide: archives and dot
-    outputs reach the annex, dot-named manifests keep their exemption.
+    outputs reach the annex, records under `.astra/` keep their exemption.
     The mutation check is a *plain* `git add` of the same shape, which
     keeps git-annex's stock dotfile behavior."""
     archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
@@ -114,13 +116,15 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     output = repo / "results" / "baseline"
     output.mkdir(parents=True)
     (output / ".cache.h5").write_bytes(b"intermediate\n" * 64)
-    (output / ".fit.manifest.json").write_text("{}\n")
+    record = repo / ".astra" / "records" / "baseline" / "fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{}\n" * 64)
 
-    dataset.save(repo, [archive.parent, output], "routed")
+    dataset.save(repo, [archive.parent, output, record], "routed")
 
     assert _annexed(repo, archive)
     assert _annexed(repo, output / ".cache.h5")
-    assert not _annexed(repo, output / ".fit.manifest.json")
+    assert not _annexed(repo, record)
 
     plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
     plain.parent.mkdir(parents=True)
@@ -208,11 +212,8 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
 
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
-        with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-            assets.data_version(output / name)
-
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.data_version(output)
+        with pytest.raises(content.ContentNotFetchedError, match="not in this clone"):
+            content.require_fetched(output / name)
 
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
@@ -228,8 +229,8 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
-        assets.data_version(output)
+    with pytest.raises(content.ContentNotFetchedError, match="not in this clone"):
+        content.require_fetched(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------
@@ -264,6 +265,52 @@ def test_save_sees_nothing_to_commit_past_foreign_staged_work(repo: Path) -> Non
     assert not dataset.save(repo, [repo / "results"], "nothing here")
 
 
+def test_a_save_refuses_what_git_staged_where_it_must_not_go(repo: Path) -> None:
+    """Where bytes go is what git staged, whatever the attributes seem to
+    say: an expression can turn on the bytes. Refused, nothing is committed
+    and nothing is left staged."""
+    (repo / ".gitattributes").write_text(
+        (repo / ".gitattributes").read_text()
+        + "results/** annex.largefiles=largerthan=1kb\n"
+        + ".astra/** annex.largefiles=largerthan=1b\n"
+    )
+    dataset.save(repo, [repo / ".gitattributes"], "route by size")
+    result = repo / "results" / "fit.csv"
+    result.write_text("a,b\n")
+    record = repo / ".astra" / "records" / "fit.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{}\n")
+    head = dataset.head(repo)
+
+    with pytest.raises(project.ProjectError) as raised:
+        dataset.save(repo, [result, record], "fit", annexed=[result], in_git=[record])
+
+    assert "results/fit.csv was staged in git itself" in str(raised.value)
+    assert ".astra/records/fit.json was staged in the annex" in str(raised.value)
+    assert dataset.head(repo) == head
+    assert not dataset._git(["diff", "--cached", "--name-only"], cwd=repo).strip()
+
+
+def test_a_clone_made_right_after_a_save_can_fetch_what_it_stored(
+    repo: Path, tmp_path: Path
+) -> None:
+    """git-annex journals where content is when an add stores it, and a
+    clone made before that is committed to its branch is told of no copy
+    (*measured*)."""
+    result = repo / "results" / "fit.csv"
+    result.write_text("a,b\n1,2\n")
+    dataset.save(repo, [result], "fit")
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
+    dataset.init_annex(clone)
+
+    dataset._git(["annex", "get", "-q", "--", "results/fit.csv"], cwd=clone)
+
+    assert (clone / "results" / "fit.csv").read_text() == "a,b\n1,2\n"
+
+
 def test_save_reports_when_there_was_nothing_to_commit(repo: Path) -> None:
     """`lc materialize` may not leave an empty commit behind for an output
     that produced nothing new."""
@@ -291,21 +338,6 @@ def test_save_stages_what_a_rebuild_deleted(repo: Path) -> None:
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
-def test_tracked_manifests_are_only_the_ones_under_results(repo: Path) -> None:
-    """`results/` is the only place lc writes one; elsewhere the name is
-    the user's to use, and handing such a file to `assets.read` would ask
-    it to parse something that was never a manifest."""
-    ours = repo / "results" / "baseline" / ".fit.manifest.json"
-    ours.parent.mkdir(parents=True)
-    ours.write_text("{}\n")
-    theirs = repo / "data" / ".vendor.manifest.json"
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("[1, 2, 3]\n")
-    dataset.save(repo, [repo / "results", repo / "data"], "both")
-
-    assert dataset.tracked_manifests(repo) == [ours]
-
-
 def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
     """The invariant that makes the dirty-tree refusal survivable: a recipe
     that truncates a committed output and then fails must not leave the
@@ -326,7 +358,7 @@ def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
     assert (output / "fit.csv").read_text() == "good\n"
 
 
-def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None:
+def test_restore_of_a_never_committed_result_is_not_an_error(repo: Path) -> None:
     """A first materialization has nothing in HEAD to go back to, and the
     naive `git checkout HEAD -- <dir>` exits nonzero on the pathspec."""
     output = repo / "results" / "baseline" / "best_fit"
@@ -339,7 +371,7 @@ def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None
     assert not (output / "fit.csv").exists()
 
 
-def test_restore_of_a_staged_but_unborn_output_does_not_raise(repo: Path) -> None:
+def test_restore_of_a_staged_but_unborn_result_does_not_raise(repo: Path) -> None:
     """The state an interrupted `save` leaves: staged, never committed.
     `ls-files --with-tree=HEAD` calls such a path known while
     `checkout HEAD --` then exits nonzero on it — so a guard built on the
@@ -806,99 +838,3 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
     assert "not found" in added.stderr
     staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
     assert not staged.stdout.startswith("/annex/objects/")
-
-
-
-# ---- who last wrote a path -------------------------------------------------
-
-
-def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -> None:
-    """The crate's per-file checksums come from here, and they must
-    answer on a clone that holds none of the bytes — `--include=*` is
-    what turns `find` from "present files" into "annexed files"."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "value.dat").write_bytes(b"x" * 300)
-    dataset.save(repo, [out], "make fit")
-
-    keys = dataset.annex_keys(repo)
-    key = keys["results/fit/value.dat"]
-    assert key.startswith("SHA256E-s300--"), key
-    assert ".gitattributes" not in keys, "git-carried files have no key"
-
-    clone = repo.parent / "clone"
-    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=repo.parent)
-    # A clone inherits no local config, and annex init in a *clone* has
-    # remote git-annex branch state to commit — identity required, where
-    # a fresh repo's init tolerates its absence.
-    for key_, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key_, value], cwd=clone)
-    dataset.init_annex(clone)
-    assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
-        "keys are repository state, bytes not required"
-    )
-
-
-def test_annex_keys_survives_a_tab_in_a_filename(repo: Path) -> None:
-    """git-annex emits ${file} unescaped, so the parse splits from the
-    *last* tab — keys never contain one, filenames legally can."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "run\t1.dat").write_bytes(b"x" * 300)
-    dataset.save(repo, [out], "make fit")
-
-    keys = dataset.annex_keys(repo)
-    assert keys["results/fit/run\t1.dat"].startswith("SHA256E-s300--")
-
-
-def test_annex_keys_of_a_plain_directory_is_empty(tmp_path: Path, real_tools: None) -> None:
-    """Cannot say is empty, never an error — the last_writer discipline."""
-    bare = tmp_path / "bare"
-    bare.mkdir()
-    assert dataset.annex_keys(bare) == {}
-
-
-def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:
-    """The foreign-write fact's whole mechanism: every output is committed,
-    so a hand edit needs a commit, and history names it."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "value.txt").write_text("42\n")
-    dataset.save(repo, [out], "[DATALAD RUNCMD] fit [baseline]\n\nrecord body")
-
-    write = dataset.last_writer(repo, out)
-    assert write and write.sha and write.date
-    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
-    assert (write.author, write.email) == ("Test", "t@example.com")
-
-    (out / "value.txt").write_text("curated\n")
-    dataset.save(repo, [out], "tweak colors")
-    assert dataset.last_writer(repo, out).subject == "tweak colors"
-
-
-def test_last_writer_of_an_untouched_path_is_empty(repo: Path) -> None:
-    assert not dataset.last_writer(repo, repo / "results" / "never")
-
-
-def test_last_writer_answers_inside_an_enclosing_repository(
-    tmp_path: Path, real_tools: None
-) -> None:
-    """A project can sit inside a larger repository, and the answer must be
-    about the project's own subdirectory — a later commit elsewhere in the
-    tree must not become every output's last writer."""
-    outer = tmp_path / "outer"
-    project_root = outer / "project"
-    out = project_root / "results" / "fit"
-    out.mkdir(parents=True)
-    (out / "value.txt").write_text("42\n")
-    dataset.init_git(outer)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=outer)
-    dataset._git(["add", "-A", "."], cwd=outer)
-    dataset._git(["commit", "-q", "-m", "[DATALAD RUNCMD] fit [baseline]"], cwd=outer)
-    (outer / "unrelated.txt").write_text("someone else's work\n")
-    dataset._git(["add", "-A", "."], cwd=outer)
-    dataset._git(["commit", "-q", "-m", "outer edit"], cwd=outer)
-
-    write = dataset.last_writer(project_root, out)
-    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"

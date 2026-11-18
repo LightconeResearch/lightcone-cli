@@ -262,7 +262,6 @@ def test_a_present_archive_is_loaded_once_and_reused(
 
     assert first.image_id == expected and second.image_id == expected
     assert first.store_id == expected  # podman knows an image by its id
-    assert first.arch == "amd64"
     assert first.archive == f".datalad/environments/{image.tag(root)}/image"
     assert len(_argvs(fake, "podman", "load")) == 1  # the second run hit the store
 
@@ -332,7 +331,8 @@ def test_a_containerd_store_runs_what_it_made_of_an_archive_without_an_index(
 
     assert runtime.image_id == expected
     assert runtime.store_id == "e" * 64
-    assert container.backend(runtime).image_id == "e" * 64  # what `docker run` is given
+    # What `docker run` is given.
+    assert container.backend(runtime, workdir=runtime.root).image_id == "e" * 64
 
 
 # ---- building ---------------------------------------------------------------
@@ -703,7 +703,7 @@ def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list
     runtime = container.runtime_for_run(root, build=False)
 
     assert container.uid_flags("podman-hpc") == ["--userns=keep-id"]
-    backend = container.backend(runtime)
+    backend = container.backend(runtime, workdir=runtime.root)
     assert backend.capability.kind == "podman-hpc"
     assert "--pull=never" in backend.user_flags  # type: ignore[attr-defined]
     assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]
@@ -730,7 +730,7 @@ def test_a_foreign_arch_archive_refuses_before_loading(
 def test_the_matching_arch_loads(root: Path, fake: list[list[str]]) -> None:
     _write_archive(image.archive_path(root, image.tag(root)))
 
-    assert container.runtime_for_run(root, build=False).arch == "amd64"
+    container.runtime_for_run(root, build=False)
     assert len(_argvs(fake, "podman", "load")) == 1
 
 

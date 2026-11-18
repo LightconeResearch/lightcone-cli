@@ -3,8 +3,8 @@
 Storage follows the DataLad model — git carries the pointers and the
 history, git-annex carries the bytes — reached through ordinary ``git``
 and ``git annex`` commands. ``.gitattributes`` routes content: the default
-is ``annex.largefiles=nothing``, and outputs and declared inputs opt out
-of it, so manifests and analysis code stay in git while results and data
+is ``annex.largefiles=nothing``, and results and declared inputs opt out
+of it, so records and analysis code stay in git while results and data
 go to the annex.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
@@ -22,25 +22,9 @@ import posixpath
 import subprocess
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
 
 from lightcone.engine import project
-
-
-@dataclass(frozen=True)
-class LastWrite:
-    """The commit that last touched a path — empty fields mean "cannot
-    say", and the whole record is falsy then."""
-
-    sha: str = ""
-    subject: str = ""
-    author: str = ""
-    email: str = ""
-    date: str = ""
-
-    def __bool__(self) -> bool:
-        return bool(self.sha)
 
 # =============================================================================
 # The repository
@@ -161,7 +145,7 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(directory: Path) -> list[tuple[str, str]]:
+def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
@@ -193,6 +177,9 @@ def status(directory: Path) -> list[tuple[str, str]]:
 
     Args:
         directory: The project to inspect.
+        untracked_files: List each untracked file, where git otherwise
+            names only the outermost untracked folder — for a caller that
+            sorts changes by whose files they are.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -204,7 +191,7 @@ def status(directory: Path) -> list[tuple[str, str]]:
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
     listed = _git(
         [
-            "-c", "status.showUntrackedFiles=normal",
+            "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
             "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
             "--", ".",
         ],
@@ -249,24 +236,28 @@ def require_committer(directory: Path) -> None:
         )
 
 
-def head(directory: Path) -> tuple[str, str]:
-    """Read the commit ``HEAD`` is at and the ``origin`` URL.
+def toplevel(directory: Path) -> Path:
+    """Find the top of the repository *directory* is in.
 
-    Both are reads and neither takes the index lock.
+    Args:
+        directory: A folder inside a repository.
+
+    Returns:
+        The repository's top folder.
+    """
+    return Path(_git(["rev-parse", "--show-toplevel"], cwd=directory).strip())
+
+
+def head(directory: Path) -> str:
+    """Read the commit ``HEAD`` is at.
 
     Args:
         directory: The repository to read.
 
     Returns:
-        ``(commit sha, origin URL)``. The URL is empty rather than absent
-        when the repository has no remote — a manifest field that is
-        sometimes missing reads worse than one that is sometimes blank.
+        The commit's sha.
     """
-    remote = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
-    return (
-        _git(["rev-parse", "HEAD"], cwd=directory).strip(),
-        remote.stdout.strip() if remote.returncode == 0 else "",
-    )
+    return _git(["rev-parse", "HEAD"], cwd=directory).strip()
 
 
 def dataset_id(directory: Path) -> str:
@@ -288,101 +279,38 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
-    """Find the commit that last touched any of *paths*.
+def not_in_git(directory: Path, paths: Iterable[str]) -> list[str]:
+    """Find which of *paths* git does not hold as the bytes in the tree.
 
-    Run from the project root with a relative pathspec, so it answers
-    about the project's own subdirectory even inside an enclosing
-    repository — and since nothing parses paths out of its output, no
-    prefix handling is needed.
-
-    "Cannot say" is the empty answer, never an error: the callers are
-    ``lc status`` and the crate render, and a read-only verb must not
-    refuse a project over an unborn HEAD, a deposit stripped of its
-    ``.git``, or a host without git — states such projects are actually
-    in.
-
-    Several paths, because an output is a file *and* a manifest and a
-    hand edit to either contradicts the record: the payload alone would
-    miss a doctored manifest, and the manifest alone would miss the forged
-    result that is the whole reason to ask. The manifest also carries the
-    history across a re-declared format, where the payload's path is new.
+    Asked of the index rather than of ``status``, because an ignored file
+    is neither tracked nor a change: a tree can be clean without holding
+    it. A symlink git tracks is held as the path it points to, and an
+    annexed file as a pointer to its bytes, so what is held is compared
+    with the file's own bytes, hashed as git would with no filter.
 
     Args:
         directory: The project root.
-        paths: What to ask about, absolute, repository-relative, or a git
-            pathspec.
+        paths: Files, from the project root.
 
     Returns:
-        The commit, falsy-empty when none has touched them — or when git
-        cannot answer at all.
+        Those the index does not hold as their own bytes — untracked, a
+        symlink, a submodule or annexed — in the order given.
     """
-    argv = [
-        "log",
-        "-1",
-        "--format=%H%x00%s%x00%an%x00%ae%x00%as",
-        "--",
-        *(_rel(directory, p) for p in paths),
-    ]
-    out = _ask(argv, cwd=directory)
-    if not (out := (out or "").strip("\n")):
-        return LastWrite()
-    return LastWrite(*out.split("\0"))
-
-
-def annex_keys(directory: Path) -> dict[str, str]:
-    """Map every annexed file to its key, repository-relative.
-
-    One process for the whole tree. ``--include=*`` is load-bearing: a
-    bare ``find`` lists only files whose *content* is present, and the
-    crate must answer on a clone that holds none of the bytes — the keys
-    are repository state, which is what keeps the render pure.
-
-    "Cannot say" — no annex, no git, an unborn repository — is the empty
-    answer, never an error, the :func:`last_writer` discipline.
-
-    Args:
-        directory: The project root.
-
-    Returns:
-        ``{relative path: key}`` for every annexed file.
-    """
-    out = _ask(["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"], cwd=directory)
-    keys: dict[str, str] = {}
-    for line in (out or "").splitlines():
-        # From the *last* tab: git-annex emits ${file} unescaped, so a
-        # tab in a filename would otherwise split inside the path and
-        # hand back a truncated file with a corrupted key. Keys never
-        # contain tabs, so the rightmost split is always the real one.
-        file, sep, key = line.rpartition("\t")
-        if sep and file and key:
-            keys[file] = key
-    return keys
-
-
-def tracked_manifests(directory: Path) -> list[Path]:
-    """Every manifest sidecar git is tracking, anywhere in the tree.
-
-    From the index rather than a directory walk: it is exact, it costs one
-    process, and it never descends into ``.git`` or ``.venv``. Scoped to
-    ``results/``, which is the only place lc writes one — elsewhere the
-    name is the user's to use. Untracked strays are the dirty check's
-    business, not this one's.
-
-    Args:
-        directory: The repository root.
-
-    Returns:
-        Absolute paths, unordered.
-    """
-    # Imported here, not at module scope: `assets` reaches this module
-    # through `project`, so the name has to be fetched after both exist.
-    from lightcone.engine.assets import MANIFEST_SUFFIX
-
-    listed = _git(
-        ["ls-files", "-z", "--", f":(glob)results/**/*{MANIFEST_SUFFIX}"], cwd=directory
+    paths = list(paths)
+    listed = _git(["ls-files", "-s", "-z", "--", *paths], cwd=directory).split("\0")
+    # `<mode> <object> <stage>\t<path>`: a file's own bytes are mode 100644
+    # or 100755.
+    held = {
+        entry.partition("\t")[2]: entry.split(" ")[1]
+        for entry in listed
+        if entry.startswith(("100644 ", "100755 "))
+    }
+    files = [path for path in held if not (directory / path).is_symlink()]
+    hashed = (
+        _git(["hash-object", "--no-filters", "--", *files], cwd=directory).split() if files else []
     )
-    return [directory / name for name in listed.split("\0") if name]
+    own = {path for path, blob in zip(files, hashed, strict=True) if held[path] == blob}
+    return [path for path in paths if path not in own]
 
 
 def require_free_index(directory: Path) -> None:
@@ -390,7 +318,7 @@ def require_free_index(directory: Path) -> None:
 
     A git command holds ``index.lock`` while it writes, and one that was
     killed leaves it for good: every commit after that fails, which for a
-    run is every output, after its recipe has run. Asked before work that
+    run is every result, after its recipe has run. Asked before work that
     ends in a commit, with the patience a live command deserves.
 
     Args:
@@ -412,18 +340,31 @@ def require_free_index(directory: Path) -> None:
         time.sleep(0.25)
 
 
-def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
+def save(
+    directory: Path,
+    paths: Iterable[Path | str],
+    message: str,
+    *,
+    annexed: Iterable[Path] = (),
+    in_git: Iterable[Path] = (),
+) -> bool:
     """Commit *paths*.
 
     A plain ``git add``: ``.gitattributes`` sets ``filter=annex``, so git's
-    own add routes content to the annex and everything else into git. lc
-    runs no annex command here for the same reason it asks nobody else to.
+    own add routes content to the annex and everything else into git.
+
+    What *annexed* and *in_git* name is checked where git staged it before
+    anything is committed, since that is the one answer to where its bytes
+    go: the lines that route it are the researcher's to edit, an
+    ``annex.largefiles`` expression can turn on the very bytes, and a
+    clone where git-annex was never set up takes no filter at all. Each is
+    asked of git-annex's own lookup in the index.
 
     ``annex.thin`` is set for this add alone, so a result is hard-linked to
     its annex object rather than copied — one copy on disk instead of two.
     It is safe precisely here: thin's hazard is editing a file in place,
     which rewrites the object under the key that names it, and lc never
-    does — the worker removes an output directory before rebuilding it, and
+    does — the worker removes a result's files before making it again, and
     an unlink leaves the object untouched. Setting it repository-wide would
     reach declared inputs instead, which a researcher adds with their own
     `git add` and whose tools very much do open files for update, so it is
@@ -437,7 +378,7 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     silently, with every test green, and every clone would carry the
     bytes forever. With it, ``annex.largefiles`` alone decides — which is
     the storage policy the ``.gitattributes`` template already states,
-    dot-named manifests staying in git through their own exemption.
+    records under ``.astra/`` staying in git through their own line.
     Per-add and never written to the repository's config, so a user's
     own ``git add`` keeps git-annex's stock behavior.
 
@@ -453,13 +394,27 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     refuses a second writer of the index rather than wait: every git
     command here waits that out (:func:`_run`).
 
+    git-annex keeps what the add told it — that this repository holds the
+    content — in its journal, until one of its own commands commits that to
+    its branch; a clone made before then is told of no copy, and cannot
+    fetch what was just stored (*measured*). The command here is a sync of
+    the git-annex branch alone, with no remote and no content: never ``git
+    annex merge``, which merges a pending ``synced/`` branch into the one
+    checked out (*measured*), in the middle of a run.
+
     Args:
         directory: The repository root.
         paths: What to stage — a path, or a git pathspec.
         message: The commit message.
+        annexed: Files among *paths* whose bytes have to go to the annex.
+        in_git: Files among *paths* that have to stay in git.
 
     Returns:
         False if there was nothing to commit.
+
+    Raises:
+        ProjectError: Naming each file staged where it must not go, with
+            nothing committed and nothing left staged.
     """
     relative = [_rel(directory, p) for p in paths]
     annex = ["-c", "annex.thin=true", "-c", "annex.dotfiles=true"]
@@ -468,10 +423,41 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     # as "something to commit" here nor be committed below.
     if _git_ok(["diff", "--cached", "--quiet", "--", *relative], cwd=directory):
         return False
+    to_annex = [_rel(directory, path) for path in annexed]
+    to_git = [_rel(directory, path) for path in in_git]
+    if asked := [*to_annex, *to_git]:
+        looked = project._run(
+            ["git", "annex", "lookupkey", "--batch"],
+            cwd=directory,
+            stdin="".join(f"{path}\n" for path in asked),
+        )
+        if looked.returncode != 0:
+            raise project.ProjectError(
+                f"`git annex lookupkey` failed:\n{looked.stderr.strip()}"
+            )
+        # One line out per path in: its key, or empty for one git holds.
+        key = dict(zip(asked, looked.stdout.split("\n"), strict=False))
+        wrong = [f"{path} was staged in git itself, not the annex"
+                 for path in to_annex if not key.get(path)]
+        wrong += [f"{path} was staged in the annex, where a clone with no content cannot read it"
+                  for path in to_git if key.get(path)]
+        if wrong:
+            _git(["reset", "-q", "--", *relative], cwd=directory)
+            raise project.ProjectError(
+                "git would not store these as lc stores them, so nothing was "
+                "committed:\n  " + "\n  ".join(wrong) + "\nThe last .gitattributes line "
+                "that matches each decides, and `lc init` sets up git-annex in a clone "
+                "where it is not."
+            )
     # The annex config rides on the commit too: a partial commit takes
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
     _git([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
+    _git(
+        ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
+         "--no-commit"],
+        cwd=directory,
+    )  # fmt: skip
     return True
 
 

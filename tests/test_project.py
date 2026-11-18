@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from astra import api
 from conftest import probes, uv_calls
 
 from lightcone.engine import dataset, plan, templates
@@ -22,7 +23,6 @@ from lightcone.engine.project import (
 #: Every path convergence is responsible for.
 SCAFFOLD = (
     "astra.yaml",
-    "universes/baseline.yaml",
     "pyproject.toml",
     ".python-version",
     ".gitignore",
@@ -110,14 +110,16 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
-def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path) -> None:
+def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path, real_tools: None) -> None:
     """The scaffold is an empty analysis, not an example to delete — and
     still one ASTRA accepts and lc can plan, so every verb works on a
-    project nobody has edited yet."""
+    project nobody has edited yet. Real tools, because ASTRA validates
+    against git."""
     project = tmp_path / "proj"
     converge(project)
 
     assert plan.build(project).tasks == {}
+    assert api.resolve(project).analyses[0].label == "proj"
 
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
@@ -200,18 +202,16 @@ def test_converge_adopts_an_existing_spec_without_touching_it(tmp_path: Path) ->
 
 
 def test_adoption_adds_no_layout_of_its_own(tmp_path: Path) -> None:
-    """Neither `src/` nor an empty `universes/` is created beside a
-    user-authored spec: git cannot track an empty directory, so converging
-    one would report drift on every fresh clone. Where analysis code lives
-    is the user's layout (astra-tools#100), and universes are discovered by
-    glob — a missing directory yields no universes, not an error."""
+    """No `src/` is created beside a user-authored spec: git cannot track
+    an empty directory, so converging one would report drift on every
+    fresh clone, and where analysis code lives is the user's layout
+    (astra-tools#100)."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / SPEC_FILENAME).write_text('name: "mine"\n')
 
     converge(project)
     assert not (project / "src").exists()
-    assert not (project / "universes").exists()
     assert converge(project).converged
 
 
@@ -906,19 +906,3 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     with pytest.raises(ProjectError, match="no solution found"):
         converge(tmp_path / "proj")
-
-
-def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
-    """Publication intent, derived never configured — the crate is
-    maintained iff [project].license is declared, in any of its forms."""
-    from lightcone.engine.project import license_of
-
-    cases = {
-        'license = "MIT"': "MIT",
-        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
-        'license = { file = "LICENSE" }': "LICENSE",
-        "": "",
-    }
-    for spelling, expected in cases.items():
-        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
-        assert license_of(tmp_path) == expected, spelling

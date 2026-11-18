@@ -123,7 +123,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
     assert entries[0] == "* annex.largefiles=nothing"
     assert "results/** annex.largefiles=anything" in entries
     assert "data/** annex.largefiles=anything" in entries
-    assert "results/**/.*.manifest.json annex.largefiles=nothing" in entries
+    assert entries[-1] == ".astra/** annex.largefiles=nothing"
 
 
 def test_gitattributes_exceptions_come_after_the_default() -> None:
@@ -211,7 +211,9 @@ def test_index_md_renders_the_title_and_references_no_element() -> None:
 def test_results_readme_explains_the_output_layout() -> None:
     """`results/` starts empty and git carries no empty directories, so the
     README is the only thing a clone shows for it."""
-    assert "results/<universe>/<output_id>.<format>" in templates.read("results-README.md.tmpl")
+    text = templates.read("results-README.md.tmpl")
+    assert "results/<universe>/<output_id>.<format>" in text
+    assert "results/<output_id>.<format>" in text
 
 
 def test_data_readme_explains_where_declared_inputs_go() -> None:

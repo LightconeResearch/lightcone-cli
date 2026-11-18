@@ -3,7 +3,7 @@
 This file runs real recipes through the real boundary, against a real
 project, because that is the only way to answer what it asks: whether the
 environment gates hold, whether the output directory is really reset,
-whether the manifest agrees with the bytes beside it, and whether a
+whether the record agrees with the bytes it describes, and whether a
 recipe can reach something it was not given.
 
 Following `test_sandbox_enforcement.py`'s rule, every denial assertion is
@@ -13,35 +13,44 @@ must *succeed*, or the test would pass without the sandbox doing anything.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
+from astra import api
+from conftest import locked_version, with_idna
 
-from lightcone.engine import assets, container, identity, plan, worker
+from lightcone.engine import container, content, dataset, identity, plan, sandbox, worker
 from lightcone.engine.sandbox import Unavailable
-from lightcone.engine.worker import TaskResult
+from lightcone.engine.worker import TaskOutcome
 
 _SPEC = """
-version: "0.0.13"
-name: analysis
+spec_version: "0.1.0"
 
-inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
+decisions:
+  word:
+    options: {one: {}, two: {}}
+
+universes:
+  baseline:
+    decisions: {word: one}
 
 outputs:
-  - id: first
+  first:
     type: metric
     format: txt
+    decisions: [word]
     recipe:
-      command: echo one > {output}
+      command: echo {decisions.word} > {output}
 
-  - id: second
+  second:
     type: report
     format: txt
     inputs: [first]
@@ -49,48 +58,78 @@ outputs:
       command: cat {inputs.first} > {output}
 """
 
+#: Results built once, the first of them from a tracked input.
+_READS = """
+spec_version: "0.1.0"
+
+inputs:
+  catalog: {path: data/catalog.txt}
+
+outputs:
+  fit:
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} > {output}
+
+  summary:
+    type: report
+    format: txt
+    inputs: [fit]
+    recipe:
+      command: wc -c < {inputs.fit} > {output}
+"""
+
+_FIRST = "results/baseline/first.txt"
+_SECOND = "results/baseline/second.txt"
+_FIRST_RECORD = ".astra/records/baseline/first.json"
+_SECOND_RECORD = ".astra/records/baseline/second.json"
+
 
 @pytest.fixture
 def root(analysis: Callable[..., Path]) -> Path:
     return analysis(_SPEC)
 
 
-def _task(root: Path, output_id: str) -> plan.Task:
-    graph = plan.build(root)
-    return graph.tasks[("baseline", output_id)]
+def _task(root: Path, key: str) -> plan.Task:
+    return plan.build(root).tasks[key]
 
 
-#: What the driver reads once and hands to every task.
-_HEAD = ("0123456789abcdef", "https://example/analysis.git")
+def _context(root: Path, environment: str | None = None) -> worker.RunContext:
+    """The driver-resolved facts a real run would hand down.
 
-
-def _runtime(root: Path) -> container.Runtime:
-    """The direct-mode runtime the driver would resolve for these projects."""
-    return container.runtime_for_run(root, build=False)
-
-
-def _context(root: Path, env_version: str | None = None) -> worker.RunContext:
-    """The driver-resolved facts a real run would hand down."""
+    The commit is the repository's own HEAD: a record names the commit its
+    result is compared against, so an invented one would leave every
+    result stale.
+    """
     return worker.RunContext(
-        env_version=env_version if env_version is not None else identity.env_version(root),
-        head=_HEAD,
-        versions=assets.Versions(),
-        runtime=_runtime(root),
-        uv_version="0.0.0-test",
+        environment=environment if environment is not None else identity.environment(root),
+        commit=dataset.head(root),
+        runtime=container.runtime_for_run(root, build=False),
     )
 
 
-def _make(
-    root: Path, output_id: str, *upstream: TaskResult, refresh: bool = False
-) -> TaskResult:
-    """Run one task the way Dask would, handed its upstream results."""
+def _make(root: Path, key: str, *upstream: TaskOutcome, refresh: bool = False) -> TaskOutcome:
+    """Run one task the way Dask would: handed what the driver read of it
+    before the run, and its upstream results."""
+    graph = plan.build(root)
     return worker.materialize(
-        root, _task(root, output_id), _context(root), refresh, None, *upstream
+        root, graph.tasks[key], graph.checked.statuses[key], _context(root), refresh, *upstream
     )
 
 
-def _age(root: Path, output_id: str) -> None:
-    """Rewrite an output's manifest to name an environment that is not this
+def _digest(data: bytes) -> content.Digest:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}", len(data)
+
+
+def _record(root: Path, path: str) -> dict[str, Any]:
+    document: dict[str, Any] = json.loads((root / path).read_text())
+    return document
+
+
+def _age(root: Path, record: str) -> None:
+    """Rewrite a result's record to name an environment that is not this
     one — the shape a project takes when `uv add` rewrites the lock after a
     result was made.
 
@@ -98,277 +137,613 @@ def _age(root: Path, output_id: str) -> None:
     the recipe actually runs under has to stay the real one, or the mid-run
     gate refuses the execution before any of this is exercised.
     """
-    sidecar = root / "results/baseline" / f".{output_id}.manifest.json"
-    manifest = assets.read(sidecar)
-    assert manifest is not None
-    assets.write(sidecar, replace(manifest, env_version="sha256:an-earlier-environment"))
+    document = json.loads((root / record).read_text())
+    document["generated_by"]["environment"]["iri"] = "urn:lightcone:env:sha256:an-earlier-one"
+    (root / record).write_text(json.dumps(document))
 
 
 # ---- executing a recipe ----------------------------------------------------
 
 
-def test_a_recipe_runs_and_its_output_is_recorded(root: Path) -> None:
-    result = _make(root, "first")
+def test_a_recipe_runs_and_its_result_is_recorded(root: Path) -> None:
+    result = _make(root, "first#baseline")
 
-    assert result.status == "ok"
-    assert (root / "results/baseline/first.txt").read_text() == "one\n"
-    assert result.data_version == assets.data_version(root / "results/baseline/first.txt")
+    assert result.status == "made"
+    assert (root / _FIRST).read_text() == "one\n"
+    assert result.digest == _digest(b"one\n")
+    assert result.size == 4
 
 
-def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
-    """The driver commits the directory and its manifest as one commit, so
-    a manifest that described the bytes only after the save could never be
-    in that commit."""
-    _make(root, "first")
+def test_the_record_says_what_the_run_was(root: Path) -> None:
+    """The record is what the result is checked against from then on, so
+    it has to name this result, these bytes, the commit the run started
+    from and the environment it ran under — and be one ASTRA accepts."""
+    result = _make(root, "first#baseline")
 
-    manifest = assets.read(root / "results/baseline/.first.manifest.json")
-    assert manifest is not None
-    assert manifest.data_version == assets.data_version(root / "results/baseline/first.txt")
-    assert manifest.definition_version == _task(root, "first").definition_version
-    assert manifest.env_version == identity.env_version(root)
-    assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
-    assert manifest.hermeticity["mechanism"]
+    record = _record(root, _FIRST_RECORD)
+    run = record["generated_by"]
+    assert record["address"] == "first#baseline"
+    assert (record["content_hash"], record["size"]) == (result.content_hash, result.size)
+    assert run["commit"] == dataset.head(root)
+    assert run["environment"] == {"iri": identity.environment(root)}
     # The engine's version is attestation, not identity: with lc outside
     # the project's lock, this field is the record of which engine ran.
-    assert manifest.lc_version == worker.lc_version()
-    # And so is the uv that converged the environment: probed once by the
-    # driver, handed down, never a rebuild signal.
-    assert manifest.uv_version == "0.0.0-test"
+    assert run["runner"] == {"id": "lightcone-cli", "version": worker.lc_version()}
+    assert run["started"] <= run["finished"]
+    assert run["inputs"] == []
+    assert plan.build(root).checked.statuses["first#baseline"].state == "unchanged"
 
 
-def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
-    """Whatever the host can enforce, the manifest records what it was —
-    never what the mechanism matrix says it should have been."""
-    from lightcone.engine import sandbox
+def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., Path]) -> None:
+    """And it reads a declared input, which lives in the annex. With
+    `filter=annex` the working tree holds the real bytes, so the project
+    read root covers them — worth pinning, since it is what every recipe
+    with an input depends on."""
+    root = analysis(_READS, files={"data/catalog.txt": "measured\n"})
 
-    _make(root, "first")
+    result = _make(root, "fit")
 
-    manifest = assets.read(root / "results/baseline/.first.manifest.json")
-    assert manifest is not None
-    assert manifest.hermeticity["mechanism"] == sandbox.detect().capability.kind
+    assert result.status == "made", result.reason
+    assert (root / "results/fit.txt").read_text() == "measured\n"
+    record = _record(root, ".astra/records/fit.json")
+    assert record["address"] == "fit"
+    content_hash, size = _digest(b"measured\n")
+    assert record["generated_by"]["inputs"] == [
+        {"entry": "catalog", "content_hash": content_hash, "size": size}
+    ]
 
 
 # ---- deciding whether to run at all ----------------------------------------
 
 
-def test_an_unchanged_output_is_current(root: Path) -> None:
-    made = _make(root, "first")
-    again = _make(root, "first")
+def test_an_unchanged_result_is_left_alone(root: Path) -> None:
+    made = _make(root, "first#baseline")
+    again = _make(root, "first#baseline")
 
-    assert again.status == "current"
-    assert again.data_version == made.data_version
+    assert again.status == "unchanged"
+    assert (again.content_hash, again.size) == (made.content_hash, made.size)
 
 
 def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) -> None:
-    """On a clone that has fetched no annex content the files are dangling
-    symlinks, so a recompute would quietly report a different output."""
-    _make(root, "first")
-    output = root / "results/baseline/first.txt"
-    manifest = assets.read(assets.manifest_path(output))
-    assert manifest is not None
-    output.unlink()
+    """On a clone that has fetched no annex content the result is a
+    pointer file — a stand-in for its bytes, which ASTRA reads as them —
+    so a recompute would quietly report a different output."""
+    made = _make(root, "first#baseline")
+    hex_digest = made.content_hash.removeprefix("sha256:")
+    (root / _FIRST).unlink()
+    (root / _FIRST).write_text(f"/annex/objects/SHA256E-s{made.size}--{hex_digest}.txt\n")
 
-    assert _make(root, "first").data_version == manifest.data_version
+    again = _make(root, "first#baseline")
+
+    assert again.status == "unchanged"
+    assert again.content_hash == made.content_hash
 
 
-def test_a_moved_environment_leaves_the_output_alone(root: Path) -> None:
+def test_a_moved_environment_leaves_the_result_alone(root: Path) -> None:
     """The change the identity split exists for. The recipe and the decisions still
     define exactly this output, so it is reported and kept — remaking it
     would spend the compute that a rewritten `uv.lock` never justified."""
-    made = _make(root, "first")
-    (root / "results/baseline/first.txt").write_text("untouched\n")
-    _age(root, "first")
+    made = _make(root, "first#baseline")
+    _age(root, _FIRST_RECORD)
+    before = content.stamp(root / _FIRST)
 
-    again = _make(root, "first")
+    again = _make(root, "first#baseline")
 
     assert again.status == "behind"
     assert "earlier environment" in again.reason
-    assert again.data_version == made.data_version
-    assert (root / "results/baseline/first.txt").read_text() == "untouched\n"
+    assert again.content_hash == made.content_hash
+    assert content.stamp(root / _FIRST) == before, "the recipe ran again"
 
 
 def test_refresh_remakes_what_is_only_behind(root: Path) -> None:
     """And the recipe really runs: the file the previous assertion left in
     place is overwritten, so this cannot pass by skipping too."""
-    _make(root, "first")
-    (root / "results/baseline/first.txt").write_text("untouched\n")
-    _age(root, "first")
+    _make(root, "first#baseline")
+    (root / _FIRST).write_text("untouched\n")
+    _age(root, _FIRST_RECORD)
 
-    again = _make(root, "first", refresh=True)
+    again = _make(root, "first#baseline", refresh=True)
 
-    assert again.status == "ok"
-    assert (root / "results/baseline/first.txt").read_text() == "one\n"
+    assert again.status == "made"
+    assert (root / _FIRST).read_text() == "one\n"
 
 
-def test_refresh_does_not_remake_what_is_current(root: Path) -> None:
+def test_refresh_does_not_remake_what_is_unchanged(root: Path) -> None:
     """`--refresh` widens the run by one state, not to everything. Without
     this it would be a rebuild-the-world flag wearing another name."""
-    _make(root, "first")
+    _make(root, "first#baseline")
 
-    assert _make(root, "first", refresh=True).status == "current"
+    assert _make(root, "first#baseline", refresh=True).status == "unchanged"
+
+
+def _reads_first(result: TaskOutcome) -> list[dict[str, object]]:
+    """What a record of `second` holds when it read *result*."""
+    return [{"entry": "first", "content_hash": result.content_hash, "size": result.size}]
 
 
 def test_a_behind_upstream_still_feeds_its_dependents(root: Path) -> None:
     """`behind` says the environment moved, not that the bytes are wrong —
     so a dependent proceeds on them rather than reporting blocked."""
-    first = _make(root, "first")
-    _age(root, "first")
-    behind = _make(root, "first")
+    first = _make(root, "first#baseline")
+    _age(root, _FIRST_RECORD)
+    behind = _make(root, "first#baseline")
     assert behind.status == "behind"
 
-    second = _make(root, "second", behind)
+    second = _make(root, "second#baseline", behind)
 
-    assert second.status == "ok"
-    manifest = assets.read(root / "results/baseline/.second.manifest.json")
-    assert manifest is not None
-    assert manifest.input_versions == {"first": first.data_version}
+    assert second.status == "made"
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
 
 
 def test_a_task_whose_upstream_did_not_finish_is_blocked(root: Path) -> None:
     """Blocked without running: an exception would make Dask propagate to
     every dependent and stop 'who actually failed' being answerable."""
-    upstream = TaskResult(("baseline", "first"), "failed", reason="boom")
+    upstream = TaskOutcome("first#baseline", "failed", reason="boom")
 
-    result = _make(root, "second", upstream)
+    result = _make(root, "second#baseline", upstream)
 
     assert result.status == "blocked"
-    assert "baseline/first" in result.reason
-    assert not (root / "results/baseline/second.txt").exists()
+    assert "first#baseline" in result.reason
+    assert not (root / _SECOND).exists()
 
 
-def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
-    first = _make(root, "first")
-    second = _make(root, "second", first)
+def test_a_downstream_task_takes_its_upstreams_digest_of_that_very_file(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task that made the result hashed it, so what reads that very
+    file takes its digest rather than reading all of it again."""
+    first = _make(root, "first#baseline")
+    hashed: list[Path] = []
+    real = content.digest_file
 
-    assert second.status == "ok"
-    manifest = assets.read(root / "results/baseline/.second.manifest.json")
-    assert manifest is not None
-    assert manifest.input_versions == {"first": first.data_version}
+    def digest_file(path: Path) -> content.Digest:
+        hashed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(content, "digest_file", digest_file)
+
+    second = _make(root, "second#baseline", first)
+
+    assert second.status == "made"
+    assert root / _FIRST not in hashed
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(first)
+
+
+def test_bytes_replaced_after_their_digest_was_taken_are_recorded_as_read(root: Path) -> None:
+    """A digest names the file it was taken of. Another file in its place
+    is hashed as the recipe reads it: a record names the bytes its recipe
+    read, never the ones an upstream reported of a file that is gone."""
+    first = _make(root, "first#baseline")
+    (root / _FIRST).unlink()
+    (root / _FIRST).write_text("not the bytes the upstream task reported\n")
+
+    second = _make(root, "second#baseline", first)
+
+    assert second.status == "made"
+    read = _digest(b"not the bytes the upstream task reported\n")
+    assert read != first.digest
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == [
+        {"entry": "first", "content_hash": read[0], "size": read[1]}
+    ]
+
+
+# ---- downstream of a task that may be remade -------------------------------
+#
+# The driver reads what ASTRA's checker finds once, before the run, and
+# hands each task its own part. Whether a result downstream of a remake
+# still stands is then the task's to answer, from those findings and the
+# bytes its upstreams gave — with no second question to ASTRA, and no git.
+
+
+def _stale_through_first(root: Path, read: content.Digest) -> api.Status:
+    """What the checker finds of `second` while `first` is stale: a record
+    of its own, which says it read *read*, nothing wrong with the result
+    itself, and the one entry that reads what is not unchanged."""
+    record = api.ProvenanceRecord(
+        "second#baseline",
+        "sha256:" + "5" * 64,
+        7,
+        api.Generation(
+            dataset.head(root),
+            api.Environment(identity.environment(root)),
+            api.Runner("lightcone-cli", "1.0"),
+            (api.RecordedInput("first", *read),),
+        ),
+    )
+    return api.Status("stale", "present", record, stale_inputs=("first",))
+
+
+def _landed(read: content.Digest) -> TaskOutcome:
+    """`first`, remade, with the bytes it came out as."""
+    return TaskOutcome("first#baseline", "made", *read)
+
+
+def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root: Path) -> None:
+    """Where the cascade stops: `first` was stale and was remade, but as
+    the bytes `second`'s record says it read — so no recipe runs, and the
+    task reports the bytes that record gives."""
+    read = _digest(b"one\n")
+    found = _stale_through_first(root, read)
+
+    result = worker.materialize(
+        root, _task(root, "second#baseline"), found, _context(root), False, _landed(read)
+    )
+
+    assert result.status == "unchanged"
+    assert (result.content_hash, result.size) == ("sha256:" + "5" * 64, 7)
+    assert not (root / _SECOND).exists()
+
+
+def test_a_remake_that_gives_other_bytes_remakes_its_dependent(root: Path) -> None:
+    (root / _FIRST).parent.mkdir(parents=True)
+    (root / _FIRST).write_text("two\n")
+    found = _stale_through_first(root, _digest(b"one\n"))
+
+    result = worker.materialize(
+        root,
+        _task(root, "second#baseline"),
+        found,
+        _context(root),
+        False,
+        _landed(_digest(b"two\n")),
+    )
+
+    assert result.status == "made", result.reason
+    assert (root / _SECOND).read_text() == "two\n"
+    assert _record(root, _SECOND_RECORD)["generated_by"]["inputs"] == _reads_first(
+        _landed(_digest(b"two\n"))
+    )
+
+
+def test_a_task_asks_astra_nothing_about_the_project(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker may be on a node with no git, and a second check would
+    read a tree other tasks are writing. What it needs of ASTRA came with
+    the task: the findings, which lc's own rule decides from. All it asks
+    of ASTRA is to write the record of what it made."""
+    graph = plan.build(root)
+    first = worker.materialize(
+        root,
+        graph.tasks["first#baseline"],
+        graph.checked.statuses["first#baseline"],
+        _context(root),
+        False,
+    )
+    context = _context(root)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a task asked ASTRA about the project")
+
+    for question in ("status", "resolve", "validate"):
+        monkeypatch.setattr(api, question, refuse)
+
+    left = worker.materialize(
+        root, graph.tasks["second#baseline"], _stale_through_first(root, first.digest),
+        context, False, first,
+    )
+    made = worker.materialize(
+        root, graph.tasks["second#baseline"], graph.checked.statuses["second#baseline"], context,
+        False, first,
+    )
+
+    assert left.status == "unchanged"
+    assert made.status == "made", made.reason
+    assert (root / _SECOND).read_text() == "one\n"
+
+
+def test_a_byte_identical_remake_leaves_its_dependents_unchanged(root: Path) -> None:
+    """The same, over the real checker: the dependent's record still names
+    the bytes it read, so there is nothing to make again."""
+    second = _make(root, "second#baseline", _make(root, "first#baseline"))
+    before = content.stamp(root / _SECOND)
+    graph = plan.build(root)
+    remade = worker.execute(root, graph.tasks["first#baseline"], {}, _context(root))
+    assert remade.status == "made"
+
+    again = worker.materialize(
+        root,
+        graph.tasks["second#baseline"],
+        graph.checked.statuses["second#baseline"],
+        _context(root),
+        False,
+        remade,
+    )
+
+    assert again.status == "unchanged"
+    assert again.content_hash == second.content_hash
+    assert content.stamp(root / _SECOND) == before, "the recipe ran again"
+
+
+def test_a_remake_with_other_bytes_remakes_its_dependents(
+    analysis: Callable[..., Path],
+) -> None:
+    """Both tasks are handed what the driver read before either ran:
+    `summary` is stale only through `fit`, and is remade because `fit`
+    came out differently."""
+    root = analysis(_READS, files={"data/catalog.txt": "measured\n"})
+    _make(root, "summary", _make(root, "fit"))
+    assert (root / "results/summary.txt").read_text().strip() == "9"
+    (root / "data/catalog.txt").write_text("measured again\n")
+    graph, context = plan.build(root), _context(root)
+    found = graph.checked.statuses["summary"]
+    assert (found.state, found.stale_inputs) == ("stale", ("fit",))
+    assert not [broken for broken in found.why if broken.level == "error"]
+
+    remade = worker.materialize(
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+    )
+    again = worker.materialize(
+        root, graph.tasks["summary"], graph.checked.statuses["summary"], context, False, remade
+    )
+
+    assert remade.status == "made"
+    assert again.status == "made"
+    assert (root / "results/summary.txt").read_text().strip() == "15"
 
 
 # ---- the output directory the recipe owns ----------------------------------
 
 
-def test_a_payload_from_an_earlier_format_does_not_survive_a_rebuild(root: Path) -> None:
-    """The reset takes every file named after the output, not just the one
-    the spec declares today — so re-declaring the serialization leaves no
-    orphan behind for the publication view to trip over."""
-    _make(root, "first")
-    earlier = root / "results/baseline/first.json"
-    earlier.write_text("from a run that declared another format\n")
+def test_the_reset_takes_the_results_own_files_and_nothing_named_like_them(
+    root: Path,
+) -> None:
+    """A result is the one file at its place, and its records: a file that
+    is merely named after it is no output's, and not the reset's to take."""
+    _make(root, "first#baseline")
+    beside = root / "results/baseline/first.json"
+    beside.write_text("named after the result, declared by nothing\n")
 
-    worker.execute(root, _task(root, "first"), {}, _context(root))
+    worker.execute(root, _task(root, "first#baseline"), {}, _context(root))
 
-    assert not earlier.exists()
-    assert (root / "results/baseline/first.txt").exists()
+    assert beside.read_text() == "named after the result, declared by nothing\n"
+    assert (root / _FIRST).exists()
 
 
-def test_a_sibling_output_is_left_alone_by_the_reset(root: Path) -> None:
-    """Outputs share a directory now, and under Dask they are written
-    concurrently — so the reset may only ever touch what its own id
+def test_a_sibling_result_is_left_alone_by_the_reset(root: Path) -> None:
+    """Outputs share a directory, and under Dask they are written
+    concurrently — so the reset may only ever touch what its own name
     names."""
-    _make(root, "first")
-    sibling = root / "results/baseline/second.txt"
-    sibling.parent.mkdir(parents=True, exist_ok=True)
+    _make(root, "first#baseline")
+    sibling = root / _SECOND
     sibling.write_text("a neighbour's bytes\n")
 
-    worker.execute(root, _task(root, "first"), {}, _context(root))
+    worker.execute(root, _task(root, "first#baseline"), {}, _context(root))
 
     assert sibling.read_text() == "a neighbour's bytes\n"
 
 
-def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
-    spec = _SPEC.replace("echo one > {output}", "echo one > {output} && false")
-    (root / "astra.yaml").write_text(spec)
+def _recorded(root: Path) -> bool:
+    """Whether anything says `first` was made."""
+    return (root / _FIRST_RECORD).exists()
 
-    result = _make(root, "first")
+
+def test_a_failing_recipe_records_nothing(root: Path) -> None:
+    (root / "astra.yaml").write_text(_SPEC.replace("> {output}", "> {output} && false", 1))
+
+    result = _make(root, "first#baseline")
 
     assert result.status == "failed"
     assert "exited 1" in result.reason
-    assert assets.read(root / "results/baseline/.first.manifest.json") is None
+    assert not _recorded(root)
 
 
 def test_a_recipe_that_writes_nothing_fails(root: Path) -> None:
     """Exit 0 is not evidence of an output. Without this the run would
-    commit a manifest for a file that is not there."""
-    (root / "astra.yaml").write_text(
-        _SPEC.replace("echo one > {output}", "echo nowhere > /dev/null")
-    )
+    commit a record for a file that is not there."""
+    (root / "astra.yaml").write_text(_SPEC.replace("> {output}", "> /dev/null", 1))
 
-    result = _make(root, "first")
+    result = _make(root, "first#baseline")
 
     assert result.status == "failed"
     assert "left nothing" in result.reason
-    assert assets.read(root / "results/baseline/.first.manifest.json") is None
+    assert not _recorded(root)
+
+
+def test_a_recipe_that_leaves_a_link_fails(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result is its own bytes at its place. A link there is some other
+    file's, which git would record as a link and no clone could read."""
+    monkeypatch.setattr(sandbox, "detect", Unavailable)
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo {decisions.word} > {output}", "ln -s ../../astra.yaml {output}")
+    )
+
+    result = _make(root, "first#baseline")
+
+    assert result.status == "failed"
+    assert "a symlink" in result.reason
+    assert not _recorded(root)
+
+
+def test_a_recipe_that_changes_what_it_reads_is_not_recorded(root: Path) -> None:
+    """Its record would name bytes that no longer exist: what a recipe
+    reads has to be what it read when it ends."""
+    first = _make(root, "first#baseline")
+    (root / "astra.yaml").write_text(
+        _SPEC.replace(
+            "cat {inputs.first} > {output}",
+            "cat {inputs.first} > {output} && rm {inputs.first} && echo other > {inputs.first}",
+        )
+    )
+
+    result = _make(root, "second#baseline", first)
+
+    assert result.status == "failed"
+    assert "changed what it only reads: first" in result.reason
+    assert not (root / _SECOND_RECORD).exists()
+
+
+def _hashed_by(asked: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Note in *asked* the name of each file the worker hashes."""
+    digest_file = content.digest_file
+
+    def counted(path: Path) -> content.Digest:
+        asked.append(path.name)
+        return digest_file(path)
+
+    monkeypatch.setattr(content, "digest_file", counted)
+
+
+def test_a_task_takes_the_digest_the_driver_took_of_the_file_it_reads(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared input more than one task reads is hashed once, by the
+    driver, and a task that finds that very file does not read it again."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    catalog = root / "data/catalog.txt"
+    context = replace(
+        _context(root),
+        hashed={catalog: (content.stamp(catalog), content.digest_file(catalog))},
+    )
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+    )
+
+    assert result.status == "made", result.reason
+    assert "catalog.txt" not in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
+
+
+def test_a_digest_taken_of_another_file_is_not_the_tasks(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other way: a digest stands for the file it was computed from,
+    by inode, size and time. Handed one for any other, the task hashes
+    what it reads itself, so its record names what the recipe read."""
+    root = analysis(_READS, {"data/catalog.txt": "stars\n"})
+    another = (0, 0, 0), ("sha256:" + "0" * 64, 0)
+    context = replace(_context(root), hashed={root / "data/catalog.txt": another})
+    graph = plan.build(root)
+    asked: list[str] = []
+    _hashed_by(asked, monkeypatch)
+
+    result = worker.materialize(
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+    )
+
+    assert result.status == "made", result.reason
+    assert "catalog.txt" in asked
+    [read] = _record(root, ".astra/records/fit.json")["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == _digest(b"stars\n")
 
 
 def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:
-    """`data_version` hashes a directory perfectly happily, so `mkdir` on
-    the output — which is what every recipe written for the old layout
-    does — would otherwise commit a well-formed digest of something that
-    is not the output at all."""
-    (root / "astra.yaml").write_text(_SPEC.replace("echo one > {output}", "mkdir -p {output}"))
+    """A result is one file, and a record of a directory would describe
+    something that is not the output at all."""
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo {decisions.word} > {output}", "mkdir -p {output}")
+    )
 
-    result = _make(root, "first")
+    result = _make(root, "first#baseline")
 
     assert result.status == "failed"
     assert "a directory" in result.reason
+    assert not _recorded(root)
 
 
-def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "error",
+    [OSError("no space left on device"), ValueError("a record ASTRA would call invalid")],
+    ids=["unwritable", "refused"],
+)
+def test_a_result_that_cannot_be_recorded_fails_rather_than_raises(
+    root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """Recording is fallible too, and a raise here reaches Dask, which
+    """Recording is fallible too — the disk, or ASTRA refusing a record
+    its checker would call invalid — and a raise here reaches Dask, which
     re-raises in the driver and takes down every other task in flight —
     where reporting one failure and letting the rest finish is the whole
-    point of owning the loop. Exercised without a mechanism, because that
-    is the host where a recipe really can delete what it was given."""
+    point of owning the loop."""
     def refuse(*args: object, **kwargs: object) -> None:
-        raise OSError("no space left on device")
+        raise error
 
-    monkeypatch.setattr(assets, "write", refuse)
+    monkeypatch.setattr(api, "write_records", refuse)
 
-    result = _make(root, "first")
+    result = _make(root, "first#baseline")
 
     assert result.status == "failed"
     assert "could not be recorded" in result.reason
+    assert not (root / _FIRST_RECORD).exists()
+
+
+def test_whatever_goes_wrong_is_returned_rather_than_raised(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contract holds for failures nobody anticipated, not only for
+    the ones with a message of their own."""
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("nobody guarded this")
+
+    monkeypatch.setattr(worker, "execute", explode)
+
+    result = _make(root, "first#baseline")
+
+    assert result.status == "failed"
+    assert "RuntimeError: nobody guarded this" in result.reason
 
 
 # ---- the environment gates -------------------------------------------------
 
 
-def test_an_environment_that_moved_under_the_run_is_refused(root: Path) -> None:
-    """A manifest may not claim an environment that had already been edited
-    by the time the recipe ran."""
+def test_an_environment_that_moved_before_the_recipe_is_refused(root: Path) -> None:
+    """A record may not claim an environment that had already been edited
+    by the time the recipe ran — and the recipe is not run to find out."""
     result = worker.execute(
-        root, _task(root, "first"), {}, _context(root, env_version="sha256:from-another-run")
+        root,
+        _task(root, "first#baseline"),
+        {},
+        _context(root, environment="urn:lightcone:env:sha256:from-another-run"),
     )
 
     assert result.status == "failed"
     assert "environment changed" in result.reason
-    assert assets.read(root / "results/baseline/.first.manifest.json") is None
+    assert not (root / _FIRST).exists()
+    assert not _recorded(root)
+
+
+def test_an_environment_that_moved_under_the_recipe_is_refused(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipe ran, so there are bytes — and nothing says which
+    environment made them, so nothing is recorded."""
+    task, context = _task(root, "first#baseline"), _context(root)
+    answers = iter([context.environment])
+    monkeypatch.setattr(
+        identity, "environment", lambda _: next(answers, "urn:lightcone:env:sha256:edited")
+    )
+
+    result = worker.execute(root, task, {}, context)
+
+    assert result.status == "failed"
+    assert "environment changed" in result.reason
+    assert (root / _FIRST).read_text() == "one\n"
+    assert not _recorded(root)
 
 
 # ---- what a recipe may touch -----------------------------------------------
+
+_TAMPERS = _SPEC.replace("echo {decisions.word}", "echo tampered > src/injected.py && echo one")
 
 
 def test_a_recipe_cannot_write_outside_the_results_tree(root: Path) -> None:
     """The tree is read-only apart from the directory the output lands in.
     Sibling outputs inside that directory are *not* carved out — an output
     is one file, and a mechanism can only grant creating it through the
-    directory that will hold it; the manifest's content hash is what says
+    directory that will hold it; the record's content hash is what says
     whether an output's bytes are its own."""
-    from lightcone.engine import sandbox
-
     if sandbox.detect().capability.kind == "none":
         pytest.skip("no sandbox mechanism on this host")
-    (root / "astra.yaml").write_text(
-        _SPEC.replace(
-            "echo one > {output}", "echo tampered > src/injected.py && echo one > {output}"
-        )
-    )
+    (root / "src").mkdir()
+    (root / "astra.yaml").write_text(_TAMPERS)
 
-    assert _make(root, "first").status == "failed"
+    assert _make(root, "first#baseline").status == "failed"
     assert not (root / "src" / "injected.py").exists()
 
 
@@ -377,51 +752,12 @@ def test_that_write_would_have_succeeded_unsandboxed(
 ) -> None:
     """The mutation check. Without it the test above would pass on a host
     that enforces nothing, and pin nothing at all."""
-    from lightcone.engine import sandbox
-
     monkeypatch.setattr(sandbox, "detect", Unavailable)
-    (root / "src").mkdir(exist_ok=True)
-    (root / "astra.yaml").write_text(
-        _SPEC.replace(
-            "echo one > {output}", "echo tampered > src/injected.py && echo one > {output}"
-        )
-    )
+    (root / "src").mkdir()
+    (root / "astra.yaml").write_text(_TAMPERS)
 
-    assert _make(root, "first").status == "ok"
+    assert _make(root, "first#baseline").status == "made"
     assert (root / "src" / "injected.py").read_text() == "tampered\n"
-
-
-def test_a_recipe_can_read_an_annexed_input(analysis: Callable[..., Path]) -> None:
-    """Declared inputs live in the annex. With `filter=annex` the working
-    tree holds the real bytes, so the project read root covers them — but
-    that is worth pinning, since it is what every recipe with an input
-    depends on."""
-    from lightcone.engine import dataset
-
-    spec = """
-    version: "0.0.13"
-    name: analysis
-
-    inputs:
-      - id: catalog
-        type: data
-        source: data/catalog.txt
-
-    outputs:
-      - id: fit
-        type: metric
-        format: txt
-        inputs: [catalog]
-        recipe:
-          command: cat {inputs.catalog} > {output}
-    """
-    root = analysis(spec, files={"data/catalog.txt": "measured\n"})
-    dataset.save(root, [root / "data"], "the catalog")
-
-    result = _make(root, "fit")
-
-    assert result.status == "ok", result.reason
-    assert (root / "results/baseline/fit.txt").read_text() == "measured\n"
 
 
 # ---- the entry point the run record names ----------------------------------
@@ -443,17 +779,16 @@ def test_the_worker_module_imports_neither_click_nor_rich() -> None:
 def test_the_module_runs_one_task_and_commits_nothing(root: Path) -> None:
     """What `datalad rerun` invokes. It leaves the tree dirty by design —
     which is exactly why it is not an `lc` verb."""
-    from lightcone.engine import dataset
-
     proc = subprocess.run(
-        [sys.executable, "-m", "lightcone.engine.worker", "baseline/first"],
+        [sys.executable, "-m", "lightcone.engine.worker", "first#baseline"],
         cwd=root,
         capture_output=True,
         text=True,
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert (root / "results/baseline/first.txt").read_text() == "one\n"
+    assert (root / _FIRST).read_text() == "one\n"
+    assert _record(root, _FIRST_RECORD)["address"] == "first#baseline"
     assert dataset.status(root)
 
 
@@ -461,54 +796,113 @@ def test_the_module_reruns_unconditionally(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rerun is a rerun: the caller has already said what they want, and
-    a staleness check would answer a question nobody asked."""
+    a staleness check would answer a question nobody asked. The result
+    stands, and its recipe runs again all the same."""
     monkeypatch.chdir(root)
-    _make(root, "first")
-    (root / "results/baseline/first.txt").unlink()
+    _make(root, "first#baseline")
+    made = _record(root, _FIRST_RECORD)["generated_by"]["started"]
+    assert _make(root, "first#baseline").status == "unchanged"
 
-    assert worker.main(["baseline/first"]) == 0
-    assert (root / "results/baseline/first.txt").exists()
+    assert worker.main(["first#baseline"]) == 0
+    assert _record(root, _FIRST_RECORD)["generated_by"]["started"] != made
+    assert (root / _FIRST).read_text() == "one\n"
+
+
+_IMPORTS = """
+spec_version: "0.1.0"
+
+outputs:
+  version:
+    type: data
+    format: txt
+    recipe:
+      command: python -c 'import idna; print(idna.__version__)' > {output}
+"""
 
 
 def test_the_module_converges_the_environment(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rerun checks out the lock but never `.venv`, and the recipe's own
     `uv run --no-sync` silently creates an *empty* environment where none
     exists — so the entry point syncs before anything executes, or a fresh
-    clone's rerun would record the lock's `env_version` over a recipe that
-    ran in a bare venv."""
-    import shutil
-
+    clone's rerun would record the lock's environment over a recipe that
+    ran in a bare venv. The recipe imports what the lock pins, which no
+    empty environment holds."""
+    root = with_idna(analysis(_IMPORTS))
     monkeypatch.chdir(root)
     shutil.rmtree(root / ".venv")
 
-    assert worker.main(["baseline/first"]) == 0
-    assert (root / ".venv").exists()
-    assert (root / "results/baseline/first.txt").read_text() == "one\n"
+    assert worker.main(["version"]) == 0
+    assert (root / "results/version.txt").read_text().strip() == locked_version(root, "idna")
 
 
-def test_the_module_refuses_an_argument_it_cannot_use(root: Path) -> None:
-    assert worker.main([]) == 2
-    assert worker.main(["first"]) == 2
+def test_the_module_records_the_bytes_its_task_read_in_the_tree(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """There is no graph in flight to take an upstream's result from, so
+    its bytes are hashed where they lie: a run that read a file somebody
+    replaced says so, whatever the upstream's own record gives."""
+    monkeypatch.chdir(root)
+    _make(root, "first#baseline")
+    (root / _FIRST).unlink()
+    (root / _FIRST).write_text("not the bytes the record gives\n")
+    dataset.save(root, [root], "first, then replaced by hand")
+
+    assert worker.main(["second#baseline"]) == 0
+    read = _record(root, _SECOND_RECORD)["generated_by"]["inputs"]
+    assert read == [
+        {"entry": "first", **dict(zip(("content_hash", "size"), _digest(
+            b"not the bytes the record gives\n"), strict=True))}
+    ]
 
 
-def test_the_module_refuses_an_output_that_does_not_exist(
+def test_the_module_refuses_a_tree_that_is_not_its_commit(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its record names HEAD. All a rerun has changed by the time it runs
+    is the result's own files; anything else uncommitted would make that
+    record false of the run."""
+    monkeypatch.chdir(root)
+    (root / "notes.md").write_text("in progress\n")
+
+    assert worker.main(["first#baseline"]) == 2
+    assert "UNCOMMITTED_CHANGES" in capsys.readouterr().err
+    assert not (root / _FIRST).exists()
+
+
+def test_the_module_refuses_a_task_whose_upstream_has_no_record(
     root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(root)
-    assert worker.main(["baseline/nothing"]) == 2
-    assert "no output `baseline/nothing`" in capsys.readouterr().err
+
+    assert worker.main(["second#baseline"]) == 2
+    assert "no valid record" in capsys.readouterr().err
+    assert not (root / _SECOND).exists()
+
+
+def test_the_module_refuses_anything_but_one_task() -> None:
+    assert worker.main([]) == 2
+    assert worker.main(["first#baseline", "second#baseline"]) == 2
+
+
+def test_the_module_refuses_a_result_that_does_not_exist(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A result's name alone is not a task: a rerun makes exactly one."""
+    monkeypatch.chdir(root)
+
+    assert worker.main(["nothing#baseline"]) == 2
+    assert "no result `nothing#baseline`" in capsys.readouterr().err
+    assert worker.main(["first"]) == 2
 
 
 def test_only_the_lookup_can_blame_the_target(
     root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The whole body used to sit under one `except KeyError`, so anything
-    raising one inside astra's validation or resolution was reported as
-    "no output <x>". This is the entry point every `[DATALAD RUNCMD]`
-    record names, so a rerun failing for an unrelated reason misdiagnosed
-    itself."""
+    """This is the entry point every `[DATALAD RUNCMD]` record names, so a
+    rerun failing for an unrelated reason must not misdiagnose itself as
+    "no output <x>"."""
     monkeypatch.chdir(root)
 
     def explode(_: Path) -> None:
@@ -516,23 +910,70 @@ def test_only_the_lookup_can_blame_the_target(
 
     monkeypatch.setattr(worker.plan, "build", explode)
     with pytest.raises(KeyError):
-        worker.main(["baseline/first"])
+        worker.main(["first#baseline"])
     assert "no output" not in capsys.readouterr().err
 
 
-def test_a_declared_input_that_is_not_there_names_itself(
+def test_the_module_refuses_an_analysis_astra_rejects(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`data_version` reports an absent path with the OS's own exception,
-    which would unwind as a traceback at whoever is reading a rerun."""
-    spec = _SPEC.replace(
-        "    recipe:\n      command: echo one > {output}",
-        "    inputs: [catalog]\n    recipe:\n      command: echo one > {output}",
-        1,
+    """A declared input that is not there is ASTRA's to report, and it
+    reaches whoever is reading a rerun as a refusal, not a traceback."""
+    root = analysis(_READS, files={"data/catalog.txt": "measured\n"})
+    monkeypatch.chdir(root)
+    (root / "data/catalog.txt").unlink()
+
+    assert worker.main(["fit"]) == 2
+    assert "does not validate" in capsys.readouterr().err
+    assert not (root / "results/fit.txt").exists()
+
+
+# ---- what a recipe reads, and what a record cannot say ---------------------
+
+
+def test_an_upstream_whose_content_is_not_here_is_refused(root: Path) -> None:
+    """A result left alone on a clone that has not fetched it is a pointer
+    to its content. A recipe handed it would read a few lines of text for
+    its data, under a record naming the real bytes — so the task refuses
+    before the recipe runs."""
+    first = _make(root, "first#baseline")
+    (root / _FIRST).unlink()
+    (root / _FIRST).write_text("/annex/objects/SHA256E-s4--0123456789abcdef.txt\n")
+
+    result = _make(root, "second#baseline", first)
+
+    assert result.status == "failed"
+    assert f"the input `first` ({_FIRST}) cannot be read" in result.reason
+    assert "not in this clone" in result.reason
+    assert not (root / _SECOND).exists()
+    assert not (root / _SECOND_RECORD).exists()
+
+
+def test_the_record_is_reset_before_the_recipe_runs(root: Path) -> None:
+    """A record left from an earlier run names bytes this run is about to
+    replace: a recipe that then fails must not leave it for the commit to
+    take as this run's account."""
+    assert _make(root, "first#baseline").status == "made"
+    assert (root / _FIRST_RECORD).is_file()
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo {decisions.word} > {output}", "echo one > {output} && false")
     )
-    root = analysis(spec)
+
+    assert _make(root, "first#baseline").status == "failed"
+    assert not (root / _FIRST_RECORD).exists()
+
+
+def test_a_declared_input_that_is_not_there_is_refused_by_name(
+    analysis: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ASTRA refuses an input that names no file before anything is run,
+    in its own words — not a traceback at whoever is reading a rerun."""
+    root = analysis(_READS)
     monkeypatch.chdir(root)
 
-    assert worker.main(["baseline/first"]) == 2
-    assert "the declared input `catalog` cannot be read" in capsys.readouterr().err
+    assert worker.main(["fit"]) == 2
+    err = capsys.readouterr().err
+    assert "MISSING_INPUT_FILE" in err and "catalog" in err
