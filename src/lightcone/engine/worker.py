@@ -30,7 +30,7 @@ from __future__ import annotations
 import functools
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +40,6 @@ from lightcone.engine import commits, container, content, dataset, identity, pla
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import (
-    SPEC_FILENAME,
     ProjectError,
     child_env,
     declared_project,
@@ -123,12 +122,13 @@ class RunContext:
     )
 
 
-def require_in_commit(root: Path) -> None:
+def require_in_commit(root: Path, specs: Sequence[str]) -> None:
     """Refuse a run whose commit would not hold what its records name it for.
 
     A record names a commit, and two things are read back from it: the
-    analysis, which ASTRA's checker compares the result with, and the
-    files lc recreates the environment from, which its IRI names. A clean
+    analysis, and each it declares from the working tree, which ASTRA's
+    checker compares the result with, and the files lc recreates the
+    environment from, which its IRI names. A clean
     tree does not say either is there: an ignored file is clean, a symlink
     is committed as the path it points to, and an annexed file as a
     pointer, not as the bytes read through either. Asked by whoever owns a
@@ -136,18 +136,20 @@ def require_in_commit(root: Path) -> None:
 
     Args:
         root: The project root.
+        specs: The file of each analysis read from the working tree, from
+            the project root (`Graph.specs`).
 
     Raises:
         ProjectError: Naming each file the commit would not hold.
     """
     environment = identity.files(root)
-    missing = dataset.not_in_git(root, [SPEC_FILENAME, *environment])
-    if SPEC_FILENAME in missing:
+    missing = dataset.not_in_git(root, [*specs, *environment])
+    if analyses := [path for path in missing if path in specs]:
         raise ProjectError(
-            f"{SPEC_FILENAME} is not in git as a file of its own — untracked, a symlink "
-            "or annexed — so the commit a record names would hold no analysis to check "
-            "the result against. Commit the file itself, in git, and remove whatever "
-            ".gitignore rule keeps it out."
+            f"{', '.join(analyses)} — not in git as files of their own (untracked, a "
+            "symlink or annexed), so the commit a record names would hold no analysis to "
+            "check its results against. Commit each file itself, in git, and remove "
+            "whatever .gitignore rule keeps it out."
         )
     if missing:
         raise ProjectError(
@@ -541,7 +543,7 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
-        require_in_commit(root)
+        require_in_commit(root, graph.specs)
         # What the recipe reads at another commit is given as a run gives it.
         trees: dict[str, list[str]] = {}
         for path in task.inputs.values():
@@ -623,8 +625,16 @@ def unreadable(found: Status) -> str:
     Returns:
         The reason, or empty.
     """
-    if found.state == "unchanged" and found.record is not None:
+    # Bytes there that are neither its record's nor a stand-in for them:
+    # unfetched content a stand-in vouches for is no diagnostic at all.
+    absent = [d.message for d in found.why if d.code == "ABSENT_RESULT"]
+    if found.state == "unchanged" and found.record is not None and not absent:
         return ""
+    if found.state == "unchanged":
+        return (
+            "lacks its recorded bytes at its commit, so nothing is built from it "
+            f"(STALE_INPUT): {'; '.join(dict.fromkeys(absent))}"
+        )
     broken = "; ".join(dict.fromkeys(d.message for d in found.why if d.level == "error"))
     return (
         f"is {found.state} at its commit, so nothing is built from it (STALE_INPUT)"

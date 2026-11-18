@@ -340,18 +340,46 @@ def test_stale_input_of_a_result_that_lacks_its_recorded_bytes(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """At the commit `previous` names, `fit`'s bytes are not the ones its
-    record gives. Read where a run gives that commit's tree, they are
-    hashed before anything reads them, and nothing is built from them."""
+    record gives, which its stand-in there says (ASTRA's `ABSENT_RESULT`):
+    `--check` says so, and nothing is built from them."""
     root = analysis(FIRST)
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    fit = root / "results/fit.txt"
-    fit.unlink()  # annexed thin: writing it in place would write its annex object
-    fit.write_text("not what the record gives\n")
-    dataset.save(root, [fit], "write over fit, and leave its record")
+    _overwrite_fit(root)
+    since(root, made=False)
+
+    checked = engine.check(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert checked.blocked == ["compare"], (checked.planned, checked.warnings)
+    assert report.blocked == ["compare"], (report.made, report.warnings)
+    assert any("lacks its recorded bytes" in w and "STALE_INPUT" in w for w in report.warnings)
+    assert not (root / ".astra/records/compare.json").exists()
+
+
+def test_stale_input_of_a_result_whose_stand_in_vouches_for_nothing(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A git-annex key of another backend than SHA256 gives no SHA-256, so
+    nothing says `fit`'s bytes are not its record's until a run has them:
+    they are hashed where it gives the commit's tree, before anything reads
+    them."""
+    root = analysis(FIRST)
+    dataset._git(["config", "annex.backend", "MD5E"], cwd=root)
+    _overwrite_fit(root)
     since(root, made=False)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.blocked == ["compare"], (report.made, report.warnings)
     assert any("lacks its recorded bytes" in w and "STALE_INPUT" in w for w in report.warnings)
-    assert not (root / ".astra/records/compare.json").exists()
+
+
+def _overwrite_fit(root: Path) -> None:
+    """Make `fit`, then commit other bytes in its place under its record."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    fit = root / "results/fit.txt"
+    # Removed in a commit of its own: git-annex keeps a modified file's
+    # backend, and annexed thin, writing it in place writes its object.
+    fit.unlink()
+    dataset.save(root, [fit], "remove fit")
+    fit.write_text("not what the record gives\n")
+    dataset.save(root, [fit], "write over fit, and leave its record")

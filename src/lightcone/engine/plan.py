@@ -33,6 +33,7 @@ needs; at execution time ordering is Dask's job.
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
@@ -157,6 +158,9 @@ class Graph:
     #: it: the URL its analysis is declared with, or None for the project's
     #: own.
     commits: dict[str, str | None] = field(default_factory=dict)
+    #: The file of each analysis read from the working tree, from the
+    #: project root: what the commit a record names has to hold.
+    specs: tuple[str, ...] = (SPEC_FILENAME,)
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
@@ -247,7 +251,7 @@ def build(root: Path) -> Graph:
     if outside := sorted(
         each.folder
         for each in analysis.analyses
-        if each.commit is None and each.folder.startswith("..")
+        if each.commit is None and (each.folder == ".." or each.folder.startswith("../"))
     ):
         raise ProjectError(
             f"the analysis in {outside[0]} is outside the project's folder, and lc builds "
@@ -318,6 +322,11 @@ def build(root: Path) -> Graph:
         tasks=tasks,
         checked=report,
         commits=commits,
+        specs=tuple(
+            posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
+            for each in analysis.analyses
+            if each.commit is None
+        ),
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
     )
 

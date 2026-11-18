@@ -16,6 +16,7 @@ commits with.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from collections.abc import Sequence
@@ -41,6 +42,11 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
             had, in git's or git-annex's own words.
     """
     tree = root / COMMITS / commit
+    if (tree / ".git").exists() and not _intact(tree, commit):
+        # lc's own copy, changed since it was made: made again, never trusted.
+        for folder, _, _ in os.walk(tree):
+            os.chmod(folder, 0o700)  # git-annex keeps its objects' folders read-only
+        shutil.rmtree(tree)
     if not (tree / ".git").exists():
         _clone(root, commit, repository, tree)
     if repository is None:
@@ -66,12 +72,30 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
         dataset._git(["annex", "get", "-q", "--", *paths], cwd=tree)
 
 
+def _intact(tree: Path, commit: str) -> bool:
+    """Whether a commit's tree is still that commit's: checked out at it, and
+    no file git tracks there changed."""
+    at = dataset._git(["rev-parse", "HEAD"], cwd=tree).strip()
+    changed = dataset._git(["status", "--porcelain", "--untracked-files=no"], cwd=tree)
+    return at == commit and not changed.strip()
+
+
 def _clone(root: Path, commit: str, repository: str | None, tree: Path) -> None:
     """Clone the repository that holds *commit* into *tree*, checked out at it.
 
     Made beside *tree* and moved into place once whole, so a clone an
     interrupted run left half made is never taken for the commit's tree.
     """
+    if repository is None and not dataset._git_ok(
+        ["cat-file", "-e", f"{commit}^{{commit}}"], cwd=root
+    ):
+        # astra-tools names a URL for another repository, and none for a
+        # local one such as a submodule's checkout: nothing says which
+        # repository holds this commit, and the project's does not.
+        raise ProjectError(
+            f"{commit} is not in the project's repository, and astra-tools names no other "
+            "that holds it: a submodule's commit, which only its checkout holds"
+        )
     source = repository if repository is not None else str(dataset.toplevel(root))
     making = tree.with_name(f"{commit}.making")
     shutil.rmtree(making, ignore_errors=True)

@@ -355,6 +355,17 @@ def test_a_recipe_that_would_run_on_a_commits_files_is_refused(tmp_path: Path) -
         _build(root)
 
 
+def test_a_folder_of_the_project_whose_name_begins_with_two_dots_is_in_it(
+    tmp_path: Path,
+) -> None:
+    """Only a folder above the project's is outside it."""
+    (tmp_path / "..stage").mkdir()
+    (tmp_path / "..stage" / "astra.yaml").write_text(textwrap.dedent(_STAGE))
+    root = _project(tmp_path, _DECLARES % ("{path: ..stage}", "stage.once"))
+
+    assert _build(root).tasks["stage:once"].workdir == root / "..stage"
+
+
 def test_an_analysis_outside_the_projects_folder_is_refused(tmp_path: Path) -> None:
     """Whatever a run reads or writes of the working tree is in the
     project's folder: one beside it, in the same repository, is read only

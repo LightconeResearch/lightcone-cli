@@ -408,12 +408,12 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
-    worker.require_in_commit(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
+    worker.require_in_commit(root, graph.specs)
     classified = _classify(graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
@@ -903,7 +903,7 @@ def _require_storable(root: Path, graph: Graph) -> None:
         for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)
     }
 
-    unstored = set(ignored)
+    unannexed: set[str] = set()
     refusals = [
         f"{path} is git-ignored, so it would never be committed — remove the "
         ".gitignore rule that covers it"
@@ -921,9 +921,7 @@ def _require_storable(root: Path, graph: Graph) -> None:
                 f"{path} would be committed to git itself — the last .gitattributes line "
                 "that matches it does not send it to the annex"
             )
-        else:
-            continue
-        unstored.add(path)
+            unannexed.add(path)
     for path in records:
         taken_by = attributes.get((path, "filter"), "unspecified")
         if taken_by not in ("annex", "unspecified", "unset"):
@@ -937,14 +935,15 @@ def _require_storable(root: Path, graph: Graph) -> None:
             "so, and a record has to stay in git, where a clone with no content can read it"
         )
     if refusals:
-        # Lightcone's lines annex the project's own `results/`; an analysis
-        # in a folder of the project keeps its results in its own.
+        # Lightcone's lines annex the project's own `results/`; a result of
+        # an analysis in a folder of the project is in that folder's, which
+        # its record's place names (`<folder>/.astra/records/…`).
         elsewhere = sorted(
             {
-                plan.declared_path(root, task.workdir)
+                place.record_path.partition("/.astra/records/")[0]
                 for task in graph.tasks.values()
-                if task.workdir != root
-                and unstored.intersection(plan.declared_path(root, path) for path in task.paths)
+                for place in task.result.places
+                if place.file_path in unannexed and "/.astra/records/" in place.record_path
             }
         )
         raise ProjectError(

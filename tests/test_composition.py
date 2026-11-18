@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from conftest import CLUSTER_ID, FIRST, clone_of, since
 
-from lightcone.engine import dataset, plan, templates
+from lightcone.engine import dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
@@ -114,7 +114,92 @@ def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(
     assert "add `stage/results/** annex.largefiles=anything`" in str(raised.value)
 
 
+def test_a_driven_result_is_stored_by_the_projects_own_results_line(
+    analysis: Callable[..., Path],
+) -> None:
+    """A driven recipe runs in `stage`, but its result is the project's, in
+    the project's `results/`: where no line annexes that, the refusal names
+    the result, and no line for `stage` would help."""
+    attributes = templates.read("gitattributes.tmpl").replace(
+        "results/** annex.largefiles=anything\n", ""
+    )
+    root = analysis(
+        _DRIVES,
+        {
+            "stage/astra.yaml": _STAGE,
+            ".gitattributes": attributes + "stage/results/** annex.largefiles=anything\n",
+        },
+    )
+    driven = plan.declared_path(root, plan.build(root).tasks["stage.out#u1"].path)
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert f"{driven} would be committed to git itself" in str(raised.value)
+    assert "stage/results/v1" not in str(raised.value)
+    assert "add `" not in str(raised.value)
+
+
+def test_a_declared_analysis_git_does_not_hold_is_refused(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stage/astra.yaml` is on disk but ignored and untracked: the tree is
+    clean, and the commit a record names holds no `stage` to check its
+    results against. A run is refused, and so is a rerun."""
+    root = analysis(_DRIVES, {"stage/astra.yaml": _STAGE})
+    (root / ".gitignore").write_text((root / ".gitignore").read_text() + "stage/astra.yaml\n")
+    dataset._git(["rm", "-q", "--cached", "stage/astra.yaml"], cwd=root)
+    dataset._git(["add", ".gitignore"], cwd=root)
+    dataset._git(["commit", "-q", "-m", "stop tracking stage"], cwd=root)
+    assert not dataset.status(root)
+
+    with pytest.raises(ProjectError, match="stage/astra.yaml — not in git"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    monkeypatch.chdir(root)
+    assert worker.main(["stage.out#u1"]) == 2
+
+
 # ---- analyses declared with a commit ------------------------------------------
+
+_READS_AN_INPUT = """
+spec_version: "0.1.0"
+analyses:
+  previous: {path: ., commit: "%s"}
+outputs:
+  copy:
+    type: data
+    format: txt
+    inputs: [previous.catalog]
+    recipe:
+      command: cat {inputs} > {output}
+"""
+
+
+def test_a_commits_tree_changed_since_a_run_made_it_is_made_again(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The tree of a commit is kept from run to run, and a file in it is
+    what a recipe reads: a tree that is no longer that commit's is made
+    again from the repository rather than trusted."""
+    root = analysis(
+        'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.txt}\n',
+        {"data/catalog.txt": "stars\n"},
+    )
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    cached = root / plan.COMMITS / at / "data" / "catalog.txt"
+    cached.write_text("tampered\n")
+    spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
+    dataset.save(root, [spec], "copy it again")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["copy"], (report.failed, report.warnings)
+    assert (root / "results" / "copy.txt").read_text() == "stars\n"
+    assert cached.read_text() == "stars\n"
 
 
 def test_a_bytes_free_clone_gives_the_tree_of_a_past_commit_from_what_it_fetches(
@@ -205,3 +290,50 @@ def test_the_recorded_command_gives_a_past_commits_tree_on_a_fresh_clone(
     rerun = json.loads((clone / ".astra/records/compare.json").read_text())
     assert rerun["content_hash"] == original["content_hash"]
     assert _lines(clone / "results" / "compare.txt") == ["second", "first"]
+
+
+_READS_A_SUBMODULE = """
+spec_version: "0.1.0"
+analyses:
+  module: {path: module, commit: "%s"}
+outputs:
+  copy:
+    type: data
+    format: txt
+    inputs: [module.fit]
+    recipe:
+      command: cat {inputs} > {output}
+"""
+
+
+def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """`module` is a submodule, read at the commit its gitlink pins, which
+    only its checkout holds, and astra-tools names no repository for it:
+    the project's does not hold it, so it is not asked for there, and what
+    reads it is blocked, saying why."""
+    module = tmp_path / "module"
+    module.mkdir()
+    (module / "astra.yaml").write_text(FIRST)
+    for argv in (["init", "-q"], ["add", "."], ["commit", "-qm", "module"]):
+        dataset._git(["-c", "user.name=Test", "-c", "user.email=t@example.com", *argv], cwd=module)
+    root = analysis(FIRST)
+    dataset._git(
+        ["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(module), "module"],
+        cwd=root,
+    )
+    dataset._git(["commit", "-q", "-m", "add the module"], cwd=root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_A_SUBMODULE % dataset.head(root))
+    dataset.save(root, [spec], "read the module at a commit")
+    pinned = dataset._git(["rev-parse", "HEAD"], cwd=root / "module").strip()
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.blocked == ["copy"], (report.made, report.warnings)
+    assert any(
+        w.startswith(f"{pinned}: ") and "not in the project's repository" in w
+        for w in report.warnings
+    ), report.warnings
+    assert not (root / plan.COMMITS / pinned).exists()
