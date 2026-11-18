@@ -313,11 +313,11 @@ def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
     only its checkout holds, and astra-tools names no repository for it:
     the project's does not hold it, so it is not asked for there, and what
     reads it is blocked, saying why."""
-    module = tmp_path / "module"
-    module.mkdir()
-    (module / "astra.yaml").write_text(FIRST)
-    for argv in (["init", "-q"], ["add", "."], ["commit", "-qm", "module"]):
-        dataset._git(["-c", "user.name=Test", "-c", "user.email=t@example.com", *argv], cwd=module)
+    # `fit` made and recorded in the module, so that ASTRA's checker finds
+    # it unchanged at the commit its gitlink pins.
+    module = analysis(FIRST)
+    assert engine.materialize(module, [], cluster_id=CLUSTER_ID).ok
+    module = module.rename(tmp_path / "module")
     root = analysis(FIRST)
     dataset._git(
         ["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(module), "module"],

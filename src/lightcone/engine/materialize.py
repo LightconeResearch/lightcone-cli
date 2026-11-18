@@ -783,6 +783,11 @@ def _to_fetch(
         for source in task.result.inputs:
             if source.result in certain:
                 continue
+            # A result from a commit that nothing is built from is read by
+            # nothing, and is not fetched (STALE_INPUT).
+            if source.result is not None and source.result not in graph.tasks:
+                if worker.unreadable(graph.checked.statuses[source.result]):
+                    continue
             held = (
                 graph.checked.statuses[source.result].bytes
                 if source.result is not None
