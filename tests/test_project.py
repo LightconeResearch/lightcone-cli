@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from astra import api
 from conftest import probes, uv_calls
 
 from lightcone.engine import dataset, plan, templates
@@ -117,9 +118,8 @@ def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path, real_tools: N
     project = tmp_path / "proj"
     converge(project)
 
-    graph = plan.build(project)
-    assert graph.tasks == {}
-    assert graph.label == "proj"
+    assert plan.build(project).tasks == {}
+    assert api.resolve(project).analyses[0].label == "proj"
 
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
@@ -906,19 +906,3 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     with pytest.raises(ProjectError, match="no solution found"):
         converge(tmp_path / "proj")
-
-
-def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
-    """Publication intent, derived never configured — the crate is
-    maintained iff [project].license is declared, in any of its forms."""
-    from lightcone.engine.project import license_of
-
-    cases = {
-        'license = "MIT"': "MIT",
-        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
-        'license = { file = "LICENSE" }': "LICENSE",
-        "": "",
-    }
-    for spelling, expected in cases.items():
-        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
-        assert license_of(tmp_path) == expected, spelling

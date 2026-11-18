@@ -18,9 +18,6 @@ from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
 
-#: The publication view `lc materialize` converges at the project root.
-CRATE_FILENAME = "ro-crate-metadata.json"
-
 
 class ProjectError(Exception):
     """A project cannot be read or converged."""
@@ -331,8 +328,8 @@ def sync(directory: Path) -> list[str]:
 
     Both entry points that execute recipes converge before they start,
     rather than checking and refusing: workers pass ``--no-sync``, so
-    nothing else would notice a lock edited without a sync, and a manifest
-    recording an environment the recipe did not run under is the identity
+    nothing else would notice a lock edited without a sync, and a record
+    naming an environment the recipe did not run under is the identity
     model saying something untrue. The containerized twin is
     ``container.sync``, which runs the same uv command inside the image —
     callers pick by :func:`mode`, because only they know whether an image
@@ -391,7 +388,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     itself, so an enclosing repository that already has one is adopted.
 
     Then the two files that make the storage policy: ``.gitattributes``
-    routes results and inputs into the annex and keeps manifests in git,
+    routes results and inputs into the annex and keeps records in git,
     and ``.datalad/config`` carries a dataset id — the one thing a git +
     git-annex repository lacks to *be* a DataLad dataset, so a project is
     one from birth rather than by later adoption. The id is generated
@@ -442,7 +439,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
 
 
 def _converge_committable(c: _Converger, directory: Path) -> None:
-    """Refuse to call a project converged while its outputs are unignorable.
+    """Refuse to call a project converged while its results are unignorable.
 
     Results and declared inputs are committed, so an ignore rule covering
     either is not a preference — it is a project where materializing
@@ -519,37 +516,6 @@ def mode(directory: Path) -> Literal["direct", "containerized"]:
     from lightcone.engine import image
 
     return "direct" if image._table(directory) is None else "containerized"
-
-
-def license_of(directory: Path) -> str:
-    """Read the project's declared license out of ``pyproject.toml``.
-
-    Presence is what turns crate maintenance on: RO-Crate requires a
-    license, a run must not refuse over a missing key, and inventing one
-    would assert terms over someone's data — so declaring
-    ``[project].license`` is declaring the intent to publish. The same
-    derived-never-configured shape as :func:`mode`, and it lives here so
-    ``lc status`` can ask without importing the crate renderer's stack.
-
-    Args:
-        directory: The project root.
-
-    Returns:
-        The license as declared — an SPDX expression, a URL, free text,
-        or a file path for the table forms — or empty when undeclared.
-    """
-    import tomllib
-
-    try:
-        data = tomllib.loads((directory / "pyproject.toml").read_text())
-    except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    declared = data.get("project", {}).get("license")
-    if isinstance(declared, str):
-        return declared
-    if isinstance(declared, dict):
-        return str(declared.get("text") or declared.get("file") or "")
-    return ""
 
 
 def env_dir(directory: Path) -> Path:
@@ -677,7 +643,9 @@ def _project_root(directory: Path | None, required: Sequence[str]) -> Path:
 # =============================================================================
 
 
-def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], *, cwd: Path, stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """One seam for every external tool convergence invokes.
 
     Tests monkeypatch this, so the suite never shells out and every call is
@@ -685,7 +653,7 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 
     """
     return subprocess.run(
-        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env()
+        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env(), input=stdin
     )
 
 
@@ -786,29 +754,6 @@ def uv_scrub_warning() -> str:
             "would steer uv without moving env_version"
         )
     return ""
-
-
-def uv_version(directory: Path) -> str:
-    """Ask uv its version, for the manifest's attestation.
-
-    Read once per run by whoever owns the run — the driver, or the rerun
-    entry point — and handed down, the HEAD discipline. Empty on any
-    failure: attestation must never fail a run.
-
-    Args:
-        directory: Where to run the probe.
-
-    Returns:
-        The version token (``0.12.5``), or ``""``.
-    """
-    try:
-        proc = _run(["uv", "--version"], cwd=directory)
-    except OSError:
-        return ""
-    words = str(proc.stdout or "").split()
-    if proc.returncode != 0 or len(words) < 2 or words[0] != "uv":
-        return ""
-    return words[1]
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

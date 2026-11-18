@@ -305,7 +305,7 @@ def build(as_json: bool) -> None:
     "--refresh",
     is_flag=True,
     help=(
-        "Also remake outputs that are behind — still what the analysis "
+        "Also remake results that are behind — still what the analysis "
         "asks for, but made under an earlier environment."
     ),
 )
@@ -318,23 +318,27 @@ def build(as_json: bool) -> None:
 def materialize(
     targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
 ) -> None:
-    """Make selected outputs on CLUSTER, committing each as it lands.
+    """Make the analysis's results on CLUSTER, committing each as it lands.
 
     Execution requires a cluster name or ID as its first positional argument.
     With --check, all positional arguments are targets and no cluster is used.
+    A target is a result's id (`fit#baseline`), or an output's id (`fit`)
+    for its result in every universe.
 
-    Each output is committed together with its manifest, in a commit that
-    records the command that produced it. The git tree needs to be clean
-    before the run can start.
+    Each result is committed together with its ASTRA record, in a commit
+    that records the command that produced it. The git tree needs to be
+    clean before the run can start.
 
-    An output is remade when the analysis defines it differently than it
-    was made — a changed recipe or decision — or when one of its declared
-    inputs changed. Inputs are compared by content, so a rebuild that
-    comes out byte-identical stops there instead of cascading.
+    A result is made when ASTRA's checker finds it missing or stale: never
+    made, or something it is made from changed since its record's commit —
+    its command, a decision, the content of what it reads. Content is
+    compared, so a rebuild that comes out byte-identical stops there
+    instead of cascading. A result whose bytes are lost, with nothing in
+    this clone that could fetch them, is made again too.
 
-    An output made under an earlier environment is reported as behind and
-    left alone: it is still what the analysis asks for, and the manifest
-    records the environment and the commit that produced it. Pass
+    A result made under an earlier environment is reported as behind and
+    left alone: it is still what the analysis asks for, and its record
+    names the environment and the commit that produced it. Pass
     --refresh to remake those too.
     """
     from lightcone.engine import container as engine_container
@@ -350,7 +354,7 @@ def materialize(
                 Identity.decode(target)
             except ComputeError:
                 continue
-            raise click.UsageError("--check takes output targets, not a cluster ID; omit the ID.")
+            raise click.UsageError("--check takes result targets, not a cluster ID; omit the ID.")
     else:
         if not targets:
             raise click.UsageError(
@@ -408,12 +412,15 @@ def materialize(
     help="Emit the report as JSON on stdout.",
 )
 def status(as_json: bool) -> None:
-    """Report what state each of the analysis's outputs is in.
+    """Report where each of the analysis's results stands.
 
-    For every output the analysis declares: whether it is current, behind
-    or stale, and — once it has been materialized — the commit it was made
-    at. An output that is behind is not wrong; that commit is where the
-    code and the environment which produced it can be read back.
+    For every result the analysis plans, ASTRA's checker's state —
+    unchanged, stale or missing — or behind, where it is unchanged but was
+    made under an earlier environment; and, once it has a record, the
+    commit it was made at. A result that is behind is not wrong; that
+    commit is where the code and the environment which produced it can be
+    read back. --json gives each result's status as ASTRA's checker
+    reports it, under `astra`.
 
     Reads only. It runs nothing, commits nothing, does not mind an unclean
     tree, and always exits 0 — a state is not a failure. Use
@@ -439,69 +446,34 @@ def status(as_json: bool) -> None:
         }[state]
         lines.append(f"  image:   {tag} — {described}")
     lines.append(f"  sandbox: {escape(report.sandbox)}")
-    lines.append(f"  crate:   {escape(report.crate)}")
     lines.append("")
-    marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
-    width = max((len(o.output) for o in report.outputs), default=0)
+    marks = {
+        "unchanged": "[dim]·[/dim]",
+        "behind": "[cyan]·[/cyan]",
+        "stale": "[yellow]![/yellow]",
+        "missing": "[yellow]![/yellow]",
+    }
+    width = max((len(r.result) for r in report.results), default=0)
     # The commit gets a column of its own, for every state and not only
     # the interesting ones: "which code made this" is the question the
-    # verb exists to answer, and it has an answer for a current output
-    # too. A foreign write arrives as an ordinary stale with its message
-    # in `why`, so this one path covers it; the dedicated field exists
-    # for machine consumers of `--json`.
+    # verb exists to answer, and it has an answer for an unchanged result
+    # too.
     lines += [
-        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
-        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{escape(o.why)}[/dim]" if o.why else "")
-        for o in report.outputs
+        f"  {marks[r.state]} {r.state:<9} {r.result:<{width}}  "
+        f"{r.commit[:7] or '—':<7}" + (f"  [dim]{escape(r.why)}[/dim]" if r.why else "")
+        for r in report.results
     ]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
     counts = report.counts
-    if not report.outputs:
-        lines.append("[dim]The analysis declares no output with a recipe.[/dim]")
+    if not report.results:
+        lines.append("[dim]The analysis plans no result.[/dim]")
     else:
         lines.append("")
         lines.append(
             " · ".join(f"{count} {state}" for state, count in counts.items() if count)
         )
     _console().print("\n".join(lines))
-
-
-# =============================================================================
-# lc view
-# =============================================================================
-
-
-@main.command()
-@click.argument("record", required=False)
-@click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    help="Emit the server's url, host, pid and whether this call started it as JSON.",
-)
-def view(record: str | None, as_json: bool) -> None:
-    """Show this project's analysis to the user, and print the page's URL.
-
-    The page is served from this host. Returns at once: the server runs
-    detached, and a second call reuses it rather than starting another. The
-    page follows its files as they change on disk, and the server stops
-    itself 30 minutes after the page last read from it. RECORD is a
-    canonical record path (e.g. `decisions.binning`) whose details the page
-    opens with.
-
-    The URL is on `localhost` of the host named on stderr; from another
-    machine, reach it through `ssh -L <port>:localhost:<port> <host>`.
-    """
-    from lightcone.engine.serve import serve as engine_serve
-
-    served = engine_serve(Path.cwd(), record)
-    if as_json:
-        click.echo(json.dumps(served.as_dict(), indent=2))
-        return
-    state = "started" if served.started else "already running"
-    click.echo(f"{state} on {served.host} (pid {served.pid})", err=True)
-    click.echo(served.url)
 
 
 # =============================================================================
@@ -525,13 +497,13 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     ]
     lines += [f"  [green]✓[/green] made {name}" for name in report.made]
     # Behind is not a warning and not a problem: it is a fact about where
-    # an output came from, and the only line here that tells you something
+    # a result came from, and the only line here that tells you something
     # you could not have worked out from the exit code.
     lines += [
         f"  [cyan]·[/cyan] behind {name} — {escape(why)}"
         for name, why in report.behind.items()
     ]
-    lines += [f"  [dim]·[/dim] up to date {name}" for name in report.current]
+    lines += [f"  [dim]·[/dim] unchanged {name}" for name in report.unchanged]
     lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
@@ -541,9 +513,9 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     elif report.up_to_date:
         verdict = f"[green]✓[/green] {where} is up to date — nothing to do"
     elif dry_run:
-        verdict = f"[yellow]![/yellow] {len(report.planned)} output(s) would be made"
+        verdict = f"[yellow]![/yellow] {len(report.planned)} result(s) would be made"
     else:
-        verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {where}"
+        verdict = f"[green]✓[/green] Made {len(report.made)} result(s) in {where}"
     # On the verdict line as well as in the listing: on a large analysis the
     # listing scrolls away, and this is the one state that reports something
     # rather than doing it.

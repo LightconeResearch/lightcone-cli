@@ -7,7 +7,7 @@ committed together with the code that produced it, so a run that began
 with uncommitted changes could not honestly say which code that was.
 
 **It hands the work to Dask and gets out of the way.** Tasks that may run
-receive upstream futures or already-current results as arguments, so the
+receive upstream futures or the results left alone as arguments, so the
 ordering, parallelism, and scheduling are Dask's — there is no ready-set
 loop here to get wrong.
 
@@ -31,23 +31,25 @@ task — that is what puts git back in the workers.
 
 from __future__ import annotations
 
-import functools
 import json
 import re
 import shlex
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, worker
+from lightcone.engine import container, content, dataset, identity, plan, project, worker
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
-from lightcone.engine.plan import Graph, Key, Task
+from lightcone.engine.plan import Graph, ResultId, Task
 from lightcone.engine.project import ProjectError
 
 if TYPE_CHECKING:
+    from astra.api import Status
+
     from lightcone.engine.compute.output import Forwarder
 
 
@@ -55,14 +57,13 @@ if TYPE_CHECKING:
 class MaterializeReport:
     """What a run did, or — in check mode — what it would do."""
 
-    #: Each result this run produced and committed, as lc names its task.
+    #: Each result this run made and committed, by id.
     made: list[str] = field(default_factory=list)
-    #: Nothing about them changed, and the environment is the one they were
-    #: made under.
-    current: list[str] = field(default_factory=list)
+    #: Nothing they are made from changed, and the environment is the one
+    #: they were made under.
+    unchanged: list[str] = field(default_factory=list)
     #: Still what the spec asks for, but made under an earlier environment
-    #: — task → the context, naming the commit. Left alone;
-    #: ``refresh`` is what remakes them.
+    #: — id → why. Left alone; ``refresh`` is what remakes them.
     behind: dict[str, str] = field(default_factory=dict)
     #: The recipe failed, or the environment moved under it.
     failed: list[str] = field(default_factory=list)
@@ -88,7 +89,7 @@ class MaterializeReport:
     def up_to_date(self) -> bool:
         """Whether the analysis needed nothing done to it.
 
-        ``behind`` does not count against it. An output made under an
+        ``behind`` does not count against it. A result made under an
         earlier environment is not out of date — it is what the spec asks
         for, and saying otherwise would put ``--check`` back in the
         business of demanding compute.
@@ -118,20 +119,16 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     """Classify every task without executing or committing anything.
 
     Not subject to the dirty-tree refusal: reading the state of a project
-    before deciding what to commit is what this is for. The walk is
-    topological because a task can only be classified after everything
-    upstream of it, and an upstream already classified as would-run is
-    passed down as ``None`` — check mode cannot know whether a rebuild
-    comes out byte-identical, and assuming it will would under-report.
+    before deciding what to commit is what this is for.
 
     Args:
         root: The project root.
         targets: What to classify; empty means everything.
-        refresh: Whether an output that is merely behind would be remade.
+        refresh: Whether a result that is merely behind would be remade.
 
     Returns:
-        ``planned`` naming each output that would run and why, ``behind``
-        those made under an earlier environment, and ``current`` the
+        ``planned`` naming each result that would run and why, ``behind``
+        those made under an earlier environment, and ``unchanged`` the
         rest.
 
     Raises:
@@ -139,140 +136,81 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             target matches nothing.
     """
     report = MaterializeReport()
-    for key, verdict, _, _ in _classified(root, targets, report, refresh=refresh):
+    graph, environment = _graph(root, targets, report)
+    for found in _classify(graph, environment, refresh=refresh):
+        verdict = found.verdict
         if verdict.calls_for_a_remake(refresh=refresh):
-            report.planned[key] = verdict.why
-        elif verdict.status == "behind":
-            report.behind[key] = verdict.why
+            report.planned[found.task.id] = verdict.why
+        elif found.upstream:
+            # Nothing here can know whether a rebuild comes out
+            # byte-identical, and assuming it will would under-report.
+            report.planned[found.task.id] = (
+                f"`{found.upstream}`, which it reads, would be remade"
+            )
+        elif verdict.state == "behind":
+            report.behind[found.task.id] = verdict.why
         else:
-            report.current.append(key)
+            report.unchanged.append(found.task.id)
     return report
 
 
-def _classified(
-    root: Path, targets: Sequence[str], report: MaterializeReport, *, refresh: bool
-) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]]:
-    """Classify every task in topological order, reading nothing but disk.
+@dataclass(frozen=True)
+class _Classified:
+    """One task, and where its result stands before the run."""
 
-    The walk both read-only modes share, so there is one answer to "what
-    is this output" and not one per verb. Topological because a task can
-    only be classified after everything upstream of it, and an upstream
-    already decided to run is passed down as ``None`` — nothing here can
-    know whether a rebuild comes out byte-identical, and assuming it will
-    would under-report.
+    task: Task
+    #: What ASTRA's checker found of the result.
+    found: Status
+    #: Where it stands. Where something upstream may be remade, as the
+    #: checker found it: only the task, once that has been made, can say
+    #: more.
+    verdict: plan.Verdict
+    #: A task upstream of this one that may run, or empty.
+    upstream: ResultId
+
+    def may_run(self, *, refresh: bool) -> bool:
+        """Whether a run has to hand this task to a worker."""
+        return bool(self.upstream) or self.verdict.calls_for_a_remake(refresh=refresh)
+
+    def certain(self, *, refresh: bool) -> bool:
+        """Whether a run is sure to make this result again: nothing it
+        makes first can leave it standing."""
+        through = self.verdict.through_reads and bool(self.upstream)
+        return self.verdict.calls_for_a_remake(refresh=refresh) and not through
+
+
+def _classify(graph: Graph, environment: str, *, refresh: bool) -> list[_Classified]:
+    """Classify every task of *graph*, upstream first.
+
+    The walk every mode shares, so there is one answer to "what is this
+    result" and not one per verb: what ASTRA's checker found of each,
+    through the one rule. A result that reads one a run may remake may
+    run too, whatever it is now: whether it stands once that is made is
+    the task's to say.
 
     Args:
-        root: The project root.
-        targets: What to classify; empty means everything.
-        report: Collects the lock scan's warnings, and the note about
-            inputs this clone has not fetched.
-        refresh: Whether behind outputs count as running, which is what
-            decides whether their dependents see the sentinel.
+        graph: The tasks to classify, each after the tasks it reads.
+        environment: The IRI of the project's environment.
+        refresh: Whether behind results count as running, which is what
+            decides whether their dependents may run too.
 
     Returns:
-        One ``(key, verdict, manifest, foreign write)`` per task, upstream
-        first.
+        One entry per task, in the graph's order.
     """
-    graph, env_version, _ = _graph(root, targets, report)
-    unfetched: set[str] = set()
-    classified = _classify_graph(
-        root, graph, env_version, refresh=refresh,
-        versions=assets.Versions(), unfetched=unfetched,
-    )
-    if unfetched:
-        report.warnings.append(
-            "reported as out of date because their content is not in this "
-            f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
-            "`lc materialize` fetches declared inputs before executing "
-            "recipes. Compute is required for outputs whose inputs cannot yet be checked."
-        )
-    return classified
-
-
-def _classify_graph(
-    root: Path, graph: Graph, env_version: str, *, refresh: bool,
-    versions: assets.Versions, unfetched: set[str],
-) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]]:
-    """Predict which outputs may run, using the same walk for checks and admission.
-
-    Dependents of an output that may run are conservatively included: only the
-    worker can know whether rebuilding that input actually changed its bytes.
-    """
-    would_run: set[Key] = set()
+    may_run: set[ResultId] = set()
     classified = []
     for key, task in graph.tasks.items():
-        manifest = assets.read(task.manifest_path)
-        # History is git's to answer, so it enters the one classification
-        # rule as a value — computed here, where git lives, exactly as
-        # the worker's driver computes it for a run.
-        foreign = None if manifest is None else _foreign_write(root, task)
-        verdict = assets.classify(
-            definition_version=task.definition_version,
-            env_version=env_version,
-            manifest=manifest,
-            inputs=_predicted(root, task, would_run, versions, unfetched),
-            foreign=foreign,
+        found = graph.checked.statuses[key]
+        entry = _Classified(
+            task,
+            found,
+            plan.classify(found=found, environment=environment),
+            next((dep for dep in task.depends_on if dep in may_run), ""),
         )
-        if verdict.calls_for_a_remake(refresh=refresh):
-            would_run.add(key)
-        classified.append((key, verdict, manifest, foreign))
-
+        if entry.may_run(refresh=refresh):
+            may_run.add(key)
+        classified.append(entry)
     return classified
-
-
-def _predicted(
-    root: Path,
-    task: Task,
-    would_run: set[Key],
-    versions: assets.Versions,
-    unfetched: set[str],
-) -> dict[str, str | None]:
-    """Each input's version as check mode can know it.
-
-    Args:
-        root: The project root, for naming a path in the report.
-        task: The output being classified.
-        would_run: Task keys already decided to be remade.
-        versions: The run's content-hash memo.
-        unfetched: Collects declared inputs whose content is not local, so
-            the report can say why they read as out of date.
-
-    Returns:
-        Each input's version as check mode can know it: ``None`` for
-        anything that will be rebuilt, is absent, or cannot be read.
-    """
-    predicted: dict[str, str | None] = {}
-    for name, path in task.inputs.items():
-        upstream = task.produced_by.get(name)
-        if upstream is not None:
-            # The upstream's *recorded* digest, for the same reason a worker
-            # returns it rather than rehashing: on a clone that has fetched
-            # no annex content the files are dangling symlinks, and hashing
-            # them would report a different output and cascade a rebuild
-            # over a project that is perfectly up to date.
-            manifest = (
-                None if upstream in would_run else assets.read(assets.manifest_path(path))
-            )
-            predicted[name] = manifest.data_version if manifest else None
-        elif not path.exists():
-            predicted[name] = None
-        else:
-            try:
-                predicted[name] = versions.of(path)
-            except assets.ContentNotFetchedError:
-                # Not "it changed" — "I cannot tell". Conservative, and
-                # said out loud, because reporting a rebuild for a clone
-                # that simply has not fetched its inputs is misleading on
-                # its own.
-                unfetched.add(plan.declared_path(root, path))
-                predicted[name] = None
-            except OSError:
-                # Unreadable for any other reason — a broken symlink inside
-                # the directory, a permission wall. Same answer as an input
-                # that is not there at all: it will be remade, and the
-                # recipe is where that failure belongs, with a real error.
-                predicted[name] = None
-    return predicted
 
 
 # =============================================================================
@@ -281,35 +219,26 @@ def _predicted(
 
 
 @dataclass(frozen=True)
-class OutputStatus:
-    """One output: what it is now, and the commit it came from."""
+class ResultStatus:
+    """Where one result stands, and what ASTRA's checker found of it."""
 
-    #: The result's task, as lc names it (``fit#baseline``).
-    output: str
-    status: assets.Status
-    #: Why, for ``stale`` and ``behind``. Empty for ``current``.
+    #: The result's id (``fit#baseline``).
+    result: str
+    state: plan.State
+    #: Why, for every state but an ``unchanged`` result with its bytes.
     why: str
-    #: The commit the output was materialized at, or empty if it never was.
-    #: This is the whole point of the verb: an artifact that is behind is
-    #: not wrong, and this is where the code and environment that produced
-    #: it can be read back.
-    git_sha: str
-    #: Its content identity, or empty if it was never materialized.
-    data_version: str
-    #: Empty when the commit that last touched the output's directory is
-    #: its own run record. Otherwise that foreign commit's sha — the
-    #: agent-forged-file fact, which also makes the output read `stale`:
-    #: the manifest no longer describes the bytes, and a skip would
-    #: return the recorded digest forever. The sha rather than prose,
-    #: so a machine consumer gets what `why`'s sentence cannot carry.
-    #: History-based on purpose: it costs no hashing and answers on a
-    #: clone that holds none of the bytes. What it leaves to existing
-    #: tools: uncommitted edits are a dirty tree, and annex object
-    #: corruption is `git annex fsck`.
-    foreign_write: str = ""
+    #: ASTRA's own status of the result, as its report gives it in JSON:
+    #: its record, which names the commit and the environment it was made
+    #: in, where its bytes are, and each rule it breaks, by code.
+    astra: dict[str, Any]
+
+    @property
+    def commit(self) -> str:
+        """The commit its record names, or empty where it has none."""
+        return str(self.astra.get("record", {}).get("generated_by", {}).get("commit", ""))
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the record as JSON-ready data.
+        """Return the status as JSON-ready data.
 
         Returns:
             Every field, in declaration order.
@@ -319,10 +248,10 @@ class OutputStatus:
 
 @dataclass
 class StatusReport:
-    """Every output the spec declares, in dependency order."""
+    """Every result the analysis plans, in dependency order."""
 
-    outputs: list[OutputStatus] = field(default_factory=list)
-    #: The lock scan's prose, and inputs this clone has not fetched.
+    results: list[ResultStatus] = field(default_factory=list)
+    #: The lock scan's prose, and what ASTRA notes for the author.
     warnings: list[str] = field(default_factory=list)
     #: The three header facts nothing else surfaces: which world this
     #: project executes in, where its image stands, and what would
@@ -335,41 +264,40 @@ class StatusReport:
     image: dict[str, str] | None = None
     #: One line naming the enforcement a run here would get.
     sandbox: str = ""
-    #: Where the publication view stands — maintained, and if so whether
-    #: it still reflects the outputs. Repository facts only, like the
-    #: rest of the header.
-    crate: str = ""
+    #: The project's environment as a record made now would name it. A
+    #: result whose own ``environment`` differs is the one that is behind.
+    environment: str = ""
 
     @property
     def counts(self) -> dict[str, int]:
-        """How many outputs are in each state, states with none included."""
-        tally = {"current": 0, "behind": 0, "stale": 0}
-        for output in self.outputs:
-            tally[output.status] += 1
+        """How many results are in each state, states with none included."""
+        tally = {"unchanged": 0, "behind": 0, "stale": 0, "missing": 0}
+        for result in self.results:
+            tally[result.state] += 1
         return tally
 
     def as_dict(self) -> dict[str, Any]:
         """Return the report as JSON-ready data.
 
         Returns:
-            The counts, then every output, then the warnings.
+            The header, the counts, then every result, then the warnings.
         """
         return {
             "mode": self.mode,
             "image": self.image,
             "sandbox": self.sandbox,
-            "crate": self.crate,
+            "environment": self.environment,
             "counts": self.counts,
-            "outputs": [output.as_dict() for output in self.outputs],
+            "results": [result.as_dict() for result in self.results],
             "warnings": self.warnings,
         }
 
 
 def status(root: Path) -> StatusReport:
-    """Report what state every declared output is in.
+    """Report what state every planned result is in.
 
-    Reads manifests and hashes declared inputs; runs nothing, commits
-    nothing, and does not care whether the tree is clean. Classified with
+    Reads records through ASTRA's checker; runs nothing, commits nothing,
+    and does not care whether the tree is clean. Classified with
     ``refresh=False``, because this says what the project *is* rather than
     what some run would do to it.
 
@@ -377,87 +305,32 @@ def status(root: Path) -> StatusReport:
         root: The project root.
 
     Returns:
-        One record per declared output, upstream first.
+        One status per planned result, upstream first.
 
     Raises:
         ProjectError: If the analysis or the lock cannot be read.
     """
     report = MaterializeReport()
-    result = StatusReport()
-    result.mode = project.mode(root)
+    answer = StatusReport()
+    answer.mode = project.mode(root)
     state, tag, archive = container.image_state(root)
     if state != "direct":
-        result.image = {"tag": tag, "state": state, "archive": archive}
-    result.sandbox = _sandbox_line(result.mode)
-    stamps = []
-    for key, verdict, manifest, foreign in _classified(root, [], report, refresh=False):
-        if manifest and manifest.finished_at:
-            stamps.append(manifest.finished_at)
-        result.outputs.append(
-            OutputStatus(
-                output=key,
-                status=verdict.status,
-                why=verdict.why,
-                git_sha=manifest.git_sha if manifest else "",
-                data_version=manifest.data_version if manifest else "",
-                foreign_write=foreign.sha if foreign else "",
+        answer.image = {"tag": tag, "state": state, "archive": archive}
+    answer.sandbox = _sandbox_line(answer.mode)
+    graph, environment = _graph(root, [], report)
+    answer.environment = environment
+    checked = graph.checked.to_json()["statuses"]
+    for found in _classify(graph, environment, refresh=False):
+        answer.results.append(
+            ResultStatus(
+                result=found.task.id,
+                state=found.verdict.state,
+                why=found.verdict.why,
+                astra=checked[found.task.id],
             )
         )
-    result.crate = _crate_line(root, max(stamps, default=""))
-    result.warnings = report.warnings
-    return result
-
-
-def _crate_line(root: Path, newest: str) -> str:
-    """One line placing the publication view, from repository facts alone.
-
-    Lag is read off the document itself, not history: the render pins
-    ``datePublished`` to the newest manifest ``finished_at``, so a date
-    that no longer matches the manifests — in either direction, a rerun
-    adds an output the view predates and a dropped output regresses the
-    newest — means the view no longer describes the outputs. That is the
-    line's whole claim, and it is worded to it: a crate-affecting edit
-    that moves no manifest (the lock's bytes, the spec) is invisible
-    here, and fine — the next materialize converges those anyway, where
-    a rerun's lag has no other surface. No rocrate import (the crate is
-    the one materialize-only dependency on status's path) and no git:
-    the manifests were already read by the walk.
-    """
-    spdx = project.license_of(root)
-    path = root / project.CRATE_FILENAME
-    if not spdx:
-        if path.is_file():
-            return "no longer maintained — pyproject.toml declares no [project].license"
-        return "not maintained — declare [project].license to enable it"
-    if not path.is_file():
-        return "will be created by the next `lc materialize`"
-    try:
-        entities = json.loads(path.read_text()).get("@graph", [])
-        published = next(
-            (str(e.get("datePublished", "")) for e in entities if e.get("@id") == "./"), ""
-        )
-    except (OSError, ValueError, AttributeError):
-        return "unreadable — the next `lc materialize` rewrites it"
-    if newest and published != newest:
-        return "behind the outputs — `lc materialize` refreshes it"
-    return "up to date with the outputs"
-
-
-def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
-    """Find the commit that last touched *task*'s manifest, unless it is
-    the output's own run record — then ``None``, the clean answer. The
-    fact only: the verdict's prose is `classify`'s, like every other
-    why.
-
-    Both paths: a forged *result* is the case the check exists for, and a
-    doctored *manifest* is the other half — while the manifest is also
-    what carries the history across a re-declared format, where the
-    payload's own path is new and would read as clean.
-    """
-    write = dataset.last_writer(root, task.output_path, task.manifest_path)
-    if not write or write.subject == datalad_run_subject(task.key):
-        return None
-    return write
+    answer.warnings = report.warnings
+    return answer
 
 
 def _sandbox_line(mode: str) -> str:
@@ -465,8 +338,7 @@ def _sandbox_line(mode: str) -> str:
 
     The prose restates each backend's constant attestation, because
     `Backend.attest` needs a built policy and a status header must not
-    build one. Keep it in step with the `attest` implementations — the
-    manifests, which record the real thing, are always authoritative.
+    build one. Keep it in step with the `attest` implementations.
     """
     if mode == "containerized":
         if runtime := container.runtime_hint():
@@ -477,7 +349,7 @@ def _sandbox_line(mode: str) -> str:
     found = sandbox.detect().capability
     if found.kind == "none":
         detail = f" — {found.detail}" if found.detail else ""
-        return f"none{detail}; runs record `fs: open`"
+        return f"none{detail} (fs: open, network: allowed)"
     return f"{found.kind} (fs: declared, network: allowed)"
 
 
@@ -489,16 +361,16 @@ def _sandbox_line(mode: str) -> str:
 def materialize(
     root: Path, targets: Sequence[str], *, cluster_id: str, refresh: bool = False
 ) -> MaterializeReport:
-    """Materialize selected outputs on an explicitly selected, borrowed cluster.
+    """Make the results asked for on an explicitly selected, borrowed cluster.
 
     Args:
         root: The project root.
-        targets: Outputs to make, including dependencies; empty means everything.
+        targets: Results to make, with what they read; empty means every one.
         cluster_id: The name or immutable ID returned by ``lc compute launch``.
-        refresh: Also remake outputs produced under an earlier environment.
+        refresh: Also remake results made under an earlier environment.
 
     Returns:
-        Completed, current, failed and blocked outputs and their diagnostics.
+        What was made, left alone, failed or blocked, and why.
 
     Raises:
         ProjectError: If the cluster is unavailable or the project cannot be safely prepared.
@@ -517,31 +389,38 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
+    worker.require_in_commit(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
-    graph, env_version, full = _graph(root, targets, report)
-    dsid = dataset.dataset_id(root)
-    if not graph.tasks:
-        # No tasks is not no project: a spec whose outputs were all dropped
-        # still has a crate describing them, and this is its only
-        # maintainer. Nothing is submitted, so no allocation is needed.
-        _converge_crate(root, report, full, dsid)
+    graph, environment = _graph(root, targets, report)
+    classified = _classify(graph, environment, refresh=refresh)
+    running = [found.task for found in classified if found.may_run(refresh=refresh)]
+    if not running:
+        # Nothing is submitted, so no allocation is needed.
+        for found in classified:
+            _left_alone(found, report)
         return report
-    versions = assets.Versions()
-    classified = _classify_graph(
-        root, graph, env_version, refresh=refresh, versions=versions, unfetched=set(),
+    _require_storable(root, graph)
+    # A result certain to be remade is the one thing a run need not
+    # fetch: one that may run only because something it reads may is
+    # left alone when that comes out as recorded, and its readers then
+    # read its bytes.
+    wanted = _to_fetch(
+        root,
+        graph,
+        running,
+        {found.task.id for found in classified if found.certain(refresh=refresh)},
     )
+    dsid = dataset.dataset_id(root)
     with cluster_for_run(cluster_id) as scheduler:
-        requirements = scheduler.validate(
-            graph.tasks[key] for key, verdict, _, _ in classified
-            if verdict.calls_for_a_remake(refresh=refresh)
-        )
-        _fetch_inputs(root, graph, report)
+        requirements = scheduler.validate(running)
+        _fetch_inputs(root, wanted, report)
+        unreadable = _not_as_recorded(root, graph, wanted)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
-        # one. Resolved once, then handed to every task — the HEAD discipline.
+        # one. Resolved once, then handed to every task.
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
@@ -549,116 +428,161 @@ def materialize(
         # only place on a run's path where it is made to match the lock. (A
         # rerun does not come through here; its entry point converges too.)
         report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
-        # The run's driver-resolved facts, each read once: HEAD because the
-        # driver commits as outputs land and a per-task read would stamp
-        # later manifests with a commit this run created; the uv probe
-        # because attestation is a fact about the run (and empty is an
-        # answer, not a failure); one content-hash memo because a declared
-        # input shared by several outputs is the same bytes every time.
-        for path in {
+        # A declared input more than one task reads is hashed here, once:
+        # each task would otherwise read all of it to name it in its
+        # record, and a multiverse reads one catalog in every universe.
+        # One that cannot be read is left for the task that reads it to
+        # report.
+        readers = Counter(
             path
-            for task in graph.tasks.values()
-            for name, path in task.inputs.items()
-            if name not in task.produced_by
-        }:
-            try:
-                versions.of(path)
-            except Exception:
-                # Keep unreadable-input failures inside the tasks that need them.
-                pass
-        context = worker.RunContext(
-            env_version=env_version,
-            head=dataset.head(root),
-            versions=versions,
-            runtime=runtime,
-            uv_version=project.uv_version(root),
+            for task in running
+            for path in {
+                path for entry, path in task.inputs.items() if entry not in task.produced_by
+            }
         )
-        pending: dict[Key, Any] = {}
+        hashed: dict[Path, tuple[tuple[int, int, int], content.Digest]] = {}
+        for path in sorted(path for path, count in readers.items() if count > 1):
+            with suppress(OSError, ProjectError):
+                content.require_fetched(path)
+                hashed[path] = content.stamp(path), content.digest_file(path)
+        # HEAD is read once, after the image converge that may have
+        # committed an archive: the driver commits as results land, and a
+        # per-task read would name a commit this run created.
+        context = worker.RunContext(
+            environment=environment,
+            commit=dataset.head(root),
+            runtime=runtime,
+            hashed=hashed,
+        )
+        pending: dict[ResultId, Any] = {}
         handles = []
-        # Current outputs are values, not Dask tasks: they need no allocation
-        # resources. Futures for everything that may run retain dependency order.
-        for key, verdict, manifest, foreign in classified:
-            task = graph.tasks[key]
-            if not verdict.calls_for_a_remake(refresh=refresh):
-                assert manifest is not None and verdict.status != "stale"
-                result = worker.TaskResult(
-                    key, verdict.status, data_version=manifest.data_version, reason=verdict.why,
-                )
-                pending[key] = result
-                _consume(root, task, result, dsid, runtime, report)
+        # Results left alone are values, not Dask tasks: they need no
+        # allocation resources. Futures for everything that may run retain
+        # dependency order.
+        for found in classified:
+            task = found.task
+            if why := unreadable.get(task.id):
+                # What reads it is blocked, and with its bytes in this clone
+                # now, ASTRA's checker sees what they are.
+                pending[task.id] = worker.TaskOutcome(task.id, "failed", reason=why)
+                report.failed.append(task.id)
+                report.warnings.append(f"{task.id}: {why}")
                 continue
-            pending[key] = scheduler.submit(
+            if not found.may_run(refresh=refresh):
+                pending[task.id] = _left_alone(found, report)
+                continue
+            # What the checker found goes with the task: downstream of a
+            # remake, whether the result still stands is known only once
+            # its upstreams are made, and the task answers that from these
+            # findings and the bytes they gave, without git.
+            pending[task.id] = scheduler.submit(
                 worker.materialize,
                 root,
                 task,
+                found.found,
                 context,
                 refresh,
-                foreign,
                 *[pending[dep] for dep in task.depends_on],
-                key=key,
-                resources=requirements[key],
+                key=task.id,
+                resources=requirements[task.id],
             )
-            handles.append(pending[key])
+            handles.append(pending[task.id])
         from lightcone.engine.compute import UNSTOPPED
 
         # An unreported task can still have a running subprocess. Leave its
         # partial files in place on interruption rather than restoring over it.
         outstanding = len(handles)
-        for result in scheduler.completed(handles):
+        for outcome in scheduler.completed(handles):
             outstanding -= 1
             try:
-                _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
+                _consume(root, graph.tasks[outcome.id], outcome, dsid, runtime, report)
             except Exception as exc:
                 if not outstanding:
                     raise
                 raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
         # The tree was clean at the start-of-run refusal and save/restore
         # keeps `results/` clean, so anything dirty *now* was edited while
-        # the graph ran — and every manifest records the starting commit,
-        # which no longer describes that code. A warning, never a manifest
-        # field: the driver does not rewrite files the worker owns.
-        if edited := dataset.status(root):
-            names = ", ".join(sorted(path for _, path in edited))
+        # the graph ran — and every record names the starting commit,
+        # which no longer describes that code. A warning: the driver does
+        # not rewrite records the worker wrote.
+        changed = sorted(path for _, path in dataset.status(root))
+        if left := [path for path in changed if path.startswith(_WRITTEN)]:
             report.warnings.append(
-                f"edited while the run was in flight: {names} — the manifests "
-                "record the starting commit, which no longer describes this code"
+                f"left uncommitted where results go: {', '.join(left)} — no output "
+                "declares them, so no record names them. Remove them: the next run "
+                "refuses a tree that holds them."
             )
-        _converge_crate(root, report, full, dsid)
+        if edited := [path for path in changed if not path.startswith(_WRITTEN)]:
+            report.warnings.append(
+                f"edited while the run was in flight: {', '.join(edited)} — the records "
+                "name the starting commit, which no longer describes this code"
+            )
         return report
+
+
+def _left_alone(found: _Classified, report: MaterializeReport) -> worker.TaskOutcome:
+    """Report a result no run has to make, as the value its dependents read."""
+    record = found.found.record
+    assert record is not None and found.verdict.state in ("unchanged", "behind")
+    if found.verdict.state == "behind":
+        report.behind[found.task.id] = found.verdict.why
+    else:
+        report.unchanged.append(found.task.id)
+    path = found.task.path
+    return worker.TaskOutcome(
+        found.task.id,
+        found.verdict.state,
+        record.content_hash,
+        record.size,
+        stamp=content.stamp(path) if path.exists() else None,
+        reason=found.verdict.why,
+    )
 
 
 def _consume(
     root: Path,
     task: Task,
-    result: worker.TaskResult,
+    outcome: worker.TaskOutcome,
     dsid: str,
     runtime: container.Runtime,
     report: MaterializeReport,
 ) -> None:
     """Record one finished task, and commit or undo what it left on disk."""
-    name = task.key
-    if result.notes:
+    name = task.id
+    if outcome.notes:
         # Named on a line of their own rather than prefixed onto each: a
         # prefix would land in the middle of a multi-line remedy and make
         # it uncopyable, which is the whole reason these travel separately.
-        report.notes.extend([f"{name}:", *result.notes])
+        report.notes.extend([f"{name}:", *outcome.notes])
 
-    if result.status == "ok":
-        dataset.save(root, _owned(root, task), run_record(root, task, dsid, runtime))
+    if outcome.status == "made":
+        try:
+            dataset.save(
+                root,
+                _owned(root, task),
+                run_record(root, task, dsid, runtime),
+                annexed=[task.path],
+                in_git=task.record_paths,
+            )
+        except ProjectError:
+            # Not committed, so what the task left goes, as a failed task's
+            # does: the tree is as the run found it.
+            dataset.restore(root, _owned(root, task))
+            raise
         report.made.append(name)
         return
 
-    if result.status == "current":
-        report.current.append(name)
+    if outcome.status == "unchanged":
+        report.unchanged.append(name)
         return
 
-    if result.status == "behind":
-        report.behind[name] = result.reason
+    if outcome.status == "behind":
+        report.behind[name] = outcome.reason
         return
 
     dataset.restore(root, _owned(root, task))
-    getattr(report, result.status).append(name)
-    report.warnings.append(f"{name}: {result.reason}")
+    getattr(report, outcome.status).append(name)
+    report.warnings.append(f"{name}: {outcome.reason}")
 
 
 class Scheduler(Protocol):
@@ -668,7 +592,7 @@ class Scheduler(Protocol):
     they land, keeping the commit logic independent of the provider.
     """
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+    def validate(self, tasks: Iterable[Task]) -> dict[ResultId, dict[str, float]]:
         """Validate all requests and return their Dask resource reservations."""
         ...
 
@@ -686,7 +610,7 @@ class Scheduler(Protocol):
         """
         ...
 
-    def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
+    def completed(self, handles: list[Any]) -> Iterator[worker.TaskOutcome]:
         """Yield results as they land.
 
         Args:
@@ -707,15 +631,15 @@ class _Dask:
     output: Forwarder
     workers: dict[str, Any]
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+    def validate(self, tasks: Iterable[Task]) -> dict[ResultId, dict[str, float]]:
         """Require each selected task to fit a worker before any task starts."""
         capacities = worker_capacities(self.workers)
         requests = {}
         for task in tasks:
             try:
-                requests[task.key] = TaskResources.parse(task.resources).requirements(capacities)
+                requests[task.id] = TaskResources.parse(task.resources).requirements(capacities)
             except ProjectError as exc:
-                raise ProjectError(f"{task.key}: {exc}") from exc
+                raise ProjectError(f"{task.id}: {exc}") from exc
         return requests
 
     def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
@@ -727,21 +651,21 @@ class _Dask:
             key=f"lc-{self.invocation}-{key}", pure=False, resources=resources,
         )
 
-    def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
-        """Yield each task result as Dask completes it."""
+    def completed(self, handles: list[Any]) -> Iterator[worker.TaskOutcome]:
+        """Yield each task's outcome as Dask completes it."""
         from distributed import as_completed
 
         try:
-            for _, result in as_completed(  # type: ignore[no-untyped-call]
+            for _, outcome in as_completed(  # type: ignore[no-untyped-call]
                 handles, with_results=True, loop=self.client.loop
             ):
-                if not self.output.wait(result.key):
-                    result = replace(
-                        result,
-                        notes=(*result.notes,
+                if not self.output.wait(outcome.id):
+                    outcome = replace(
+                        outcome,
+                        notes=(*outcome.notes,
                                "remote output forwarding did not finish before its deadline"),
                     )
-                yield result
+                yield outcome
         except ProjectError:
             raise
         except Exception as exc:
@@ -769,119 +693,209 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
             yield _Dask(client, invocation, output, client.scheduler_info()["workers"])
 
 
-def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
-    """Bring declared inputs' bytes into this clone before workers hash or execute.
-
-    lc fetches rather than telling anyone to — the storage invariant —
-    and only here: ``--check`` and ``status`` are read-only verbs that
-    must not start network transfers, so there an unfetched input stays a
-    reported fact. Unconditional rather than probed: ``git annex get`` on
-    content already present is a fast no-op, and one batch invocation
-    beats a detection walk.
-
-    A failed fetch is a *warning*, never a refusal: independent tasks
-    still run, and the task whose input is genuinely unreachable reports
-    its own failure with the real error — per-task reporting is most of
-    what owning the loop buys.
-    """
-    declared = sorted(
-        {
-            plan.declared_path(root, path)
-            for task in graph.tasks.values()
-            for name, path in task.inputs.items()
-            if name not in task.produced_by
-        }
-    )
-    if not declared:
-        return
-    got = project._run(["git", "annex", "get", "--", *declared], cwd=root)
-    if got.returncode != 0:
-        report.warnings.append(
-            "some declared inputs could not be fetched into this clone — tasks "
-            f"needing them will report it:\n{got.stderr.strip()}"
-        )
+#: The command that fetches content another tool keeps, by the name ASTRA's
+#: checker gives the tool.
+_FETCHED_BY = {"Git LFS": "git lfs pull", "DVC": "dvc pull"}
 
 
-# =============================================================================
-# The publication view
-# =============================================================================
+def _to_fetch(
+    root: Path, graph: Graph, running: Sequence[Task], certain: set[ResultId]
+) -> list[str]:
+    """What a run has to bring into this clone before its recipes read it.
 
-
-def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: str) -> None:
-    """Bring ``ro-crate-metadata.json`` in line with the repository.
-
-    A derived artifact, converged the way ``uv.lock`` is: rendered from
-    repository state, compared, and committed only on a difference — so
-    an idempotent re-run commits nothing and nobody has to remember a
-    verb. Maintenance is derived from publication intent: a declared
-    ``[project].license`` turns it on, the same shape as
-    ``[tool.lightcone.image]`` deriving containerized mode. Runs after
-    the consume loop, driver-side, on the full graph rather than the
-    run's targets — the crate describes the project, not one invocation.
-    (The rerun entry point does not come through here: it is one task's
-    executor, so the crate lags until the next materialize.)
-
-    Contained on purpose: by the time this runs every output is already
-    committed, so a failure here becomes a warning and the report still
-    reaches the user — the crate is the publication view, not the run.
-    An interrupt between the write and its commit restores the file, so
-    the tree ends as clean as the loop left it; and the save runs even
-    when the text already matches, healing a previously interrupted
-    converge whose write survived uncommitted.
+    Every file a task that may run reads, bar a result certain to be
+    remade: its declared inputs, and each result it reads that may be
+    left alone, whose bytes are then what the recipe reads. Where each
+    one's bytes are, and which tool keeps them, is ASTRA's checker's
+    answer: what git-annex keeps and this clone lacks is to be fetched,
+    and what another tool keeps is refused, before anything runs, since a
+    recipe handed its stand-in would read a few lines of text for its data.
 
     Args:
         root: The project root.
-        report: Collects the one maintenance line and any warnings.
-        full: The whole-project graph — never a run's narrowed one.
-        dsid: The dataset's UUID, already read by the caller.
-    """
-    # Deferred so `lc status` and `--check` never import rocrate — the
-    # crate is the one materialize-only dependency on their shared path.
-    from lightcone.engine import crate
+        graph: The run's graph, with the checker's report.
+        running: The tasks that may run.
+        certain: The ids of those certain to be remade.
 
-    spdx = project.license_of(root)
-    path = root / project.CRATE_FILENAME
-    if not spdx:
-        report.warnings.append(
-            f"pyproject.toml no longer declares [project].license, so "
-            f"{project.CRATE_FILENAME} is no longer maintained"
-            if path.exists()
-            else "no [project].license in pyproject.toml, so no RO-Crate "
-            "publication view is maintained — declare one to enable it"
-        )
-        return
-    # A set difference rather than a walk driven by the spec: what is on
-    # disk is exactly what the *previous* spec declared, so the edit that
-    # orphans a manifest is the same edit that drops it from the graph.
-    # Enumerated from git, which answers for the tree as committed.
-    expected = {task.manifest_path for task in full.tasks.values()}
-    for manifest in sorted(dataset.tracked_manifests(root)):
-        if manifest not in expected and assets.read(manifest) is not None:
-            report.warnings.append(
-                f"{plan.declared_path(root, manifest)} is a manifest the spec no "
-                "longer declares, so its output is not in the publication view"
+    Returns:
+        The files for git-annex to fetch, from the project root.
+
+    Raises:
+        ProjectError: Naming each file another tool keeps, and the
+            command that fetches it.
+    """
+    wanted: set[str] = set()
+    elsewhere: set[str] = set()
+    for task in running:
+        for source in task.result.inputs:
+            if source.result in certain:
+                continue
+            held = (
+                graph.checked.statuses[source.result].bytes
+                if source.result is not None
+                else graph.checked.inputs[source.input or ""]
             )
-    try:
-        document = crate.render(
-            root,
-            full,
-            license=spdx,
-            dsid=dsid,
-            writer=functools.partial(dataset.last_writer, root),
-            keys=dataset.annex_keys(root),
+            if held is None or held.state == "present" or held.kept_by is None:
+                continue
+            path = plan.declared_path(root, task.inputs[source.entry])
+            if held.kept_by == "git-annex":
+                wanted.add(path)
+            else:
+                command = _FETCHED_BY.get(held.kept_by)
+                how = f"`{command}`" if command else held.kept_by
+                elsewhere.add(f"{path} — kept by {held.kept_by}; {how} fetches it")
+    if elsewhere:
+        raise ProjectError(
+            "this clone holds only a stand-in for what this run's recipes read, and lc "
+            "fetches only what git-annex keeps:\n  " + "\n  ".join(sorted(elsewhere))
         )
-        if not (path.is_file() and path.read_text() == document):
-            path.write_text(document)
+    return sorted(wanted)
+
+
+def _fetch_inputs(root: Path, wanted: Sequence[str], report: MaterializeReport) -> None:
+    """Fetch what git-annex keeps of what a run's recipes read.
+
+    lc fetches rather than telling anyone to, and only here: ``--check``
+    and ``status`` must not start network transfers. A failed fetch is a
+    warning, never a refusal: independent tasks still run, and a task
+    whose input is unreachable reports its own failure with the real
+    error.
+    """
+    if not wanted:
+        return
+    got = project._run(["git", "annex", "get", "--", *wanted], cwd=root)
+    if got.returncode != 0:
+        report.warnings.append(
+            "some of what this run reads could not be fetched into this clone — "
+            f"tasks needing it will report it:\n{got.stderr.strip()}"
+        )
+
+
+def _not_as_recorded(root: Path, graph: Graph, fetched: Sequence[str]) -> dict[ResultId, str]:
+    """The results a run fetched whose bytes are not the ones their records give.
+
+    ASTRA's checker compares a result's bytes with its record before they
+    are fetched only where their stand-in gives a SHA-256, and takes one
+    that gives none — git-annex's, for a key of another backend — to stand
+    for the recorded bytes. What reads a result is recorded as reading the
+    bytes its record gives, so what a run fetched for a recipe to read is
+    hashed before any recipe reads it. Hashing what was just fetched costs a
+    fraction of fetching it.
+
+    Args:
+        root: The project root.
+        graph: The run's graph, with the checker's report.
+        fetched: The files the run fetched, from the project root.
+
+    Returns:
+        Why each such result cannot be read, by id. A file the fetch did not
+        bring is left to what reads it to report.
+    """
+    wanted = set(fetched)
+    unreadable = {}
+    for task in graph.tasks.values():
+        record = graph.checked.statuses[task.id].record
+        if record is None or plan.declared_path(root, task.path) not in wanted:
+            continue
         try:
-            dataset.save(root, [path], "Update the RO-Crate publication view")
-        except BaseException:
-            # An interrupt or a git failure between the write and its
-            # commit must not leave a file lc wrote for the next run's
-            # dirty refusal to blame on the user.
-            dataset.restore(root, [path])
-            raise
-    except Exception as e:
-        report.warnings.append(f"the RO-Crate publication view could not be updated: {e}")
+            content.require_fetched(task.path)
+            digest = content.digest_file(task.path)
+        except (OSError, ProjectError):
+            continue
+        if digest != (record.content_hash, record.size):
+            unreadable[task.id] = (
+                "the bytes fetched for it are not the ones its record gives, so nothing "
+                "can read it as recorded — with them in this clone, the next run makes "
+                "it again"
+            )
+    return unreadable
+
+
+def _require_storable(root: Path, graph: Graph) -> None:
+    """Refuse a project whose results git would not store as lc means them.
+
+    Asked of git for the very paths a run would commit, because the
+    rules are files the researcher owns and convergence only appends to:
+    an ignored result is committed by nobody and reported made; one that
+    no line sends to the annex lands in git itself, in every clone
+    forever; one another filter takes (Git LFS) is stored where lc reads
+    and fetches nothing; and a record that leaves git cannot be read on a
+    clone that holds no content. In a clone where git-annex was never set
+    up, no line sends anything to the annex.
+
+    What the attributes settle is refused here, before anything runs. An
+    ``annex.largefiles`` expression can turn on the bytes themselves, so
+    where one decides, what git staged is the answer, and every save
+    checks it (``dataset.save``).
+
+    Raises:
+        ProjectError: Naming each such path.
+    """
+    if not dataset.is_annexed(root):
+        raise ProjectError(
+            "git-annex is not set up in this clone, so git would commit every result "
+            "to git itself — `lc init` sets it up."
+        )
+    files = [plan.declared_path(root, task.path) for task in graph.tasks.values()]
+    records = [
+        plan.declared_path(root, record)
+        for task in graph.tasks.values()
+        for record in task.record_paths
+    ]
+    # NUL-separated both ways, as `check-attr` is below: git otherwise
+    # quotes a path holding an accent, and a space would end one. For
+    # `check-ignore` that means paths on stdin, the only way it takes `-z`.
+    asked = project._run(
+        ["git", "check-ignore", "-z", "--no-index", "--stdin"],
+        cwd=root,
+        stdin="".join(f"{path}\0" for path in (*files, *records)),
+    )
+    ignored = [path for path in asked.stdout.split("\0") if path]
+    listed = dataset._git(
+        ["check-attr", "-z", "annex.largefiles", "filter", "--", *files, *records], cwd=root
+    ).split("\0")
+    attributes = {
+        (path, name): value
+        for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)
+    }
+
+    refusals = [
+        f"{path} is git-ignored, so it would never be committed — remove the "
+        ".gitignore rule that covers it"
+        for path in ignored
+    ]
+    for path in files:
+        taken_by = attributes.get((path, "filter"), "unspecified")
+        if taken_by not in ("annex", "unspecified", "unset"):
+            refusals.append(
+                f"{path} would be stored by `filter={taken_by}`, not git-annex — a "
+                ".gitattributes line below lightcone's sets its filter"
+            )
+        elif taken_by != "annex" or attributes.get((path, "annex.largefiles")) == "nothing":
+            refusals.append(
+                f"{path} would be committed to git itself — the last .gitattributes line "
+                "that matches it does not send it to the annex"
+            )
+    for path in records:
+        taken_by = attributes.get((path, "filter"), "unspecified")
+        if taken_by not in ("annex", "unspecified", "unset"):
+            how = f"stored by `filter={taken_by}`"
+        elif taken_by == "annex" and attributes.get((path, "annex.largefiles")) == "anything":
+            how = "annexed"
+        else:
+            continue
+        refusals.append(
+            f"{path} would be {how} — the last .gitattributes line that matches it says "
+            "so, and a record has to stay in git, where a clone with no content can read it"
+        )
+    if refusals:
+        raise ProjectError(
+            "this project's results would not be stored as lc stores them:\n  "
+            + "\n  ".join(refusals)
+            + "\n`lc init` adds any of lightcone's .gitattributes lines that is missing. "
+            "Where it adds none, a later line overrides them: remove it, or move "
+            "lightcone's lines below it."
+        )
 
 
 # =============================================================================
@@ -890,29 +904,29 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
 
 
 def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) -> str:
-    """Build the commit message for one materialized output.
+    """Build the commit message for one result a run made.
 
     A ``[DATALAD RUNCMD]`` record — datalad's format, not ours, so all of
     it is written and none of it abbreviated. ``datalad rerun`` reads it
     with a regex and reports "no command; skipping" on any mismatch.
 
     ``cmd`` is the worker module, never a console script, behind an
-    ephemeral ``uv run`` pinning the engine that made the output
+    ephemeral ``uv run`` pinning the engine that made the result
     (:func:`_engine_requirement`) — so the rerun executes that engine
     rather than whatever the host has grown into. The bare recipe would
     reconstruct nothing lc adds, and ``lc materialize`` cannot be it
-    because a rerun removes the declared outputs first, dirtying the tree
+    because a rerun removes the result's files first, dirtying the tree
     materialize refuses to start from. The worker rebuilds the *project*
     environment itself from the lock of the commit being rerun.
 
     Args:
         root: The project root.
-        task: The output that was made.
+        task: The result that was made.
         dsid: The dataset's UUID, which ``rerun`` reads.
         runtime: The run's execution world. A containerized run lists its
             committed image archive under ``extra_inputs``, which
             ``datalad rerun`` fetches before executing — so the worker
-            enters the exact bytes that made the output, on whatever
+            enters the exact bytes that made the result, on whatever
             runtime the rerun host has. The ``cmd`` itself stays
             runtime-neutral for the same reason: the worker is the
             executor that resolves the container at rerun time.
@@ -926,14 +940,13 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         # form of the requirement contains spaces.
         "cmd": (
             f"uv run --no-project --with '{_engine_requirement()}' -- "
-            f"python -m lightcone.engine.worker {shlex.quote(task.key)}"
+            f"python -m lightcone.engine.worker {shlex.quote(task.id)}"
         ),
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
         "outputs": [
-            plan.declared_path(root, task.output_path),
-            plan.declared_path(root, task.manifest_path),
+            plan.declared_path(root, path) for path in (task.path, *task.record_paths)
         ],
         "pwd": ".",
     }
@@ -941,24 +954,11 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
     return (
-        f"{datalad_run_subject(task.key)}\n\n"
+        f"[DATALAD RUNCMD] {task.id}\n\n"
         "=== Do not change lines below ===\n"
         f"{body}\n"
         "^^^ Do not change lines above ^^^"
     )
-
-
-def datalad_run_subject(key: Key) -> str:
-    """The subject line of *key*'s ``[DATALAD RUNCMD]`` commit — datalad's
-    format, which its ``rerun`` matches with a regex, not a spelling of
-    ours to adjust.
-
-    One function, shared with the foreign-write check: an output is
-    cleanly written iff the commit that last touched its directory
-    carries exactly this subject, so the composer and the comparator must
-    not be two strings that can drift apart.
-    """
-    return f"[DATALAD RUNCMD] {key}"
 
 
 def _engine_requirement() -> str:
@@ -1008,19 +1008,17 @@ def _repository_url() -> str:
 
 def _graph(
     root: Path, targets: Sequence[str], report: MaterializeReport
-) -> tuple[Graph, str, Graph]:
+) -> tuple[Graph, str]:
     """The tasks a run covers, and the environment they will be compared to.
 
     The lock scan runs here, once, for both modes: what it refuses is a
     dependency whose bytes the lock does not pin, which makes every hash
-    below it a claim nobody can check. The unnarrowed graph is returned
-    beside the narrowed one, because the crate describes the whole
-    project and must not pay a second spec validation to see it.
+    below it a claim nobody can check.
     """
     scan = identity.scan_lock(root)
     if scan.refusals:
         raise ProjectError(
-            "the lock has dependencies that cannot be audited, so an output's "
+            "the lock has dependencies that cannot be audited, so a result's "
             "identity would not mean anything:\n  "
             + "\n  ".join(scan.refusals)
             + "\nPublish them, or vendor them into the project."
@@ -1042,30 +1040,29 @@ def _graph(
             + "; ".join(scan.machine_config)
         )
 
-    env_version = identity.env_version(root)
-    full = plan.build(root)
-    report.warnings.extend(full.notes)
-    graph = full.closure(full.resolve(list(targets))) if targets else full
-    return graph, env_version, full
+    environment = identity.environment(root)
+    graph = plan.build(root)
+    report.warnings.extend(graph.notes)
+    if targets:
+        graph = graph.closure(graph.resolve(list(targets)))
+    return graph, environment
 
 
 def _owned(root: Path, task: Task) -> list[str]:
-    """Every path one output owns, as git pathspecs.
-
-    Globs rather than the two literal paths, and each earns its magic. The
-    payload's covers whatever format the *previous* run wrote, so a
-    re-declared serialization stages the old file's deletion instead of
-    leaving it behind untracked. The manifest's trailing ``*`` covers the
-    ``.tmp`` a failed write leaves, which nothing else would sweep.
+    """Every path one result owns, as git pathspecs taken to the letter:
+    its file and its records (`Task.owns`).
 
     Never the parent directory: siblings share it, and under Dask they are
     in flight — ``git clean`` on it would delete a running task's bytes.
     """
-    parent = plan.declared_path(root, task.output_path.parent)
     return [
-        f":(glob){parent}/{task.name}.*",
-        f":(glob){parent}/.{task.name}{assets.MANIFEST_SUFFIX}*",
+        f":(literal){plan.declared_path(root, path)}" for path in (task.path, *task.record_paths)
     ]
+
+
+#: The folders a run writes in: results' bytes, and their records. A
+#: change there is what a run left, not the researcher's work.
+_WRITTEN = ("results/", ".astra/")
 
 
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
@@ -1073,11 +1070,16 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
 
     Two path classes, because they call for opposite actions: work the
     researcher owns has to be committed, and anything under ``results/``
-    is lc's to write, so a change there is wreckage to discard rather than
-    a contribution to keep.
+    or ``.astra/`` is lc's to write, so a change there is wreckage to
+    discard rather than a contribution to keep — an interrupted run
+    leaves part of a result, and the record it removed before its recipe
+    ran.
+
+    The discard command names a folder to ``git restore`` only where git
+    knows a file of it, which refuses one it knows none of.
     """
-    theirs = [c for c in changes if not c[1].startswith("results/")]
-    ours = [c for c in changes if c[1].startswith("results/")]
+    theirs = [c for c in changes if not c[1].startswith(_WRITTEN)]
+    ours = [c for c in changes if c[1].startswith(_WRITTEN)]
 
     lines = [
         f"uncommitted changes in {root} — every materialization is committed "
@@ -1091,12 +1093,19 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
             *(f"      {code.strip() or '??'} {path}" for code, path in theirs),
         ]
     if ours:
+        known = sorted({f"{path.split('/')[0]}/" for code, path in ours if code != "??"})
+        new = sorted({f"{path.split('/')[0]}/" for code, path in ours if code == "??"})
+        discard = [
+            *([f"git restore --staged --worktree {' '.join(known)}"] if known else []),
+            *([f"git clean -fd {' '.join(new)}"] if new else []),
+        ]
         lines += [
             "",
             "  if a cluster run was interrupted, stop its allocation first:",
             "      lc compute down <cluster-id>",
-            "  confirm its recipes have stopped, then discard these (lc writes results/):",
-            "      git restore --staged --worktree results/ && git clean -fd results/",
+            "  confirm its recipes have stopped, then discard these "
+            "(lc writes results/ and .astra/):",
+            f"      {' && '.join(discard)}",
             *(f"      {code.strip() or '??'} {path}" for code, path in ours),
         ]
     return "\n".join(lines)

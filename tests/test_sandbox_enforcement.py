@@ -386,8 +386,8 @@ def test_a_recipe_cannot_write_another_universes_results(
     backend: sandbox.Backend, project: Path
 ) -> None:
     """The scope is the directory the output lands in, so outputs declared
-    beside each other are mutually writable — `data_version` is what
-    answers for an output's bytes, not the boundary. What the kernel does
+    beside each other are mutually writable — the hash a result's record
+    gives is what answers for its bytes, not the boundary. What the kernel does
     still refuse is every *other* universe. Both writes target user-owned
     paths, so only the boundary can refuse the first; the second is the
     mutation check in-place."""

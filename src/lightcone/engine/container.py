@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from lightcone.engine import assets, dataset, image, project, sandbox
+from lightcone.engine import content, dataset, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
 
 #: The runtimes that are podman underneath and share its spellings —
@@ -68,8 +68,6 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
-    #: The architecture the archive was built for.
-    arch: str = ""
 
     @property
     def supports_gpus(self) -> bool:
@@ -84,19 +82,6 @@ class Runtime:
         ``extra_inputs`` names. Derived through :func:`image.archive_path`
         so this cannot become a second spelling of the layout."""
         return image.archive_path(self.root, self.image_tag).relative_to(self.root).as_posix()
-
-    def manifest_image(self) -> dict[str, str] | None:
-        """This world as the manifest's ``image`` field; ``None`` on the
-        host. Beside the data, so a field added here cannot be forgotten
-        at the write site — the ``asdict(attestation)`` discipline."""
-        if self.mode == "direct":
-            return None
-        return {
-            "tag": self.image_tag,
-            "id": self.image_id,
-            "archive": self.archive,
-            "arch": self.arch,
-        }
 
 
 def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runtime:
@@ -178,7 +163,6 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
         image_tag=tag,
         image_id=image_id,
         store_id=store_id,
-        arch=arch,
     )
 
 
@@ -196,9 +180,9 @@ def _fetch(root: Path, archive: Path) -> None:
     """
     relative = archive.relative_to(root).as_posix()
     try:
-        assets.require_fetched(archive)
+        content.require_fetched(archive)
         return
-    except assets.ContentNotFetchedError:
+    except content.ContentNotFetchedError:
         pass
     got = project._run(["git", "annex", "get", "--", relative], cwd=root)
     if got.returncode != 0:
@@ -208,7 +192,7 @@ def _fetch(root: Path, archive: Path) -> None:
             "It needs a reachable remote that holds the content — or rebuild a new "
             "image with `lc build`."
         )
-    assets.require_fetched(archive)
+    content.require_fetched(archive)
 
 
 def _committed(archive: Path) -> bool:
@@ -373,8 +357,8 @@ def image_state(root: Path) -> tuple[str, str, str]:
     if not _committed(archive):
         return ("absent", tag, relative)
     try:
-        assets.require_fetched(archive)
-    except assets.ContentNotFetchedError:
+        content.require_fetched(archive)
+    except content.ContentNotFetchedError:
         return ("unfetched", tag, relative)
     return ("present", tag, relative)
 
