@@ -55,27 +55,6 @@ class ContentNotFetchedError(ProjectError):
     """A file whose content is not in this clone, only a stand-in for it."""
 
 
-def record_path(path: str) -> str:
-    """Where the record of a result file at *path* is.
-
-    For a caller holding only a file's path. A result's name is its
-    output's id, which holds no dot, while its format may hold one
-    (``tar.gz``), so the name ends at the file's **first** dot.
-
-    Args:
-        path: A file's POSIX path from the project root.
-
-    Returns:
-        The record's path from the project root; empty for a file that
-        is at no result's place.
-    """
-    *folder, file = path.split("/")
-    name, dot, _ = file.partition(".")
-    if not (name and dot) or folder[:1] != ["results"] or len(folder) > 2:
-        return ""
-    return "/".join([".astra", "records", *folder[1:], f"{name}.json"])
-
-
 # =============================================================================
 # Content
 # =============================================================================

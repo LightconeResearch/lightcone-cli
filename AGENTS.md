@@ -11,19 +11,16 @@ User documentation lives in a separate repository (LightconeResearch/docs), not 
 ## Commands
 
 ```bash
-uv sync --group dev                 # pytest, ruff, mypy, datalad, playwright, roc-validator
+uv sync --group dev                 # pytest, ruff, mypy, datalad, roc-validator
 uv run pytest                       # whole suite
 uv run pytest tests/test_plan.py::test_name   # one test
 uv run ruff check src/ tests/       # --fix to apply
 uv run mypy src/                    # strict
 uv run lc --help                    # the CLI from the checkout
-cd ui && npm ci && npm run build    # the `lc view` front end → src/lightcone/app/static/ (gitignored)
-uv build                            # wheel + sdist; hatch_build.py runs the npm build
+uv build                            # wheel + sdist
 ```
 
 There is deliberately no task runner. CI (`.github/workflows/{tests,lint}.yml`) runs exactly pytest, ruff and mypy — Linux on Python 3.11–3.13, plus macOS on 3.13.
-
-Python work never needs Node: editable installs skip the front-end build. Only `lc view` needs the bundle, and it refuses to start without one.
 
 Several suites skip when their prerequisite is absent, and CI turns each skip into a failure with an environment variable. Set the same variable locally to be sure a suite really ran:
 
@@ -32,7 +29,6 @@ Several suites skip when their prerequisite is absent, and CI turns each skip in
 | `LC_SANDBOX_TESTS_REQUIRED=1` | `test_sandbox_enforcement.py` | Landlock (Linux) or Seatbelt (macOS) |
 | `LC_CONTAINER_TESTS_REQUIRED=1` | `test_container_smoke.py` | podman or docker |
 | `LC_CRATE_TESTS_REQUIRED=1` | `test_crate_smoke.py` | `rocrate-validator` (in the dev group) |
-| `LC_UI_TESTS_REQUIRED=1` | `test_frontend_build.py`, `test_view_browser.py`, part of `test_serve.py` | built bundle; `python -m playwright install chromium` |
 
 The `uv-floor` CI job reruns the uv-touching suites against uv 0.7.0. That version must equal the `required-version` floor in `src/lightcone/engine/templates/files/pyproject.toml.tmpl`; change both together.
 
@@ -42,7 +38,6 @@ The `uv-floor` CI job reruns the uv-touching suites against uv 0.7.0. That versi
 
 - `src/lightcone/` is a **PEP 420 namespace package: it must never contain an `__init__.py`**. Sibling `lightcone-*` distributions share the namespace, and `python -m lightcone._sandbox_exec` relies on it to import nothing else.
 - `cli/` holds flags, rendering and exit codes only. Logic lives in `engine/`, which raises `ProjectError`; the click group translates it.
-- `engine/` is the engine; `app/` is the Jupyter server behind `lc view`, run as `python -m lightcone.app` and never imported by the CLI; `ui/` is its TypeScript page.
 - Module docstrings are the design record for each module. Read the docstring before changing a module.
 
 ### The model
@@ -52,14 +47,13 @@ A project is `pyproject.toml` + `uv.lock` + `.python-version` + `astra.yaml`, in
 - **Convergence** (`project.py`, `lc init`): every item is created if missing and repaired if wrong; rerunning is always safe. Scaffolded file content lives as real files in `engine/templates/files/*.tmpl`.
 - **Graph** (`plan.py`): one task per result the analysis plans, keyed by ASTRA's id for it (`fit#baseline`; `fit` for an output built once), in ASTRA's order: each after every result it reads. A result is exactly one file at the place ASTRA gives it, `results/<universe>/<name>.<format>`, with ASTRA's record of it at `.astra/records/<universe>/<name>.json`; the record is all lc writes beside a result. `build` asks `astra.api.resolve` and `astra.api.status` once each, refuses the pair where they name different commits, and keeps what the checker found of each task beside it (`Graph.found`). A `Task` is ASTRA's own `Result` with what a run needs looked up once: the file each entry reads, the options it is made with, what its recipe asks for. ASTRA renders the command and gives every path; lc composes neither. lc builds a single analysis: one that declares another is refused.
 - **Identity** (`identity.py`): `env_version` (raw `uv.lock` bytes, `.python-version`, a closed list of uv install settings, the image declaration) is the environment's identity, and a record names it as the IRI `urn:lightcone:env:<env_version>` (`identity.environment`), a function of the files `identity.files` names in the record's commit. What a result is *made from* (its declaration, the options selected, its inputs' content, the results it reads) is the specification's, compared by ASTRA's checker against the commit the record names. There is no definition hash here.
-- **Classification** (`assets.py`): one `classify()` yields `current`, `behind` or `stale`, shared by `lc status`, `materialize --check`, `materialize` and the viewer. `stale` is ASTRA's finding (no valid record, something the result is made from changed, or bytes at its place that are not the record's) or a foreign write, and is remade. A changed environment is only `behind`: reported, and remade only with `--refresh`. A result made from a stale one is reported stale until that one is made again.
+- **Classification** (`assets.py`): one `classify()` yields `current`, `behind` or `stale`, shared by `lc status`, `materialize --check` and `materialize`. `stale` is ASTRA's finding (no valid record, something the result is made from changed, or bytes at its place that are not the record's) or a foreign write, and is remade. A changed environment is only `behind`: reported, and remade only with `--refresh`. A result made from a stale one is reported stale until that one is made again.
 - **Execution** (`materialize.py` drives, `worker.py` makes one output): the driver refuses a dirty tree, hands the graph to Dask, and **owns git alone**, committing each output as its result arrives, with its record in the same commit. Workers never raise and never write git; a failed task returns a result saying so. Each commit carries a DataLad run record that names `python -m lightcone.engine.worker <task>`, so `datalad rerun` reproduces it.
 - **Storage** (`dataset.py`): the DataLad model through plain `git` and `git annex`. `.gitattributes` routes results and declared inputs to the annex with `filter=annex`; records and code stay in git. A write to a result that lc did not make is detected from git history, not by rehashing.
 - **Exec boundary** (`sandbox/`): `policy.py` builds mechanism-free path sets; a `Backend` is a pure `wrap(policy, argv) -> argv`; `boundary.py` picks the backend, runs it and returns an `Attestation` of what was actually enforced. The backends are Landlock (through the stdlib-only shim `_sandbox_exec.py`), Seatbelt (generated SBPL), and OCI (podman, podman-hpc, docker), where the mount table is the mechanism. The tree is read-only apart from the write scope. Network is deliberately not controlled. `lc run` puts a probe under the same boundary a recipe gets.
 - **Containers** (`image.py` pure, `container.py` impure): declaring `[tool.lightcone.image]` in `pyproject.toml` switches the project to containerized mode. Nobody authors a Containerfile. The built image is saved as a docker-archive, annexed and committed in the repository; runtimes load it from there, and their local stores are only caches.
 - **Compute** (`compute/`): allocation is explicit. `lc compute launch` starts a local or Slurm Dask cluster from an offer in the catalog, and `lc run` / `lc materialize` take its name or ID as their first argument. Providers own the native lifecycle; the engine borrows a standard Dask client.
 - **Publication** (`crate.py`): `ro-crate-metadata.json` is a pure function of repository state (sorted iteration, no clock), converged by `materialize` like `uv.lock`. There is no export verb.
-- **Viewer** (`serve.py`, `app/`, `ui/`): one detached, read-only Jupyter server per project. The page resolves the spec in the browser with the released `@astra-spec/sdk` and `@astra-spec/ui`; output state comes from the engine's `classify()` and each run from its record, through `app/routes.py`.
 
 ### The runner's rules
 
@@ -115,7 +109,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 
 ### CLI and convergence
 
-- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. `astra.api` loads the whole library, so the engine imports it inside the functions that use it, `project.converge` included; only the viewer's server, which the CLI never imports, has it at module scope.
+- `cli/commands.py` imports the engine inside command callbacks and builds the rich console lazily, so `lc --help` and completion stay cheap. `astra.api` loads the whole library, so the engine imports it inside the functions that use it, `project.converge` included.
 - `converge(write=False)` is check mode: the same decision path with side effects off. Everything routes through `_Converger.item` / `.file` / `.blocked`. A *warning* never affects `converged`; a *blocked* item does.
 - Convergence only appends to files the user owns. `.gitignore` and `.gitattributes` converge entry by entry, never by a marker. **A new managed `.gitattributes` line goes at the end of the template**, because the file is last-match-wins and the disorder check judges against template order.
 - Only what git can carry is converged (no empty directories), so a fresh clone needs nothing but `.venv` and `git annex init`.
@@ -217,7 +211,7 @@ Each of these was learned from a real failure or a measurement, and most are not
 - Recipe resources are cooperative Dask reservations, not OS limits. A recipe `time_limit` is refused. A GPU recipe takes the worker's whole GPU mask. GPU visibility comes from the allocation's `CUDA_VISIBLE_DEVICES`; nothing probes hardware.
 - At NERSC, `UV_CACHE_DIR` must be off `$HOME`, since compute nodes cannot lock files there. The user exports it before `lc compute launch`.
 
-### Crate and viewer
+### Crate
 
 - A `[project].license` turns crate maintenance on. Nothing invents a license.
 - `datePublished` is the newest record's `finished`, overriding rocrate's default of construction time. It keeps the clock out of the render and is what lets `lc status` see a lagging crate.
@@ -225,13 +219,6 @@ Each of these was learned from a real failure or a measurement, and most are not
 - The crate's `Person` is the author of the result's saving commit, not of the commit its record names.
 - The crate is rendered from the records ASTRA's checker read, so the graph is read again after a run that made something. It describes as made exactly the results a run would leave alone (`materialize._published`), and `lc status` dates the crate by the same ones; any other is a step of the workflow only. It is rendered only from a tree that is its commit, since it is read off the working tree. Nothing is read from the clone's own configuration, such as its `origin` URL: two clones of one commit render one document.
 - A foreign write is detected when the commit that last touched an output does not carry its run-record subject. `materialize.datalad_run_subject` is the one spelling of that subject.
-- The `lc view` token can only read: the server keeps the Contents API and `/files/`, the authorizer refuses every write, and three writes Jupyter makes outside its authorizer are switched off in `app/__init__.py`. Every route requires the token (`allow_unauthenticated_access=False` plus `@web.authenticated`).
-- Each server run has a fresh token and signing secret, so an old page cannot authenticate to a later server.
-- Serve state lives in `~/.lightcone/serve/<host>/`, mode 0700, never in the project: it holds the token, and login nodes share `$HOME`.
-- `lc view` returns immediately, is idempotent per project, never opens a browser, and the server stops itself after 30 idle minutes.
-- Python never resolves the spec for the page. The browser does, with the released astra packages only.
-- File reads are confined beneath their root (`app/files.py`) with `O_NOFOLLOW` at each step. Links into `.git/annex/objects` are allowed; external symlinks are refused.
-- The bundle URL is versioned by a hash of the bundle's bytes, because Jupyter serves static files as immutable. `jupyter-live-content` is pinned below 0.2 because the page speaks its unpublished protocol.
 
 ## Decided against
 
@@ -251,7 +238,6 @@ Do not reintroduce these without a new reason.
 - **Catalog `connections`, `lc compute --config`, and a separate local settings block.** Offers name their provider, and local offers are ordinary offers.
 - **Migrations.** ASTRA 0.0.x specs and their `universes/*.yaml` are not read, and outputs from older engine layouts are invisible; the remedy is `git rm -r results/` and a re-materialize.
 - **Scaffolding an `AGENTS.md` into projects.** A test pins its absence.
-- **Records as dock tabs or a JupyterLab shell in the viewer.** Both were built and dropped to stay on released astra-ui.
 
 ## Contributing
 

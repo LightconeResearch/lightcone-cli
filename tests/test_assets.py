@@ -38,41 +38,6 @@ from conftest import CLUSTER_ID
 from lightcone.engine import assets, dataset, identity, materialize, plan
 from lightcone.engine.assets import classify
 
-# ---- where the record lives ------------------------------------------------
-
-
-def test_a_result_file_names_its_record() -> None:
-    assert assets.record_path("results/baseline/fit.json") == ".astra/records/baseline/fit.json"
-    assert assets.record_path("results/summary.csv") == ".astra/records/summary.json"
-
-
-def test_a_universe_may_be_called_results() -> None:
-    assert assets.record_path("results/results/fit.json") == ".astra/records/results/fit.json"
-
-
-def test_the_name_ends_at_the_first_dot() -> None:
-    """A name is an output's id, which holds no dot, and a format may
-    hold several."""
-    assert assets.record_path("results/u/chain.tar.gz") == ".astra/records/u/chain.json"
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "data/catalog.csv",
-        "astra.yaml",
-        "src/results/fit.json",
-        "results/a/b/fit.json",
-        "results/baseline/README",
-        "results/baseline/.hidden",
-    ],
-)
-def test_a_file_at_no_results_place_has_no_record(path: str) -> None:
-    """Two levels under `results/` is no place ASTRA gives, and a name
-    with no format is nobody's bytes."""
-    assert assets.record_path(path) == ""
-
-
 # ---- content that is not there ---------------------------------------------
 
 
