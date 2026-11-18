@@ -759,7 +759,7 @@ def test_an_analysis_git_does_not_hold_is_refused(root: Path, inline: None) -> N
     dataset._git(["commit", "-q", "-m", "stop tracking the analysis"], cwd=root)
     assert not dataset.status(root)
 
-    with pytest.raises(ProjectError, match="astra.yaml is not in git as a file of its own"):
+    with pytest.raises(ProjectError, match="astra.yaml — not in git as files of their own"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert not (root / "results/baseline").exists()
@@ -777,7 +777,7 @@ def test_an_analysis_committed_to_the_annex_is_refused(root: Path, inline: None)
     pointer = dataset._git(["cat-file", "-p", "HEAD:astra.yaml"], cwd=root)
     assert pointer.startswith("/annex/objects/") and not dataset.status(root)
 
-    with pytest.raises(ProjectError, match="astra.yaml is not in git as a file of its own"):
+    with pytest.raises(ProjectError, match="astra.yaml — not in git as files of their own"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
 

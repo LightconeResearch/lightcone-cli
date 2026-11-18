@@ -149,12 +149,14 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     blocked: set[ResultId] = set()
     for found in _classify(graph, environment, refresh=refresh):
         verdict = found.verdict
+        # What a run leaves alone reads nothing, so nothing it reads blocks it.
         stale = {
             dep: why
             for dep in found.task.depends_on
             if dep not in graph.tasks and (why := worker.unreadable(graph.checked.statuses[dep]))
         }
-        if stale or blocked.intersection(found.task.depends_on):
+        reads_blocked = bool(stale) or bool(blocked.intersection(found.task.depends_on))
+        if found.may_run(refresh=refresh) and reads_blocked:
             blocked.add(found.task.id)
             report.blocked.append(found.task.id)
             report.warnings.extend(f"{dep}: {why}" for dep, why in stale.items())
@@ -437,12 +439,14 @@ def materialize(
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
         unreadable = _not_as_recorded(root, graph, wanted)
-        # A commit that cannot be given is said once; what reads it then
-        # reports that it cannot read it.
+        # A commit whose tree cannot be given blocks what reads a file of it:
+        # whatever is on disk there is no longer known to be that commit's.
+        ungiven: dict[str, str] = {}
         for commit, paths in trees.items():
             try:
                 commits.give(root, commit, graph.commits[commit], paths)
             except ProjectError as exc:
+                ungiven[commit] = str(exc)
                 report.warnings.append(f"{commit}: {exc}")
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
@@ -496,6 +500,15 @@ def materialize(
                 continue
             if not found.may_run(refresh=refresh):
                 pending[task.id] = _left_alone(found, report)
+                continue
+            at = {plan.at_commit(root, path) for path in task.inputs.values()}
+            if missing := sorted({each[0] for each in at if each} & ungiven.keys()):
+                # Its dependents see an outcome that did not finish, and
+                # are blocked in turn.
+                pending[task.id] = worker.TaskOutcome(
+                    task.id, "blocked", reason=f"the tree of {missing[0]} could not be given"
+                )
+                report.blocked.append(task.id)
                 continue
             # A result from a commit is a value too, read once for every
             # task of the run that reads it.

@@ -337,3 +337,77 @@ def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
         for w in report.warnings
     ), report.warnings
     assert not (root / plan.COMMITS / pinned).exists()
+
+
+#: An analysis with nothing but an input, for another to read at a commit.
+_AN_INPUT = 'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.txt}\n'
+
+
+def test_a_commits_tree_git_cannot_read_is_made_again(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A tree git cannot even inspect, its index damaged, is not known to
+    be its commit's: it is made again, and the recipe reads the commit's
+    bytes."""
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
+    spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
+    dataset.save(root, [spec], "copy it again")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["copy"], (report.blocked, report.warnings)
+    assert (root / "results" / "copy.txt").read_text() == "stars\n"
+
+
+_READS_UPSTREAMS_INPUT = """
+spec_version: "0.1.0"
+analyses:
+  upstream: {url: "%s", commit: "%s"}
+outputs:
+  copy:
+    type: data
+    format: txt
+    inputs: [upstream.catalog]
+    recipe:
+      command: cat {inputs} > {output}
+  own:
+    type: data
+    format: txt
+    recipe:
+      command: echo own > {output}
+"""
+
+
+def test_a_commits_tree_that_cannot_be_given_blocks_only_what_reads_it(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """The tree of `upstream`'s commit is no longer its commit's, and the
+    repository it came from is gone: nothing reads a file of it, whatever
+    is on disk there, and what reads nothing of it still runs."""
+    upstream = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(upstream)
+    upstream = upstream.rename(tmp_path / "upstream")
+    root = analysis(_READS_UPSTREAMS_INPUT % (upstream.as_uri(), at))
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
+    upstream.rename(tmp_path / "gone")
+    spec = root / "astra.yaml"
+    spec.write_text(
+        spec.read_text()
+        .replace("cat {inputs}", "cat -u {inputs}")
+        .replace("echo own", "echo own again")
+    )
+    dataset.save(root, [spec], "make both again")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert (report.made, report.blocked) == (["own"], ["copy"]), report.warnings
+    assert any(w.startswith(f"{at}: ") for w in report.warnings), report.warnings
+    assert (root / "results" / "copy.txt").read_text() == "stars\n"
+    assert not dataset.status(root)

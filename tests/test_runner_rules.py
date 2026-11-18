@@ -383,3 +383,31 @@ def _overwrite_fit(root: Path) -> None:
     dataset.save(root, [fit], "remove fit")
     fit.write_text("not what the record gives\n")
     dataset.save(root, [fit], "write over fit, and leave its record")
+
+
+def test_stale_input_blocks_only_what_a_run_would_make(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`compare` was made reading `previous.fit` at one commit; `previous`
+    now names another, where `fit`'s record is the same and its bytes are
+    gone. `compare` reads nothing a run would make it read again, so
+    `--check`, like a run, leaves it alone."""
+    root = analysis(FIRST)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    branch = dataset._git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root).strip()
+    dataset._git(["checkout", "-q", "-b", "without-bytes"], cwd=root)
+    dataset._git(["rm", "-q", "results/fit.txt"], cwd=root)
+    dataset._git(["commit", "-q", "-m", "keep fit's record, not its bytes"], cwd=root)
+    without = dataset.head(root)
+    dataset._git(["checkout", "-q", branch], cwd=root)
+    at = since(root, made=False)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    spec = root / "astra.yaml"
+    spec.write_text(spec.read_text().replace(at, without))
+    dataset.save(root, [spec], "read previous where fit's bytes are gone")
+
+    checked = engine.check(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert "compare" in checked.unchanged, (checked.blocked, checked.planned, checked.warnings)
+    assert "compare" in report.unchanged, (report.blocked, report.made, report.warnings)

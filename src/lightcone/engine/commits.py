@@ -74,10 +74,15 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
 
 def _intact(tree: Path, commit: str) -> bool:
     """Whether a commit's tree is still that commit's: checked out at it, and
-    no file git tracks there changed."""
-    at = dataset._git(["rev-parse", "HEAD"], cwd=tree).strip()
-    changed = dataset._git(["status", "--porcelain", "--untracked-files=no"], cwd=tree)
-    return at == commit and not changed.strip()
+    no file git tracks there changed. One git cannot even read is not."""
+    at = project._run(["git", "rev-parse", "HEAD"], cwd=tree)
+    changed = project._run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=tree)
+    return (
+        at.returncode == 0
+        and changed.returncode == 0
+        and at.stdout.strip() == commit
+        and not changed.stdout.strip()
+    )
 
 
 def _clone(root: Path, commit: str, repository: str | None, tree: Path) -> None:
