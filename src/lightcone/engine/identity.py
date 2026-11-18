@@ -16,9 +16,9 @@ makes it one lc can recreate. ASTRA records the environment and never
 compares it, **and neither does the rebuild rule** — that is the whole
 shape of the model. An environment moves for reasons that have nothing
 to do with a given result — one added dependency rewrites the lock for
-the whole project — and a research artifact costs hours to remake and is
+the whole project — and a research result costs hours to remake and is
 often already looked at. So an environment edit does not stale anything;
-it makes an artifact *behind*, which is a fact the report states and a
+it makes a result *behind*, which is a fact the report states and a
 rebuild the caller can ask for. Over-sensitivity is affordable exactly
 because it spends no compute.
 
@@ -48,7 +48,7 @@ from lightcone.engine.project import ProjectError
 #: sync materializes from an unchanged lock. Closed on purpose: anything
 #: outside it is either already covered by the lock's bytes or does not
 #: affect what ends up installed, and a set that grew by guesswork would
-#: report every output in every project as behind each time it did.
+#: report every result in every project as behind each time it did.
 _INSTALL_SETTINGS = (
     "default-groups",
     "no-binary",
@@ -321,7 +321,7 @@ def _uv_config(root: Path) -> dict[str, Any]:
     What this cannot reach is user- and system-level configuration, which
     uv *does* merge in underneath. That is machine state rather than
     project state: hashing it would make one commit answer differently on
-    two hosts, reporting every output as behind on a colleague's clone.
+    two hosts, reporting every result as behind on a colleague's clone.
     :func:`_machine_config` reports it instead.
     """
     config = root / "uv.toml"

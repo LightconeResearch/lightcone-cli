@@ -15,7 +15,7 @@ from click.testing import CliRunner
 
 from lightcone.engine import dataset, project, templates
 from lightcone.engine.compute.model import Identity
-from lightcone.engine.plan import Key, Task
+from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import _run as _real_run
 
 CLUSTER_ID = Identity(provider="local", native_id="test", token="test").encode()
@@ -179,9 +179,9 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+    def validate(self, tasks: Iterable[Task]) -> dict[ResultId, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
-        return {task.key: {} for task in tasks}
+        return {task.id: {} for task in tasks}
 
     def submit(
         self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],

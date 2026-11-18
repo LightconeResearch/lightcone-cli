@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from lightcone.engine import assets, dataset, image, project, sandbox
+from lightcone.engine import content, dataset, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
 
 #: The runtimes that are podman underneath and share its spellings —
@@ -180,9 +180,9 @@ def _fetch(root: Path, archive: Path) -> None:
     """
     relative = archive.relative_to(root).as_posix()
     try:
-        assets.require_fetched(archive)
+        content.require_fetched(archive)
         return
-    except assets.ContentNotFetchedError:
+    except content.ContentNotFetchedError:
         pass
     got = project._run(["git", "annex", "get", "--", relative], cwd=root)
     if got.returncode != 0:
@@ -192,7 +192,7 @@ def _fetch(root: Path, archive: Path) -> None:
             "It needs a reachable remote that holds the content — or rebuild a new "
             "image with `lc build`."
         )
-    assets.require_fetched(archive)
+    content.require_fetched(archive)
 
 
 def _committed(archive: Path) -> bool:
@@ -357,8 +357,8 @@ def image_state(root: Path) -> tuple[str, str, str]:
     if not _committed(archive):
         return ("absent", tag, relative)
     try:
-        assets.require_fetched(archive)
-    except assets.ContentNotFetchedError:
+        content.require_fetched(archive)
+    except content.ContentNotFetchedError:
         return ("unfetched", tag, relative)
     return ("present", tag, relative)
 

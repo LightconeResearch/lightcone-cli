@@ -439,7 +439,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
 
 
 def _converge_committable(c: _Converger, directory: Path) -> None:
-    """Refuse to call a project converged while its outputs are unignorable.
+    """Refuse to call a project converged while its results are unignorable.
 
     Results and declared inputs are committed, so an ignore rule covering
     either is not a preference — it is a project where materializing

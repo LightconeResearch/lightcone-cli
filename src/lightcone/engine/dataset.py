@@ -3,7 +3,7 @@
 Storage follows the DataLad model — git carries the pointers and the
 history, git-annex carries the bytes — reached through ordinary ``git``
 and ``git annex`` commands. ``.gitattributes`` routes content: the default
-is ``annex.largefiles=nothing``, and outputs and declared inputs opt out
+is ``annex.largefiles=nothing``, and results and declared inputs opt out
 of it, so records and analysis code stay in git while results and data
 go to the annex.
 
@@ -22,25 +22,9 @@ import posixpath
 import subprocess
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
 
 from lightcone.engine import project
-
-
-@dataclass(frozen=True)
-class LastWrite:
-    """The commit that last touched a path — empty fields mean "cannot
-    say", and the whole record is falsy then."""
-
-    sha: str = ""
-    subject: str = ""
-    author: str = ""
-    email: str = ""
-    date: str = ""
-
-    def __bool__(self) -> bool:
-        return bool(self.sha)
 
 # =============================================================================
 # The repository
@@ -283,48 +267,6 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
-    """Find the commit that last touched any of *paths*.
-
-    Run from the project root with a relative pathspec, so it answers
-    about the project's own subdirectory even inside an enclosing
-    repository — and since nothing parses paths out of its output, no
-    prefix handling is needed.
-
-    "Cannot say" is the empty answer, never an error: the caller is
-    ``lc status``, and a read-only verb must not
-    refuse a project over an unborn HEAD, a deposit stripped of its
-    ``.git``, or a host without git — states such projects are actually
-    in.
-
-    Several paths, because a result is a file *and* its record and a
-    hand edit to either contradicts the other: the payload alone would
-    miss a doctored record, and the record alone would miss the forged
-    result that is the whole reason to ask. The record also carries the
-    history across a re-declared format, where the payload's path is new.
-
-    Args:
-        directory: The project root.
-        paths: What to ask about, absolute, repository-relative, or a git
-            pathspec.
-
-    Returns:
-        The commit, falsy-empty when none has touched them — or when git
-        cannot answer at all.
-    """
-    argv = [
-        "log",
-        "-1",
-        "--format=%H%x00%s%x00%an%x00%ae%x00%as",
-        "--",
-        *(_rel(directory, p) for p in paths),
-    ]
-    out = _ask(argv, cwd=directory)
-    if not (out := (out or "").strip("\n")):
-        return LastWrite()
-    return LastWrite(*out.split("\0"))
-
-
 def untracked(directory: Path, paths: Iterable[str]) -> list[str]:
     """Find which of *paths* git is not tracking.
 
@@ -349,7 +291,7 @@ def require_free_index(directory: Path) -> None:
 
     A git command holds ``index.lock`` while it writes, and one that was
     killed leaves it for good: every commit after that fails, which for a
-    run is every output, after its recipe has run. Asked before work that
+    run is every result, after its recipe has run. Asked before work that
     ends in a commit, with the patience a live command deserves.
 
     Args:
@@ -382,7 +324,7 @@ def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     its annex object rather than copied — one copy on disk instead of two.
     It is safe precisely here: thin's hazard is editing a file in place,
     which rewrites the object under the key that names it, and lc never
-    does — the worker removes an output directory before rebuilding it, and
+    does — the worker removes a result's files before making it again, and
     an unlink leaves the object untouched. Setting it repository-wide would
     reach declared inputs instead, which a researcher adds with their own
     `git add` and whose tools very much do open files for update, so it is

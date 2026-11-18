@@ -22,12 +22,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from astra.api import Bytes
 from conftest import CLUSTER_ID, _Inline
 
-from lightcone.engine import assets, dataset, identity
+from lightcone.engine import content, dataset, identity, plan
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
-from lightcone.engine.worker import TaskResult
+from lightcone.engine.worker import TaskOutcome
 
 _SPEC = """
 spec_version: "0.1.0"
@@ -90,7 +91,7 @@ def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
 # ---- a run, end to end -----------------------------------------------------
 
 
-def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
+def test_every_result_is_made_and_committed(root: Path, inline: None) -> None:
     before = _commits(root)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -102,7 +103,7 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     assert not dataset.status(root)
 
 
-def test_an_output_and_its_record_land_in_one_commit(root: Path, inline: None) -> None:
+def test_a_result_and_its_record_land_in_one_commit(root: Path, inline: None) -> None:
     """One commit is one complete, self-describing materialization — the
     record can never come to describe other bytes than the ones beside it,
     and it is all lc writes beside them."""
@@ -136,7 +137,7 @@ def test_a_second_run_does_nothing_and_commits_nothing(root: Path, inline: None)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == []
-    assert report.current == ["first#baseline", "second#baseline"]
+    assert report.unchanged == ["first#baseline", "second#baseline"]
     assert report.up_to_date
     assert _commits(root) == after_first
 
@@ -219,7 +220,7 @@ def test_check_with_refresh_plans_what_is_behind(root: Path, inline: None) -> No
     assert not report.up_to_date
 
 
-def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
+def test_a_stale_result_is_stale_even_when_the_environment_also_moved(
     root: Path, inline: None
 ) -> None:
     """Both moved, and only one of them calls for work. Reporting `behind`
@@ -238,34 +239,37 @@ def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
 # ---- lc status -------------------------------------------------------------
 
 
-def test_status_names_the_commit_each_output_came_from(root: Path, inline: None) -> None:
-    """The verb's whole reason to exist: an output that is behind is not
+def test_status_names_the_commit_each_result_came_from(root: Path, inline: None) -> None:
+    """The verb's whole reason to exist: a result that is behind is not
     wrong, and this is where the code that produced it can be read back."""
     ran_against = dataset.head(root)
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     report = engine.status(root)
 
-    assert [o.output for o in report.outputs] == ["first#baseline", "second#baseline"]
-    assert all(o.status == "current" for o in report.outputs)
+    assert [r.result for r in report.results] == ["first#baseline", "second#baseline"]
+    assert all(r.state == "unchanged" for r in report.results)
     # The commit the tree was at when the run *started* — the code that
-    # produced the output, not the commit the run itself went on to make.
-    assert all(o.git_sha == ran_against for o in report.outputs)
-    assert report.counts == {"current": 2, "behind": 0, "stale": 0}
+    # produced the result, not the commit the run itself went on to make.
+    assert all(r.commit == ran_against for r in report.results)
+    assert report.counts == {"unchanged": 2, "behind": 0, "stale": 0, "missing": 0}
 
 
-def test_status_names_the_environment_each_output_ran_in(root: Path, inline: None) -> None:
-    """lc minted the name a record gives its environment, so lc is where
-    it is read: each output's beside the project's own, which is the one
-    a run made now would record."""
+def test_status_gives_astras_own_status_of_each_result(root: Path, inline: None) -> None:
+    """In JSON, as ASTRA's checker reports it: the record, which names the
+    environment each result ran in, where its bytes are, and each rule it
+    breaks by code. lc minted the environment's name, so the project's
+    own is beside them: the one a run made now would record."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    report = engine.status(root)
+    data = json.loads(json.dumps(engine.status(root).as_dict()))
 
-    assert report.environment == identity.environment(root)
-    assert [o.environment for o in report.outputs] == [report.environment] * 2
-    assert report.as_dict()["environment"] == report.environment
-    assert [o["environment"] for o in report.as_dict()["outputs"]] == [report.environment] * 2
+    assert data["environment"] == identity.environment(root)
+    for result in data["results"]:
+        astra = result["astra"]
+        assert (astra["state"], astra["bytes"]["state"]) == ("unchanged", "present")
+        assert astra["record"]["generated_by"]["environment"]["iri"] == data["environment"]
+        assert astra["record"]["address"] == result["result"]
 
 
 def test_status_reports_behind_after_the_environment_moves(
@@ -277,24 +281,26 @@ def test_status_reports_behind_after_the_environment_moves(
 
     report = engine.status(root)
 
-    assert report.counts == {"current": 0, "behind": 2, "stale": 0}
-    assert all(o.git_sha == made_at for o in report.outputs), "the commit it was made at"
-    assert "earlier environment" in report.outputs[0].why
+    assert report.counts == {"unchanged": 0, "behind": 2, "stale": 0, "missing": 0}
+    assert all(r.commit == made_at for r in report.results), "the commit it was made at"
+    assert "earlier environment" in report.results[0].why
     # Behind is exactly this: the record names another environment than
     # the project's own, and status shows both.
     assert report.environment == identity.environment(root) != made_in
-    assert all(o.environment == made_in for o in report.outputs)
+    assert all(
+        r.astra["record"]["generated_by"]["environment"]["iri"] == made_in
+        for r in report.results
+    )
 
 
-def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) -> None:
+def test_status_leaves_a_never_made_result_missing_and_without_a_commit(root: Path) -> None:
     """There is nothing to name — and an empty string rather than HEAD,
-    which would claim the output came from a commit that never made it."""
+    which would claim the result came from a commit that never made it."""
     report = engine.status(root)
 
-    assert report.counts == {"current": 0, "behind": 0, "stale": 2}
-    assert all(o.git_sha == "" and o.content_hash == "" for o in report.outputs)
-    assert all(o.environment == "" for o in report.outputs)
-    assert "no record" in report.outputs[0].why
+    assert report.counts == {"unchanged": 0, "behind": 0, "stale": 0, "missing": 2}
+    assert all(r.commit == "" and "record" not in r.astra for r in report.results)
+    assert "no record" in report.results[0].why
 
 
 def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
@@ -303,38 +309,23 @@ def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "notes.md").write_text("in progress\n")
 
-    assert engine.status(root).counts["current"] == 2
-
-
-def test_a_result_whose_bytes_are_not_its_records_is_stale(root: Path, inline: None) -> None:
-    """Written over after its run, committed or not: what is at its place
-    is not what its record describes, so it is made again — and so is
-    what reads it."""
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    (root / "results/baseline/first.txt").unlink()
-    (root / "results/baseline/first.txt").write_text("edited by hand\n")
-
-    first, second = engine.status(root).outputs
-
-    assert (first.status, second.status) == ("stale", "stale")
-    assert "aren't the ones its record gives" in first.why
-    assert second.why == "`first#baseline`, which it reads, is stale"
+    assert engine.status(root).counts["unchanged"] == 2
 
 
 def test_status_reports_a_result_reading_a_stale_one_as_stale(
     root: Path, inline: None
 ) -> None:
     """ASTRA finds nothing wrong with `second` in itself, and it is still
-    made from bytes the analysis no longer asks for: a result made from a
-    stale one is stale until that one is made again."""
+    made from bytes the analysis no longer asks for: stale through what it
+    reads, by entry, until that is made again."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _switch_method(root)
     dataset.save(root, [root], "switch method")
 
-    second = {o.output: o for o in engine.status(root).outputs}["second#baseline"]
+    second = {r.result: r for r in engine.status(root).results}["second#baseline"]
 
-    assert second.status == "stale"
-    assert second.why == "`first#baseline`, which it reads, is stale"
+    assert second.state == "stale"
+    assert second.why == "`first` has changed since this result read it"
 
 
 def test_asking_for_an_output_makes_what_it_is_made_of(root: Path, inline: None) -> None:
@@ -343,7 +334,7 @@ def test_asking_for_an_output_makes_what_it_is_made_of(root: Path, inline: None)
     assert report.made == ["first#baseline", "second#baseline"]
 
 
-def test_a_changed_decision_remakes_the_output_and_its_dependents(
+def test_a_changed_decision_remakes_the_result_and_its_dependents(
     root: Path, inline: None
 ) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -363,7 +354,7 @@ def _edit_first_recipe(root: Path, command: str) -> None:
     dataset.save(root, [spec], "edit the recipe")
 
 
-def test_a_changed_command_remakes_the_output_and_its_dependents(
+def test_a_changed_command_remakes_the_result_and_its_dependents(
     root: Path, inline: None
 ) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -388,7 +379,7 @@ def test_a_byte_identical_rebuild_stops_the_cascade(root: Path, inline: None) ->
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["first#baseline"]
-    assert report.current == ["second#baseline"]
+    assert report.unchanged == ["second#baseline"]
     assert _commits(root) == before + 1
 
 
@@ -455,12 +446,12 @@ def test_check_writes_nothing_and_commits_nothing(root: Path) -> None:
     assert _commits(root) == before
 
 
-def test_check_cascades_through_an_output_it_already_decided_to_rebuild(
+def test_check_cascades_through_a_result_it_already_decided_to_rebuild(
     root: Path, inline: None
 ) -> None:
     """Check mode cannot know whether a rebuild comes out byte-identical,
-    so it assumes it will not — the one place it is deliberately more
-    pessimistic than a worker."""
+    so it plans what reads a stale result too — the one place it is
+    deliberately more pessimistic than a worker."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     _switch_method(root)
     dataset.save(root, [root], "switch method")
@@ -468,7 +459,7 @@ def test_check_cascades_through_an_output_it_already_decided_to_rebuild(
     report = engine.check(root, [])
 
     assert "method" in report.planned["first#baseline"]
-    assert report.planned["second#baseline"] == "`first#baseline`, which it reads, would be remade"
+    assert report.planned["second#baseline"] == "`first` has changed since this result read it"
 
 
 def test_check_does_not_refuse_a_dirty_tree(root: Path) -> None:
@@ -589,7 +580,7 @@ def test_a_project_with_nothing_to_make_needs_no_cluster(
     monkeypatch.setattr(engine, "cluster_for_run", unexpected)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.up_to_date and report.current == ["first#baseline", "second#baseline"]
+    assert report.up_to_date and report.unchanged == ["first#baseline", "second#baseline"]
 
 
 @pytest.mark.parametrize("failing", ["first#baseline", "second#baseline"])
@@ -600,7 +591,7 @@ def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
     save = dataset.save
 
     def fail(root: Path, paths: list[Path], message: str) -> None:
-        if message.startswith(engine.datalad_run_subject(failing)):
+        if message.startswith(f"[DATALAD RUNCMD] {failing}"):
             raise ProjectError("git commit failed")
         save(root, paths, message)
 
@@ -620,9 +611,9 @@ def test_an_input_more_than_one_task_reads_is_hashed_once(
     spec = _consuming("data/catalog.fits").replace("inputs: [first]", "inputs: [first, catalog]")
     root = analysis(spec, files={"data/catalog.fits": "data"})
     hashed: list[Path] = []
-    real = assets.digest_file
+    real = content.digest_file
 
-    def digest_file(path: Path) -> assets.Digest:
+    def digest_file(path: Path) -> content.Digest:
         hashed.append(path)
         return real(path)
 
@@ -632,7 +623,7 @@ def test_an_input_more_than_one_task_reads_is_hashed_once(
         ) -> object:
             return fn(*pickle.loads(pickle.dumps(args)))
 
-    monkeypatch.setattr(assets, "digest_file", digest_file)
+    monkeypatch.setattr(content, "digest_file", digest_file)
     _cluster(monkeypatch, _Copied())
     first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(first.made) == 2
@@ -642,7 +633,7 @@ def test_an_input_more_than_one_task_reads_is_hashed_once(
         [catalog] = [i for i in made["generated_by"]["inputs"] if i["entry"] == "catalog"]
         assert (catalog["content_hash"], catalog["size"]) == real(root / "data/catalog.fits")
     second = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert len(second.current) == 2
+    assert len(second.unchanged) == 2
     assert hashed.count(root / "data/catalog.fits") == 1
 
 
@@ -802,7 +793,7 @@ def test_a_run_in_which_everything_failed_is_not_up_to_date(
     # nothing`, where the same empty `made` does mean up to date.
 
 
-def test_a_rebuild_that_fails_puts_the_previous_output_back(
+def test_a_rebuild_that_fails_puts_the_previous_result_back(
     root: Path, inline: None
 ) -> None:
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
@@ -830,7 +821,7 @@ def test_an_interrupted_run_retains_what_never_reported(
     dataset.save(root, [root], "edit both recipes")
 
     class _Interrupted(_Inline):
-        def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
+        def completed(self, handles: list[Any]) -> Iterator[TaskOutcome]:
             yield handles[0]
             raise KeyboardInterrupt
 
@@ -1058,23 +1049,30 @@ outputs:
 """
 
 
-def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
+def test_a_bytes_free_clone_fetches_the_inputs_a_remade_result_reads(
     analysis: Callable[..., Path], inline: None, tmp_path: Path
 ) -> None:
     """lc fetches declared inputs rather than telling anyone to — a clone
-    holding only pointers materializes straight to up-to-date, hashing
-    the same bytes the origin recorded. Without the fetch this run
-    *failed*: the worker's hash refused the pointer file."""
+    holding only pointers makes what is stale from the bytes the origin
+    had. Without the fetch the worker's hash refuses the pointer file."""
     root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-
     clone = _clone(root, tmp_path)
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.require_fetched(clone / "data" / "catalog.fits")
+    spec = clone / "astra.yaml"
+    spec.write_text(
+        spec.read_text().replace(
+            "cat {inputs.catalog} > {output}", "cat {inputs.catalog} > {output} && true"
+        )
+    )
+    dataset.save(clone, [spec], "change the recipe")
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / "data" / "catalog.fits")
 
-    again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
-    assert again.up_to_date, (again.failed, again.warnings)
+    assert report.made == ["copy"], (report.failed, report.warnings)
+    content.require_fetched(clone / "data" / "catalog.fits")
+    assert (clone / "results/copy.txt").read_text() == "stars\n"
     assert not dataset.status(clone)
 
 
@@ -1097,8 +1095,31 @@ def test_a_bytes_free_clone_fetches_a_result_a_remade_one_reads(
     report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["second#baseline"], (report.failed, report.warnings)
-    assert report.current == ["first#baseline"]
+    assert report.unchanged == ["first#baseline"]
     assert (clone / "results/baseline/second.txt").read_text() == "alpha\n"
+
+
+def test_content_another_tool_keeps_is_refused_before_anything_runs(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASTRA's checker says which tool keeps what a recipe reads. lc
+    fetches only from git-annex, and a recipe handed a Git LFS pointer
+    would read three lines of text for its data: the run is refused,
+    naming the command that fetches it, before any cluster is asked."""
+    pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{'a' * 64}\nsize 12\n"
+    root = analysis(_FETCH_SPEC, files={"data/catalog.fits": pointer})
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("a refused run contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert "data/catalog.fits — kept by Git LFS; `git lfs pull` fetches it" in str(raised.value)
+    assert not (root / "results/copy.txt").exists()
+    assert not dataset.status(root)
 
 
 def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
@@ -1113,8 +1134,8 @@ def test_a_bytes_free_clone_that_is_up_to_date_fetches_nothing(
     again = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert again.up_to_date, (again.failed, again.warnings)
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.require_fetched(clone / "data" / "catalog.fits")
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / "data" / "catalog.fits")
     assert not dataset.status(clone)
 
 
@@ -1169,7 +1190,7 @@ def test_a_clone_fetches_a_result_an_identical_rebuild_leaves_standing(
     report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
 
     assert report.ok, report.warnings
-    assert (report.made, report.current) == (["first", "third"], ["second"])
+    assert (report.made, report.unchanged) == (["first", "third"], ["second"])
     assert (clone / "results/third.txt").read_text() == "1\n"
     assert not dataset.status(clone)
 
@@ -1233,7 +1254,7 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     assert project_mod._env_is_current(root)
 
 
-def test_the_recorded_command_reproduces_the_output(
+def test_the_recorded_command_reproduces_the_result(
     root: Path,
     inline: None,
     engine_dist: tuple[str, Path],
@@ -1267,7 +1288,7 @@ def test_the_recorded_command_reproduces_the_output(
     # committed it with the bytes.
     rerun = json.loads((root / _FIRST_RECORD).read_text())
     assert rerun["content_hash"] == original["content_hash"]
-    assert (rerun["content_hash"], rerun["size"]) == assets.digest_file(
+    assert (rerun["content_hash"], rerun["size"]) == content.digest_file(
         root / "results/baseline/first.txt"
     )
     assert rerun["generated_by"]["commit"] == made_at
@@ -1365,7 +1386,7 @@ def test_execution_only_resources_do_not_block_read_only_commands(
         "command: cat", f"resources: {{{resource_spec}}}\n      command: cat",
     )
     root = analysis(spec)
-    assert len(engine.status(root).outputs) == 2
+    assert len(engine.status(root).results) == 2
     assert set(engine.check(root, []).planned) == {"first#baseline", "second#baseline"}
 
     _resource_cluster(monkeypatch)
@@ -1473,7 +1494,7 @@ def test_real_dask_respects_recipe_resource_reservations(
 
 
 
-def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
+def test_an_unchanged_gpu_result_needs_no_gpu_to_build_a_cpu_dependent(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = _SPEC.replace("command: echo", "resources: {gpus: 1}\n      command: echo")
@@ -1486,13 +1507,13 @@ def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
     _resource_cluster(monkeypatch)
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert report.ok
-    assert report.current == ["first#baseline"]
+    assert report.unchanged == ["first#baseline"]
     assert report.made == ["second#baseline"]
     assert (root / _FIRST_RECORD).read_bytes() == original
     assert not dataset.status(root)
 
 
-def test_current_outputs_are_not_submitted_to_dask(
+def test_unchanged_results_are_not_submitted_to_dask(
     root: Path, inline: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -1503,10 +1524,10 @@ def test_current_outputs_are_not_submitted_to_dask(
             return {}
 
         def submit(self, *args: Any, **kwargs: Any) -> Any:
-            pytest.fail("a current output was submitted to Dask")
+            pytest.fail("an unchanged result was submitted to Dask")
 
     _cluster(monkeypatch, NoExecution())
-    assert len(engine.materialize(root, [], cluster_id=CLUSTER_ID).current) == 2
+    assert len(engine.materialize(root, [], cluster_id=CLUSTER_ID).unchanged) == 2
 
 def test_a_real_cluster_still_fits_through_the_seam(root: Path, cluster_id: str) -> None:
     """The one test that starts Dask. The seam is only worth having if the
@@ -1522,7 +1543,7 @@ def test_a_processes_cluster_fits_through_the_seam(
 ) -> None:
     """Workers in other processes — the shape every venue beyond one
     machine has. Pins that the unit crosses the boundary by reference
-    (`worker.materialize`, `Task`, the checker's `Status`, `TaskResult`) and that
+    (`worker.materialize`, `Task`, the checker's `Status`, `TaskOutcome`) and that
     results travel back whole."""
 
     from distributed import Client, LocalCluster
@@ -1556,7 +1577,7 @@ def test_the_report_is_json_ready(root: Path, inline: None) -> None:
     assert data["made"] == ["first#baseline"]
 
 
-# ---- the foreign-write fact ------------------------------------------------
+# ---- bytes that are not the record's ---------------------------------------
 
 
 def _forge(path: Path, text: str) -> None:
@@ -1569,72 +1590,35 @@ def _forge(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def test_a_materialized_output_has_no_foreign_write(root: Path, inline: None) -> None:
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert all(not o.foreign_write for o in engine.status(root).outputs)
-
-
-def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None) -> None:
-    """The agent-forged-file fact: a hand-edited-and-committed output would
-    read `current` forever, because a skip returns the recorded digest —
-    so a directory last written by anything but its own run record is a
-    *contradiction*, and contradiction is what `stale` means."""
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    forged = root / "results" / "baseline" / "first.txt"
-    _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged], "tweak colors")
-
-    outputs = {o.output: o for o in engine.status(root).outputs}
-
-    assert outputs["first#baseline"].status == "stale"
-    forged_sha = dataset.last_writer(root, root / "results/baseline/first.txt").sha
-    assert outputs["first#baseline"].foreign_write == forged_sha
-    assert "tweak colors" in outputs["first#baseline"].why
-    assert "git show" in outputs["first#baseline"].why
-    assert not outputs["second#baseline"].foreign_write
-
-
-def test_check_plans_the_remake_of_a_foreign_written_output(
+def test_bytes_that_are_not_the_records_are_said_and_made_again(
     root: Path, inline: None
 ) -> None:
-    """Status and `--check` answer from one walk, so they cannot disagree
-    about a foreign write — and the gate exits nonzero over it."""
+    """Written over after its run and committed: ASTRA's checker finds the
+    record still holds and warns that the bytes at its place are not the
+    ones it gives. Status says so in ASTRA's words; nothing can fetch the
+    recorded bytes, so `--check` plans the result, and a run makes it."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
 
-    report = engine.check(root, [])
+    first, second = engine.status(root).results
+    assert first.state == "unchanged"
+    assert "aren't the ones its record gives" in first.why
+    assert [d["code"] for d in first.astra["why"]] == ["ABSENT_RESULT"]
+    assert (second.state, second.why) == ("unchanged", "")
 
-    assert any("tweak colors" in why for why in report.planned.values())
-    assert not report.up_to_date
+    planned = engine.check(root, [])
+    assert "aren't the ones its record gives" in planned.planned["first#baseline"]
+    assert planned.planned["second#baseline"] == "`first#baseline`, which it reads, would be remade"
+    assert not planned.up_to_date
 
 
-def test_the_foreign_write_fact_survives_a_bytes_free_clone(
-    root: Path, inline: None, tmp_path: Path
+def test_the_run_makes_them_again_and_what_reads_them_stands(
+    root: Path, inline: None
 ) -> None:
-    """History-based on purpose: content changes move pointers in git, so
-    the fact needs no annex content — where a rehash would have nothing to
-    hash."""
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    forged = root / "results" / "baseline" / "first.txt"
-    _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged], "tweak colors")
-    clone = _clone(root, tmp_path)
-
-    outputs = {o.output: o for o in engine.status(clone).outputs}
-
-    assert outputs["first#baseline"].status == "stale"
-    assert "tweak colors" in outputs["first#baseline"].why
-    assert outputs["first#baseline"].foreign_write
-    assert not outputs["second#baseline"].foreign_write
-
-
-def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None) -> None:
-    """`results/` is lc's to write — the same philosophy as the dirty-tree
-    refusal's path split — so a committed hand edit is remade, and the
-    rebuild's own run record becomes the last writer again."""
+    """The recipe gives back the bytes its record named, so what reads the
+    result is left alone: the cascade stops where the bytes do."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
@@ -1642,6 +1626,101 @@ def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert "first#baseline" in report.made
+    assert (report.made, report.unchanged) == (["first#baseline"], ["second#baseline"])
     assert forged.read_text() == "alpha\n"  # the recipe's bytes, not the hand's
-    assert all(not o.foreign_write for o in engine.status(root).outputs)
+    assert all(r.why == "" for r in engine.status(root).results)
+
+
+# ---- the rule over what ASTRA's checker finds in a real project ------------
+
+_CATALOG_CHAIN = """
+spec_version: "0.1.0"
+inputs:
+  catalog: {path: data/catalog.txt}
+decisions:
+  method:
+    options:
+      mcmc: {}
+      nested: {}
+universes:
+  baseline: {decisions: {method: mcmc}}
+outputs:
+  summary:
+    type: data
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cp {inputs.catalog} {output}
+  fit:
+    type: data
+    format: txt
+    inputs: [summary]
+    decisions: [method]
+    recipe:
+      command: cp {inputs.summary} {output}
+"""
+
+
+def test_before_any_run_every_planned_result_is_missing(
+    analysis: Callable[..., Path],
+) -> None:
+    root = analysis(_CATALOG_CHAIN, {"data/catalog.txt": "measured\n"})
+
+    statuses = plan.build(root).checked.statuses
+
+    assert set(statuses) == {"summary", "fit#baseline"}
+    for found in statuses.values():
+        verdict = plan.classify(found=found, environment=identity.environment(root))
+        assert verdict.state == "missing" and verdict.why
+
+
+def test_a_made_result_is_unchanged_until_something_it_is_made_from_moves(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The rule over the real checker, end to end: unchanged after its own
+    run, behind against another environment, stale once its input changes
+    — and the result reading it stale only through it, until it is made
+    again with the bytes it had."""
+    root = analysis(_CATALOG_CHAIN, {"data/catalog.txt": "measured\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    environment = identity.environment(root)
+
+    graph = plan.build(root)
+    for key, found in graph.checked.statuses.items():
+        assert (found.state, found.bytes, found.why) == ("unchanged", Bytes("present"), ())
+        assert found.record is not None
+        assert found.record.generated_by.environment.iri == environment
+        # The record gives the bytes as lc hashes them, which is how
+        # ASTRA's checker found them present.
+        made = graph.tasks[key].path
+        assert content.digest_file(made) == (found.record.content_hash, found.record.size)
+        assert plan.classify(found=found, environment=environment).state == "unchanged"
+        assert plan.classify(found=found, environment=environment + "0").state == "behind"
+    summary_made = graph.checked.statuses["summary"].record
+    assert summary_made is not None
+    recorded = (summary_made.content_hash, summary_made.size)
+
+    # Unlinked first: the results are copies of the catalog, so all three
+    # share one annex object, and a write in place would change them too.
+    (root / "data" / "catalog.txt").unlink()
+    (root / "data" / "catalog.txt").write_text("measured again\n")
+    dataset.save(root, [root / "data"], "new catalog")
+
+    statuses = plan.build(root).checked.statuses
+    summary = plan.classify(found=statuses["summary"], environment=environment)
+    assert summary.state == "stale" and "catalog" in summary.why
+    # `fit` moved only because `summary` did: ASTRA finds no rule it
+    # breaks itself, and names the entry. Whether it is remade turns on
+    # the bytes `summary` comes out with.
+    fit = statuses["fit#baseline"]
+    assert (fit.state, fit.why, fit.stale_inputs) == ("stale", (), ("summary",))
+    assert plan.classify(found=fit, environment=environment).state == "stale"
+    kept = plan.classify(found=fit, environment=environment, read={"summary": recorded})
+    assert kept.state == "unchanged"
+    remade = plan.classify(
+        found=fit, environment=environment, read={"summary": ("sha256:" + "0" * 64, 15)}
+    )
+    assert (remade.state, remade.why) == (
+        "stale",
+        "`summary` was remade with other bytes than this result read",
+    )

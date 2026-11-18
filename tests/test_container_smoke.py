@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import assets, container, dataset, identity, image
+from lightcone.engine import container, content, dataset, identity, image
 from lightcone.engine import materialize as engine
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError, child_env
@@ -262,8 +262,8 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
         dataset._git(["config", key, value], cwd=clone)
     dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
     # No annex content: the archive here is a pointer until rerun gets it.
-    with pytest.raises(assets.ContentNotFetchedError):
-        assets.require_fetched(clone / archive)
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / archive)
 
     proc = subprocess.run(
         [sys.executable, "-c", "from datalad.api import rerun; rerun('HEAD')"],

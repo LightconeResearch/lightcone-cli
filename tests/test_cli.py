@@ -392,7 +392,7 @@ def test_refresh_reaches_both_modes(
     ]
 
 
-def test_there_is_no_flag_to_stop_a_stale_output_being_remade(runner: CliRunner) -> None:
+def test_there_is_no_flag_to_stop_a_stale_result_being_remade(runner: CliRunner) -> None:
     """`--refresh` widens what a run does; nothing narrows it. An artifact
     that contradicts the analysis is remade, and deleting the directory is
     the user's own file operation if they want it gone instead."""
@@ -421,7 +421,7 @@ def test_a_run_with_nothing_to_do_exits_zero(
 def test_check_exits_nonzero_when_something_would_run(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An agent has to be able to ask "is this current?" and read the
+    """An agent has to be able to ask "is this up to date?" and read the
     answer off the exit status."""
     from lightcone.engine.materialize import MaterializeReport
 
@@ -527,7 +527,7 @@ def test_the_json_report_is_machine_readable(
         "ok": True,
         "up_to_date": False,
         "made": ["fit#baseline"],
-        "current": [],
+        "unchanged": [],
         "behind": {},
         "failed": [],
         "blocked": [],
@@ -571,29 +571,36 @@ def _status_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> None:
 _ENV = "urn:lightcone:env:sha256:now"
 
 
+def _astra(state: str, commit: str = "", environment: str = _ENV) -> dict[str, object]:
+    """A status as ASTRA's checker reports it in JSON, cut to what the
+    renderer reads."""
+    if not commit:
+        return {"state": state, "why": [{"code": "MISSING_RECORD"}]}
+    record = {"generated_by": {"commit": commit, "environment": {"iri": environment}}}
+    return {"state": state, "record": record}
+
+
 def _report() -> object:
-    from lightcone.engine.materialize import OutputStatus, StatusReport
+    from lightcone.engine.materialize import ResultStatus, StatusReport
 
     return StatusReport(
-        outputs=[
-            OutputStatus(
-                "first#baseline", "current", "", "3f2a1c8ffff", "sha256:one", _ENV
-            ),
-            OutputStatus(
+        results=[
+            ResultStatus("first#baseline", "unchanged", "", _astra("unchanged", "3f2a1c8ffff")),
+            ResultStatus(
                 "second#baseline",
                 "behind",
                 "made under an earlier environment",
-                "3f2a1c8ffff",
-                "sha256:two",
-                "urn:lightcone:env:sha256:old",
+                _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             ),
-            OutputStatus("third#baseline", "stale", "no record is at the place", "", "", ""),
+            ResultStatus(
+                "third#baseline", "missing", "no record is at the place", _astra("missing")
+            ),
         ],
         environment=_ENV,
     )
 
 
-def test_status_shows_each_output_its_state_and_its_commit(
+def test_status_shows_each_result_its_state_and_its_commit(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _status_stub(monkeypatch, _report())
@@ -601,7 +608,7 @@ def test_status_shows_each_output_its_state_and_its_commit(
     result = runner.invoke(main, ["status"])
 
     assert result.exit_code == 0
-    for fragment in ("first#baseline", "current", "behind", "stale", "3f2a1c8"):
+    for fragment in ("first#baseline", "unchanged", "behind", "missing", "3f2a1c8"):
         assert fragment in result.output
 
 
@@ -643,42 +650,7 @@ def test_build_on_a_direct_project_is_an_explanatory_no_op(
     assert "[tool.lightcone.image]" in result.output
 
 
-def test_status_renders_a_foreign_write_as_a_stale_output(
-    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A foreign write arrives as a stale with its message in `why`, so
-    the one rendering path covers it — and it does not change the exit
-    code: status reports."""
-    from lightcone.engine.materialize import OutputStatus, StatusReport
-
-    message = (
-        'last changed by 8d31f00 ("tweak colors", Ada, 2026-08-19) rather '
-        "than its own run, so the record no longer describes these "
-        "bytes — the next run remakes it; inspect first with `git show 8d31f00`"
-    )
-    report = StatusReport(
-        outputs=[
-            OutputStatus(
-                "first#baseline",
-                "stale",
-                message,
-                "3f2a1c8ffff",
-                "sha256:one",
-                _ENV,
-                foreign_write="8d31f00" + "0" * 33,
-            ),
-        ]
-    )
-    _status_stub(monkeypatch, report)
-
-    result = runner.invoke(main, ["status"])
-
-    assert result.exit_code == 0
-    assert "stale" in result.output
-    assert "8d31f00" in result.output
-
-
-def test_status_exits_zero_even_with_stale_outputs(
+def test_status_exits_zero_whatever_its_results_are(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """It reports; it does not gate. `lc materialize --check` is the gate,
@@ -701,34 +673,25 @@ def test_status_json_is_machine_readable(
         "image": None,
         "sandbox": "",
         "environment": _ENV,
-        "counts": {"current": 1, "behind": 1, "stale": 1},
-        "outputs": [
+        "counts": {"unchanged": 1, "behind": 1, "stale": 0, "missing": 1},
+        "results": [
             {
-                "output": "first#baseline",
-                "status": "current",
+                "result": "first#baseline",
+                "state": "unchanged",
                 "why": "",
-                "git_sha": "3f2a1c8ffff",
-                "content_hash": "sha256:one",
-                "environment": _ENV,
-                "foreign_write": "",
+                "astra": _astra("unchanged", "3f2a1c8ffff"),
             },
             {
-                "output": "second#baseline",
-                "status": "behind",
+                "result": "second#baseline",
+                "state": "behind",
                 "why": "made under an earlier environment",
-                "git_sha": "3f2a1c8ffff",
-                "content_hash": "sha256:two",
-                "environment": "urn:lightcone:env:sha256:old",
-                "foreign_write": "",
+                "astra": _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             },
             {
-                "output": "third#baseline",
-                "status": "stale",
+                "result": "third#baseline",
+                "state": "missing",
                 "why": "no record is at the place",
-                "git_sha": "",
-                "content_hash": "",
-                "environment": "",
-                "foreign_write": "",
+                "astra": _astra("missing"),
             },
         ],
         "warnings": [],

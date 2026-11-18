@@ -1,4 +1,4 @@
-"""Making one output — the unit of work, and the only thing that runs a recipe.
+"""Making one result — the unit of work, and the only thing that runs a recipe.
 
 Also an entry point:
 
@@ -7,7 +7,7 @@ Also an entry point:
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
 commit names, behind an engine-pinning ``uv run --no-project --with …`` —
 by version for a released engine, by source commit for a dev build. That
-is why it is a module rather than an ``lc`` verb: it makes the output
+is why it is a module rather than an ``lc`` verb: it makes the result
 unconditionally, commits nothing, and leaves the tree dirty by design —
 precisely the state ``lc materialize`` refuses to start from — so
 advertising it in ``lc --help`` would hand people a footgun.
@@ -35,9 +35,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, sandbox
+from lightcone.engine import container, content, dataset, identity, plan, sandbox
 from lightcone.engine.execution_resources import TaskResources
-from lightcone.engine.plan import Key, Task
+from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import (
     ProjectError,
     child_env,
@@ -56,11 +56,13 @@ _SHELL = "bash"
 
 
 @dataclass(frozen=True)
-class TaskResult:
+class TaskOutcome:
     """What one task did. Returned, never raised, and handed to dependents."""
 
-    key: Key
-    status: Literal["ok", "current", "behind", "failed", "blocked"]
+    id: ResultId
+    #: ``made`` by this task, left alone as ``unchanged`` or ``behind``, or
+    #: not made at all.
+    status: Literal["made", "unchanged", "behind", "failed", "blocked"]
     #: The hash and size of the result's bytes, as a record gives them.
     #: Present for the three states in which the bytes on disk are what
     #: the spec asks for — this is what a dependent records having read.
@@ -72,7 +74,7 @@ class TaskResult:
     notes: tuple[str, ...] = ()
 
     @property
-    def digest(self) -> assets.Digest:
+    def digest(self) -> content.Digest:
         """The hash and size of the result's bytes, as one value."""
         return self.content_hash, self.size
 
@@ -81,12 +83,12 @@ class TaskResult:
         """Whether a dependent may proceed on this result.
 
         Returns:
-            True for ``ok``, ``current`` and ``behind`` — the states in
+            True for ``made``, ``unchanged`` and ``behind`` — the states in
             which the bytes on disk are what the spec asks for. ``behind``
             is among them deliberately: it says the environment moved, not
-            that the artifact is wrong.
+            that the result is wrong.
         """
-        return self.status in ("ok", "current", "behind")
+        return self.status in ("made", "unchanged", "behind")
 
 
 @dataclass(frozen=True)
@@ -110,7 +112,7 @@ class RunContext:
     #: of the file the driver hashed, and its digest. A task that finds
     #: that very file takes the digest; one that finds any other hashes
     #: what it reads.
-    hashed: Mapping[Path, tuple[tuple[int, int, int], assets.Digest]] = field(
+    hashed: Mapping[Path, tuple[tuple[int, int, int], content.Digest]] = field(
         default_factory=dict
     )
 
@@ -151,10 +153,9 @@ def materialize(
     found: Status,
     context: RunContext,
     refresh: bool,
-    foreign: dataset.LastWrite | None,
-    *upstream: TaskResult,
+    *upstream: TaskOutcome,
     output: Callable[[str, bytes], None] | None = None,
-) -> TaskResult:
+) -> TaskOutcome:
     """Make *task* if it needs making. What Dask submits, once per task.
 
     Where "the worker never raises" is enforced. Dask re-raises a task's
@@ -170,10 +171,6 @@ def materialize(
             ASTRA.
         context: The run's driver-resolved facts.
         refresh: Whether to remake a result that is merely behind.
-        foreign: The commit that last wrote the result's files in place
-            of its own run, or ``None`` — answered by the driver, because
-            history is git's; handed to the one classification rule,
-            where it is `stale`.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -183,9 +180,9 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, found, context, refresh, foreign, upstream, output)
+        return _materialize(root, task, found, context, refresh, upstream, output)
     except Exception as e:  # the contract is that this function returns
-        return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
+        return TaskOutcome(task.id, "failed", reason=f"{type(e).__name__}: {e}")
 
 
 def _materialize(
@@ -194,24 +191,22 @@ def _materialize(
     found: Status,
     context: RunContext,
     refresh: bool,
-    foreign: dataset.LastWrite | None,
-    upstream: tuple[TaskResult, ...],
+    upstream: tuple[TaskOutcome, ...],
     output: Callable[[str, bytes], None] | None,
-) -> TaskResult:
-    reported = {u.key: u for u in upstream if u.usable}
+) -> TaskOutcome:
+    reported = {u.id: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
-        return TaskResult(
-            task.key, "blocked", reason=f"upstream did not finish: {', '.join(absent)}"
+        return TaskOutcome(
+            task.id, "blocked", reason=f"upstream did not finish: {', '.join(absent)}"
         )
 
     # Every upstream has been made or kept, so the bytes this result would
     # read are known: a rebuild that came out byte-identical leaves it
     # standing.
-    verdict = assets.classify(
+    verdict = plan.classify(
         found=found,
         environment=context.environment,
         read={entry: reported[key].digest for entry, key in task.produced_by.items()},
-        foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
         return execute(root, task, reported, context, output=output)
@@ -221,10 +216,10 @@ def _materialize(
     # the files are stand-ins, and rehashing them would quietly report a
     # different result.
     record = found.record
-    assert record is not None and verdict.status != "stale"  # the branch above
-    return TaskResult(
-        task.key,
-        verdict.status,
+    assert record is not None and verdict.state in ("unchanged", "behind")  # the branch above
+    return TaskOutcome(
+        task.id,
+        verdict.state,
         content_hash=record.content_hash,
         size=record.size,
         reason=verdict.why,
@@ -239,11 +234,11 @@ def _materialize(
 def execute(
     root: Path,
     task: Task,
-    upstream: Mapping[Key, TaskResult],
+    upstream: Mapping[ResultId, TaskOutcome],
     context: RunContext,
     *,
     output: Callable[[str, bytes], None] | None = None,
-) -> TaskResult:
+) -> TaskOutcome:
     """Run *task*'s recipe, and record what it produced and what it read.
 
     What the result owns is removed first: a file left from a previous run
@@ -258,21 +253,21 @@ def execute(
     Args:
         root: The project root.
         task: The result to make.
-        upstream: The result of each task this one reads, by key: what
+        upstream: The outcome of each task this one reads, by id: what
             was hashed once, by the task that made or kept it, is never
             hashed again here.
         context: The run's driver-resolved facts.
         output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
-        ``ok`` with the hash and size of the result's bytes, or
+        ``made`` with the hash and size of the result's bytes, or
         ``failed``. Commits nothing and never touches git.
     """
     from astra import api
 
     resources = TaskResources.parse(task.resources)
     if moved := _gate(root, context.environment):
-        return TaskResult(task.key, "failed", reason=moved)
+        return TaskOutcome(task.id, "failed", reason=moved)
 
     # What the recipe is about to read, looked at before it runs: a file
     # this clone does not hold the content of is a refusal that should
@@ -282,8 +277,8 @@ def execute(
     watched: dict[str, tuple[Path, tuple[int, int, int]]] = {}
     for entry, path in task.inputs.items():
         try:
-            assets.require_fetched(path)
-            stamp = assets.stamp(path)
+            content.require_fetched(path)
+            stamp = content.stamp(path)
             known = context.hashed.get(path)
             if (producer := task.produced_by.get(entry)) is not None:
                 digest = upstream[producer].digest
@@ -292,10 +287,10 @@ def execute(
                 # of the run that reads it.
                 digest = known[1]
             else:
-                digest = assets.digest_file(path)
+                digest = content.digest_file(path)
         except (OSError, ProjectError) as e:
-            return TaskResult(
-                task.key,
+            return TaskOutcome(
+                task.id,
                 "failed",
                 reason=(
                     f"the input `{entry}` ({plan.declared_path(root, path)}) cannot be "
@@ -308,27 +303,27 @@ def execute(
     # Never the parent directory: siblings share it, and under Dask they
     # are being written concurrently. What this result owns there is its
     # record and any file named after it — the glob rather than the one
-    # declared path, so a spec that re-declares the output in another
+    # declared path, so a spec that re-declares the result in another
     # format leaves no stale payload behind (`Task.owns`).
-    task.output_path.parent.mkdir(parents=True, exist_ok=True)
+    task.path.parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
         context.runtime,
         [path for path in task.inputs.values() if path.exists()],
-        write_dir=task.output_path.parent,
+        write_dir=task.path.parent,
         use_gpus=resources.gpus > 0,
     )
     with sandbox.scope(policy):
-        # Validate device visibility and container support before removing outputs.
-        for record in task.records:
+        # Validate device visibility and container support before removing what it owns.
+        for record in task.record_paths:
             record.unlink(missing_ok=True)
-        for stale in task.output_path.parent.glob(f"{task.name}.*"):
+        for stale in task.path.parent.glob(f"{task.name}.*"):
             if stale.is_file() or stale.is_symlink():
                 stale.unlink()
         started = datetime.now(UTC)
         outcome = sandbox.run(
             container.backend(context.runtime),
             policy,
-            [_SHELL, "-c", task.recipe],
+            [_SHELL, "-c", task.command],
             cwd=root,
             prefix=uv_prefix(root),
             env=child_env(),
@@ -337,24 +332,24 @@ def execute(
     finished = datetime.now(UTC)
 
     if outcome.returncode != 0:
-        return TaskResult(
-            task.key,
+        return TaskOutcome(
+            task.id,
             "failed",
             reason=f"the recipe exited {outcome.returncode}",
             notes=outcome.notes,
         )
     if moved := _gate(root, context.environment):
-        return TaskResult(task.key, "failed", reason=moved, notes=outcome.notes)
+        return TaskOutcome(task.id, "failed", reason=moved, notes=outcome.notes)
     # A declared input is a file in the project's tree, which only a
     # sandbox makes read-only: written in place, the record would name
     # bytes that no longer exist anywhere.
     if rewritten := [
         entry
         for entry, (path, stamp) in watched.items()
-        if not path.is_file() or assets.stamp(path) != stamp
+        if not path.is_file() or content.stamp(path) != stamp
     ]:
-        return TaskResult(
-            task.key,
+        return TaskOutcome(
+            task.id,
             "failed",
             reason=(
                 f"the recipe changed what it only reads: {', '.join(rewritten)}. "
@@ -368,13 +363,13 @@ def execute(
     # recipe worked and we could not record it" are different problems. A
     # result is one file's bytes: a symlink would commit a link to
     # something no record describes, and a folder is not one file.
-    made = task.output_path
+    made = task.path
     if made.is_symlink() or not made.is_file():
         found = (
             "a symlink" if made.is_symlink() else "a directory" if made.is_dir() else "nothing"
         )
-        return TaskResult(
-            task.key,
+        return TaskOutcome(
+            task.id,
             "failed",
             reason=(
                 f"the recipe exited 0 but left {found} at {plan.declared_path(root, made)}"
@@ -383,7 +378,7 @@ def execute(
         )
 
     try:
-        content_hash, size = assets.digest_file(made)
+        content_hash, size = content.digest_file(made)
         # ASTRA's record, at each place the result has: what a checker
         # compares with the analysis as it then is.
         api.write_records(
@@ -403,13 +398,13 @@ def execute(
             ),
         )
     except (OSError, ValueError, ProjectError) as e:
-        return TaskResult(
-            task.key,
+        return TaskOutcome(
+            task.id,
             "failed",
-            reason=f"the recipe finished but its output could not be recorded: {e}",
+            reason=f"the recipe finished but its result could not be recorded: {e}",
             notes=outcome.notes,
         )
-    return TaskResult(task.key, "ok", content_hash=content_hash, size=size, notes=outcome.notes)
+    return TaskOutcome(task.id, "made", content_hash=content_hash, size=size, notes=outcome.notes)
 
 
 def _instant(moment: datetime) -> str:
@@ -437,7 +432,7 @@ def lc_version() -> str:
     so the two cannot disagree about which engine ran.
 
     Cached: the metadata scan walks ``sys.path``, both callers are once
-    per output, and an installed version cannot change under a running
+    per result, and an installed version cannot change under a running
     process.
     """
     from importlib.metadata import PackageNotFoundError, version
@@ -488,10 +483,10 @@ def main(argv: list[str]) -> int:
         root = declared_project()
         # The graph — and with it the task lookup — before any converge:
         # a typo'd target must cost nothing and mask nothing, and a
-        # failing sync must not bury "no output `x`" under its own error.
+        # failing sync must not bury "no result `x`" under its own error.
         graph = plan.build(root)
         if (task := graph.tasks.get(argv[0])) is None:
-            print(f"no output `{argv[0]}` in this project", file=sys.stderr)
+            print(f"no result `{argv[0]}` in this project", file=sys.stderr)
             return 2
         # The record names HEAD, so the tree has to be HEAD's: all a rerun
         # has changed by now is this result's own files, which it removed.
@@ -515,7 +510,7 @@ def main(argv: list[str]) -> int:
             root, build=False, use_gpus=TaskResources.parse(task.resources).gpus > 0,
         )
         container.converge(runtime)
-        result = execute(
+        made = execute(
             root,
             task,
             _from_disk(root, graph, task),
@@ -529,15 +524,15 @@ def main(argv: list[str]) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    for note in result.notes:
+    for note in made.notes:
         print(note, file=sys.stderr)
-    if result.status != "ok":
-        print(f"error: {result.reason}", file=sys.stderr)
+    if made.status != "made":
+        print(f"error: {made.reason}", file=sys.stderr)
         return 1
     return 0
 
 
-def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[Key, TaskResult]:
+def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[ResultId, TaskOutcome]:
     """What *task* reads of other results, from the tree as it stands.
 
     There is no graph in flight to take them from. Each upstream has to
@@ -547,20 +542,20 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[Key, TaskResul
     """
     upstream = {}
     for key in task.depends_on:
-        if graph.found[key].record is None:
+        if graph.checked.statuses[key].record is None:
             raise ProjectError(
-                f"`{key}`, which `{task.key}` reads, has no valid record. "
+                f"`{key}`, which `{task.id}` reads, has no valid record. "
                 "Run `lc materialize <cluster>` instead."
             )
-        path = graph.tasks[key].output_path
+        path = graph.tasks[key].path
         try:
-            assets.require_fetched(path)
-            upstream[key] = TaskResult(key, "current", *assets.digest_file(path))
+            content.require_fetched(path)
+            upstream[key] = TaskOutcome(key, "unchanged", *content.digest_file(path))
         except OSError as e:
             # This is the entry point a `datalad rerun` lands on, so it
             # names what it could not read rather than unwinding a
             # traceback at whoever reads that.
-            raise ProjectError(f"`{key}`, which `{task.key}` reads, cannot be read: {e}") from e
+            raise ProjectError(f"`{key}`, which `{task.id}` reads, cannot be read: {e}") from e
     return upstream
 
 

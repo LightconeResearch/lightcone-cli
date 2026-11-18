@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import assets, dataset, project, templates
+from lightcone.engine import content, dataset, project, templates
 
 
 @pytest.fixture
@@ -212,8 +212,8 @@ def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
 
     for name in ("thin.bin", "fat.bin"):
         dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
-        with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
-            assets.require_fetched(output / name)
+        with pytest.raises(content.ContentNotFetchedError, match="not in this clone"):
+            content.require_fetched(output / name)
 
 
 def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
@@ -229,8 +229,8 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 
     assert (output / "fit.csv").is_symlink()
     assert not (output / "fit.csv").exists()
-    with pytest.raises(assets.ContentNotFetchedError, match="not in this clone"):
-        assets.require_fetched(output / "fit.csv")
+    with pytest.raises(content.ContentNotFetchedError, match="not in this clone"):
+        content.require_fetched(output / "fit.csv")
 
 
 # ---- committing ------------------------------------------------------------
@@ -312,7 +312,7 @@ def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
     assert (output / "fit.csv").read_text() == "good\n"
 
 
-def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None:
+def test_restore_of_a_never_committed_result_is_not_an_error(repo: Path) -> None:
     """A first materialization has nothing in HEAD to go back to, and the
     naive `git checkout HEAD -- <dir>` exits nonzero on the pathspec."""
     output = repo / "results" / "baseline" / "best_fit"
@@ -325,7 +325,7 @@ def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None
     assert not (output / "fit.csv").exists()
 
 
-def test_restore_of_a_staged_but_unborn_output_does_not_raise(repo: Path) -> None:
+def test_restore_of_a_staged_but_unborn_result_does_not_raise(repo: Path) -> None:
     """The state an interrupted `save` leaves: staged, never committed.
     `ls-files --with-tree=HEAD` calls such a path known while
     `checkout HEAD --` then exits nonzero on it — so a guard built on the
@@ -792,53 +792,3 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
     assert "not found" in added.stderr
     staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
     assert not staged.stdout.startswith("/annex/objects/")
-
-
-
-# ---- who last wrote a path -------------------------------------------------
-
-
-def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:
-    """The foreign-write fact's whole mechanism: every output is committed,
-    so a hand edit needs a commit, and history names it."""
-    out = repo / "results" / "fit"
-    out.mkdir()
-    (out / "value.txt").write_text("42\n")
-    dataset.save(repo, [out], "[DATALAD RUNCMD] fit [baseline]\n\nrecord body")
-
-    write = dataset.last_writer(repo, out)
-    assert write and write.sha and write.date
-    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
-    assert (write.author, write.email) == ("Test", "t@example.com")
-
-    (out / "value.txt").write_text("curated\n")
-    dataset.save(repo, [out], "tweak colors")
-    assert dataset.last_writer(repo, out).subject == "tweak colors"
-
-
-def test_last_writer_of_an_untouched_path_is_empty(repo: Path) -> None:
-    assert not dataset.last_writer(repo, repo / "results" / "never")
-
-
-def test_last_writer_answers_inside_an_enclosing_repository(
-    tmp_path: Path, real_tools: None
-) -> None:
-    """A project can sit inside a larger repository, and the answer must be
-    about the project's own subdirectory — a later commit elsewhere in the
-    tree must not become every output's last writer."""
-    outer = tmp_path / "outer"
-    project_root = outer / "project"
-    out = project_root / "results" / "fit"
-    out.mkdir(parents=True)
-    (out / "value.txt").write_text("42\n")
-    dataset.init_git(outer)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=outer)
-    dataset._git(["add", "-A", "."], cwd=outer)
-    dataset._git(["commit", "-q", "-m", "[DATALAD RUNCMD] fit [baseline]"], cwd=outer)
-    (outer / "unrelated.txt").write_text("someone else's work\n")
-    dataset._git(["add", "-A", "."], cwd=outer)
-    dataset._git(["commit", "-q", "-m", "outer edit"], cwd=outer)
-
-    write = dataset.last_writer(project_root, out)
-    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"

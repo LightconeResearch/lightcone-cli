@@ -33,7 +33,7 @@ uv add numpy
 # When you are done with your edits, commit:
 git add -A && git commit -m "First analysis"
 CLUSTER=$(lc compute launch --wait)
-# Generate outputs with full provenance tracking
+# Make every result, each committed with its record
 lc materialize "$CLUSTER"
 lc compute down "$CLUSTER"
 ```
@@ -44,7 +44,7 @@ drafted with any AI coding assistant.
 ## Capabilities
 
 - **Multiverse analysis** — declare methodological decisions with multiple defensible options; `lc` materializes your analysis across every universe you define
-- **Provenance by construction** — every output is committed to git together with its ASTRA provenance record and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
+- **Provenance by construction** — every result is committed to git together with its ASTRA provenance record and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
 - **Locked, isolated execution** — a project's environment is `pyproject.toml` + `uv.lock`; recipes run in it under a sandbox (Landlock on Linux, Seatbelt on macOS) that keeps undeclared files out and stray writes contained
 - **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; allocate local or Slurm Dask clusters explicitly with `lc compute`, then pass the cluster name or full ID to `run` or `materialize`
 
