@@ -765,6 +765,22 @@ def test_an_analysis_git_does_not_hold_is_refused(root: Path, inline: None) -> N
     assert not (root / "results/baseline").exists()
 
 
+def test_an_analysis_committed_to_the_annex_is_refused(root: Path, inline: None) -> None:
+    """An annexed file is committed as a pointer to its bytes: with them
+    here, the tree holds the analysis and the commit a record names holds
+    none to check the result against."""
+    attributes = root / ".gitattributes"
+    attributes.write_text(attributes.read_text() + "astra.yaml annex.largefiles=anything\n")
+    # Out of the index first: git-annex leaves a file git already holds in git.
+    dataset._git(["rm", "-q", "--cached", "astra.yaml"], cwd=root)
+    dataset.save(root, [attributes, root / "astra.yaml"], "annex the analysis")
+    pointer = dataset._git(["cat-file", "-p", "HEAD:astra.yaml"], cwd=root)
+    assert pointer.startswith("/annex/objects/") and not dataset.status(root)
+
+    with pytest.raises(ProjectError, match="astra.yaml is not in git as a file of its own"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
 def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not any("in flight" in w for w in report.warnings)
@@ -914,14 +930,18 @@ def test_a_record_another_filter_takes_is_refused(root: Path, inline: None) -> N
     )
 
 
-def test_a_record_an_expression_annexes_is_refused_before_it_is_committed(
+def test_a_record_an_expression_annexes_is_refused_and_the_tree_left_as_it_was(
     root: Path, inline: None
 ) -> None:
     """An `annex.largefiles` expression can turn on the bytes, which do not
     exist before the run, so what git staged is the answer: a record that
-    would land in the annex is committed by nothing, and nothing is left
-    staged."""
+    would land in the annex is committed by nothing, and what the task made
+    goes, as a failed task's does. The result and record the last run made
+    stand, and the tree is clean for the next run."""
+    assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).ok
+    record = (root / _FIRST_RECORD).read_text()
     _rules(root, ".gitattributes", lambda text: text + ".astra/** annex.largefiles=largerthan=1b\n")
+    _rules(root, "astra.yaml", lambda text: text.replace("> {output}\n", "> {output} && true\n", 1))
     head = dataset.head(root)
 
     with pytest.raises(ProjectError, match="staged in the annex") as raised:
@@ -929,7 +949,28 @@ def test_a_record_an_expression_annexes_is_refused_before_it_is_committed(
 
     assert ".astra/records/baseline/first.json" in str(raised.value)
     assert dataset.head(root) == head
-    assert not dataset._git(["diff", "--cached", "--name-only"], cwd=root).strip()
+    assert (root / _FIRST_RECORD).read_text() == record
+    assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
+    assert not dataset.status(root)
+
+
+def test_a_save_moves_the_branch_by_its_own_commit_alone(root: Path, inline: None) -> None:
+    """What a save tells git-annex is committed to git-annex's own branch,
+    and nothing else moves: a `synced/` branch a `git annex sync` left
+    pending is not merged into the one checked out in the middle of a run,
+    as `git annex merge` would (*measured*)."""
+    branch = dataset._git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root).strip()
+    before = dataset.head(root)
+    dataset._git(["checkout", "-q", "-b", f"synced/{branch}"], cwd=root)
+    (root / "notes.md").write_text("brought by a sync, not merged yet\n")
+    dataset.save(root, [root / "notes.md"], "a change from another clone")
+    dataset._git(["checkout", "-q", branch], cwd=root)
+
+    assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).ok
+
+    added = dataset._git(["rev-list", f"{before}..HEAD"], cwd=root).split()
+    assert len(added) == 1
+    assert not (root / "notes.md").exists()
 
 
 def test_a_clone_where_git_annex_was_never_set_up_is_refused(
@@ -969,13 +1010,12 @@ def test_a_clone_made_right_after_a_run_can_fetch_what_it_committed(
 # ---- what a result owns ------------------------------------------------------
 
 
-def test_a_result_declared_in_another_format_takes_its_earlier_file_with_it(
+def test_a_result_declared_in_another_format_leaves_its_earlier_file_alone(
     root: Path, inline: None
 ) -> None:
-    """The format names the file, so a re-declared one is a new file: the
-    file the last run of the result committed goes with the commit that
-    makes the new one. A file merely named like the result is no output's,
-    and stays, committed or not."""
+    """The format names the file, so a re-declared one is a new artifact.
+    The earlier file is only no longer declared, and nothing says it should
+    go: it stays committed, as does a file merely named like the result."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
     notes = root / "results/baseline/first.notes"
     notes.write_text("kept beside the result by hand\n")
@@ -990,8 +1030,12 @@ def test_a_result_declared_in_another_format_takes_its_earlier_file_with_it(
 
     assert report.made == ["first#baseline"], (report.failed, report.warnings)
     held = dataset._git(["ls-tree", "--name-only", "HEAD", "--", "results/baseline/"], cwd=root)
-    assert held.split() == ["results/baseline/first.csv", "results/baseline/first.notes"]
-    assert not (root / "results/baseline/first.txt").exists()
+    assert held.split() == [
+        "results/baseline/first.csv",
+        "results/baseline/first.notes",
+        "results/baseline/first.txt",
+    ]
+    assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
     assert notes.read_text() == "kept beside the result by hand\n"
     assert not dataset.status(root)
 

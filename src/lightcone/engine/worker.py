@@ -128,10 +128,10 @@ def require_in_commit(root: Path) -> None:
     A record names a commit, and two things are read back from it: the
     analysis, which ASTRA's checker compares the result with, and the
     files lc recreates the environment from, which its IRI names. A clean
-    tree does not say either is there: an ignored file is clean, and a
-    symlink is committed as the path it points to, not as the bytes read
-    through it. Asked by whoever owns a run, before it writes a record:
-    the driver, and the rerun entry point.
+    tree does not say either is there: an ignored file is clean, a symlink
+    is committed as the path it points to, and an annexed file as a
+    pointer, not as the bytes read through either. Asked by whoever owns a
+    run, before it writes a record: the driver, and the rerun entry point.
 
     Args:
         root: The project root.
@@ -143,17 +143,17 @@ def require_in_commit(root: Path) -> None:
     missing = dataset.not_in_git(root, [SPEC_FILENAME, *environment])
     if SPEC_FILENAME in missing:
         raise ProjectError(
-            f"{SPEC_FILENAME} is not in git as a file of its own — untracked, or a "
-            "symlink — so the commit a record names would hold no analysis to check "
-            "the result against. Commit the file itself, and remove whatever "
+            f"{SPEC_FILENAME} is not in git as a file of its own — untracked, a symlink "
+            "or annexed — so the commit a record names would hold no analysis to check "
+            "the result against. Commit the file itself, in git, and remove whatever "
             ".gitignore rule keeps it out."
         )
     if missing:
         raise ProjectError(
-            f"{', '.join(missing)} — not in git as files of their own (untracked, or a "
-            "symlink), so the commit a record names could not recreate the environment "
-            "its recipe ran in (UNRECREATABLE_ENVIRONMENT). Commit each file itself, and "
-            "remove whatever .gitignore rule keeps it out."
+            f"{', '.join(missing)} — not in git as files of their own (untracked, a "
+            "symlink or annexed), so the commit a record names could not recreate the "
+            "environment its recipe ran in (UNRECREATABLE_ENVIRONMENT). Commit each file "
+            "itself, in git, and remove whatever .gitignore rule keeps it out."
         )
 
 

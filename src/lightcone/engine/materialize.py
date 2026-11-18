@@ -556,24 +556,19 @@ def _consume(
         report.notes.extend([f"{name}:", *outcome.notes])
 
     if outcome.status == "made":
-        owned = [plan.declared_path(root, path) for path in (task.path, *task.record_paths)]
-        # The file the last run of this result committed, where that is not
-        # its file now: its format was declared again, and the earlier file
-        # goes with the commit that makes the new one.
-        earlier = [
-            path
-            for path in _last_committed(root, task)
-            if path not in owned and dataset._git_ok(["cat-file", "-e", f"HEAD:{path}"], cwd=root)
-        ]
-        for path in earlier:
-            (root / path).unlink(missing_ok=True)
-        dataset.save(
-            root,
-            [*_owned(root, task), *(f":(literal){path}" for path in earlier)],
-            run_record(root, task, dsid, runtime),
-            annexed=[task.path],
-            in_git=task.record_paths,
-        )
+        try:
+            dataset.save(
+                root,
+                _owned(root, task),
+                run_record(root, task, dsid, runtime),
+                annexed=[task.path],
+                in_git=task.record_paths,
+            )
+        except ProjectError:
+            # Not committed, so what the task left goes, as a failed task's
+            # does: the tree is as the run found it.
+            dataset.restore(root, _owned(root, task))
+            raise
         report.made.append(name)
         return
 
@@ -958,14 +953,12 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
     if runtime.mode == "containerized":
         info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
-    return f"{_RUN_SUBJECT} {task.id}\n\n{_RECORD_BEGINS}\n{body}\n{_RECORD_ENDS}"
-
-
-#: How datalad frames a run record in a commit message: the subject's
-#: prefix, and the lines either side of the record.
-_RUN_SUBJECT = "[DATALAD RUNCMD]"
-_RECORD_BEGINS = "=== Do not change lines below ==="
-_RECORD_ENDS = "^^^ Do not change lines above ^^^"
+    return (
+        f"[DATALAD RUNCMD] {task.id}\n\n"
+        "=== Do not change lines below ===\n"
+        f"{body}\n"
+        "^^^ Do not change lines above ^^^"
+    )
 
 
 def _engine_requirement() -> str:
@@ -1053,27 +1046,6 @@ def _graph(
     if targets:
         graph = graph.closure(graph.resolve(list(targets)))
     return graph, environment
-
-
-def _last_committed(root: Path, task: Task) -> list[str]:
-    """What the last run of *task*'s result committed, from the project root.
-
-    lc's own run record says, in the last commit that wrote the result's
-    record: its ``outputs`` are the result's file and its records as they
-    were then. A commit that is not this result's run record names nothing,
-    and nothing else is read from history. A file merely named like the
-    result is no output's, so it is never taken for its earlier file.
-    """
-    record = plan.declared_path(root, task.record_paths[0])
-    message = dataset._git(["log", "-1", "--format=%B", "--", record], cwd=root)
-    if not message.startswith(f"{_RUN_SUBJECT} {task.id}\n"):
-        return []
-    body = message.partition(f"{_RECORD_BEGINS}\n")[2].partition(f"\n{_RECORD_ENDS}")[0]
-    try:
-        outputs = json.loads(body)["outputs"]
-    except (ValueError, KeyError, TypeError):
-        return []
-    return [path for path in outputs if isinstance(path, str)]
 
 
 def _owned(root: Path, task: Task) -> list[str]:

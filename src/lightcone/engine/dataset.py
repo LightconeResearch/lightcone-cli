@@ -268,31 +268,37 @@ def dataset_id(directory: Path) -> str:
 
 
 def not_in_git(directory: Path, paths: Iterable[str]) -> list[str]:
-    """Find which of *paths* git does not hold as files of their own.
+    """Find which of *paths* git does not hold as the bytes in the tree.
 
     Asked of the index rather than of ``status``, because an ignored file
     is neither tracked nor a change: a tree can be clean without holding
-    it. And a symlink git tracks is held as the path it points to, not as
-    the bytes read through it.
+    it. A symlink git tracks is held as the path it points to, and an
+    annexed file as a pointer to its bytes, so what is held is compared
+    with the file's own bytes, hashed as git would with no filter.
 
     Args:
         directory: The project root.
         paths: Files, from the project root.
 
     Returns:
-        Those the index does not hold, or holds as a symlink or a
-        submodule, in the order given.
+        Those the index does not hold as their own bytes — untracked, a
+        symlink, a submodule or annexed — in the order given.
     """
     paths = list(paths)
     listed = _git(["ls-files", "-s", "-z", "--", *paths], cwd=directory).split("\0")
     # `<mode> <object> <stage>\t<path>`: a file's own bytes are mode 100644
     # or 100755.
-    files = {
-        entry.partition("\t")[2]
+    held = {
+        entry.partition("\t")[2]: entry.split(" ")[1]
         for entry in listed
         if entry.startswith(("100644 ", "100755 "))
     }
-    return [path for path in paths if path not in files]
+    files = [path for path in held if not (directory / path).is_symlink()]
+    hashed = (
+        _git(["hash-object", "--no-filters", "--", *files], cwd=directory).split() if files else []
+    )
+    own = {path for path, blob in zip(files, hashed, strict=True) if held[path] == blob}
+    return [path for path in paths if path not in own]
 
 
 def require_free_index(directory: Path) -> None:
@@ -379,9 +385,10 @@ def save(
     git-annex keeps what the add told it — that this repository holds the
     content — in its journal, until one of its own commands commits that to
     its branch; a clone made before then is told of no copy, and cannot
-    fetch what was just stored (*measured*). ``git annex merge`` is that
-    command here: it commits the journal, and merges only what any
-    git-annex command would.
+    fetch what was just stored (*measured*). The command here is a sync of
+    the git-annex branch alone, with no remote and no content: never ``git
+    annex merge``, which merges a pending ``synced/`` branch into the one
+    checked out (*measured*), in the middle of a run.
 
     Args:
         directory: The repository root.
@@ -434,7 +441,11 @@ def save(
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
     _git([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
-    _git(["annex", "merge", "-q"], cwd=directory)
+    _git(
+        ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
+         "--no-commit"],
+        cwd=directory,
+    )  # fmt: skip
     return True
 
 
