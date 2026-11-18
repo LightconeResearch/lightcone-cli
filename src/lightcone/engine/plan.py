@@ -14,13 +14,17 @@ and what its recipe asks for. The checker's report is kept beside the
 tasks, and :func:`classify` is what a run makes of each status in it.
 
 Every result of the working tree is a task, whichever analysis it belongs
-to: the project's, one it declares by path, or one it drives. A result
-from a commit is none: it is read, never built, as its record at that
-commit gives it. Whatever a recipe reads at another commit, a run gives it
-in that commit's tree, a clone of the repository that holds the commit
+to: the project's, one it declares by path, or one it drives. Each such
+analysis is inside the project's folder, so whatever a run reads or
+writes of the working tree is there, and nowhere else. A result from a
+commit is no task: it is read, never built, as its record at that commit
+gives it. Whatever a recipe reads at another commit, a run gives it in
+that commit's tree, a clone of the repository that holds the commit
 checked out at it under :data:`COMMITS`, and ASTRA's command names it
-there. A recipe that would run on a commit's files is refused, and so is
-an analysis in a repository of its own, where lc could commit nothing.
+there, wherever that analysis is. Refused: an analysis read from the
+working tree outside the project's folder, one in a repository of its
+own, where lc could commit nothing, and a recipe that would run on a
+commit's files.
 
 Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and the graph keeps that order, which is all ``--check``
@@ -153,9 +157,6 @@ class Graph:
     #: it: the URL its analysis is declared with, or None for the project's
     #: own.
     commits: dict[str, str | None] = field(default_factory=dict)
-    #: The folders of the analyses declared beside the project, outside its
-    #: own: their files are what its recipes run on too.
-    beside: tuple[str, ...] = ()
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
@@ -226,10 +227,11 @@ def build(root: Path) -> Graph:
         read files at, and the notes a run reports.
 
     Raises:
-        ProjectError: If there is no analysis, ASTRA finds it invalid, a
-            recipe would run on a commit's files, a result belongs to an
-            analysis in a repository of its own, or the repository moved
-            between ASTRA's two answers.
+        ProjectError: If there is no analysis, ASTRA finds it invalid, an
+            analysis read from the working tree is outside the project's
+            folder or in a repository of its own, a recipe would run on a
+            commit's files, or the repository moved between ASTRA's two
+            answers.
     """
     from astra import api
 
@@ -241,6 +243,16 @@ def build(root: Path) -> Graph:
         raise ProjectError(
             f"The repository moved from {analysis.head} to {report.head} while lc was "
             "reading the analysis. Run again."
+        )
+    if outside := sorted(
+        each.folder
+        for each in analysis.analyses
+        if each.commit is None and each.folder.startswith("..")
+    ):
+        raise ProjectError(
+            f"the analysis in {outside[0]} is outside the project's folder, and lc builds "
+            "and reads from the working tree only what is inside it. Declare it with a "
+            "`commit` to read its results there, or move it into the project."
         )
     # A reference in ASTRA's model is an id: what it names is looked up.
     of_output = {output.ref: each for each in analysis.analyses for output in each.outputs}
@@ -306,13 +318,6 @@ def build(root: Path) -> Graph:
         tasks=tasks,
         checked=report,
         commits=commits,
-        beside=tuple(
-            sorted(
-                each.folder
-                for each in analysis.analyses
-                if each.commit is None and each.folder.startswith("..")
-            )
-        ),
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
     )
 

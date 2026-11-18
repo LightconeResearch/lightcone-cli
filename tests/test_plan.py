@@ -314,7 +314,7 @@ def test_the_results_of_a_declared_analysis_are_tasks_run_in_its_folder(tmp_path
     }
     assert graph.tasks["result#u1"].depends_on == ("stage.out#u1", "stage:out#v1", "stage:once")
     assert graph.resolve(["stage:out", "stage.out"]) == ["stage:out#v1", "stage.out#u1"]
-    assert graph.commits == {} and graph.beside == ()
+    assert graph.commits == {}
 
 
 def test_a_result_from_a_commit_is_no_task_and_is_read_in_that_commits_tree(
@@ -355,10 +355,10 @@ def test_a_recipe_that_would_run_on_a_commits_files_is_refused(tmp_path: Path) -
         _build(root)
 
 
-def test_an_analysis_beside_the_project_is_kept_with_it(tmp_path: Path) -> None:
-    """Its folder is outside the project's, in the same repository: its
-    results are tasks like any other, and its folder is named for what a
-    run has to find unchanged."""
+def test_an_analysis_outside_the_projects_folder_is_refused(tmp_path: Path) -> None:
+    """Whatever a run reads or writes of the working tree is in the
+    project's folder: one beside it, in the same repository, is read only
+    at a commit."""
     for folder, spec in (
         ("shared", _STAGE),
         ("project", _DECLARES % ("{path: ../shared}", "stage.once")),
@@ -369,10 +369,8 @@ def test_an_analysis_beside_the_project_is_kept_with_it(tmp_path: Path) -> None:
     for argv in (["init", "-q"], ["add", "."]):
         subprocess.run(["git", *argv], cwd=tmp_path, check=True, capture_output=True)
 
-    graph = _build(root)
-
-    assert graph.tasks["stage:once"].workdir == root / ".." / "shared"
-    assert graph.beside == ("../shared",)
+    with pytest.raises(ProjectError, match=r"the analysis in \.\./shared is outside"):
+        _build(root)
 
 
 def test_an_analysis_with_no_universe_builds_what_is_built_once(tmp_path: Path) -> None:

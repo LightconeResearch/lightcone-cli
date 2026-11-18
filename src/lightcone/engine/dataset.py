@@ -21,7 +21,7 @@ from __future__ import annotations
 import posixpath
 import subprocess
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 
 from lightcone.engine import project
@@ -145,9 +145,7 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(
-    directory: Path, *, untracked_files: bool = False, also: Sequence[str] = ()
-) -> list[tuple[str, str]]:
+def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
@@ -182,8 +180,6 @@ def status(
         untracked_files: List each untracked file, where git otherwise
             names only the outermost untracked folder — for a caller that
             sorts changes by whose files they are.
-        also: Folders outside the project, from it, inspected with it: an
-            analysis declared beside it.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -197,7 +193,7 @@ def status(
         [
             "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
             "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
-            "--", ".", *also,
+            "--", ".",
         ],
         cwd=directory,
     )  # fmt: skip

@@ -402,19 +402,18 @@ def materialize(
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
     dataset.require_free_index(root)
+    # The dirty check comes before anything that writes: the image
+    # converge below *commits*, and `dataset.save` stages scoped but
+    # commits the whole index — on a dirty tree the user's staged edits
+    # would be swept into the image commit.
+    if changes := dataset.status(root):
+        raise ProjectError(_dirty(root, changes))
+    worker.require_in_commit(root)
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
-    # The dirty check comes before anything that writes: the image
-    # converge below *commits*, and `dataset.save` stages scoped but
-    # commits the whole index — on a dirty tree the user's staged edits
-    # would be swept into the image commit. It covers the analyses
-    # declared beside the project, whose files its recipes run on too.
-    if changes := dataset.status(root, also=graph.beside):
-        raise ProjectError(_dirty(root, changes))
-    worker.require_in_commit(root)
     classified = _classify(graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
@@ -938,9 +937,8 @@ def _require_storable(root: Path, graph: Graph) -> None:
             "so, and a record has to stay in git, where a clone with no content can read it"
         )
     if refusals:
-        # Lightcone's lines reach the project's own folder; an analysis in
-        # another folder keeps its results in its own `results/`, which the
-        # lines of that folder's `.gitattributes` have to reach.
+        # Lightcone's lines annex the project's own `results/`; an analysis
+        # in a folder of the project keeps its results in its own.
         elsewhere = sorted(
             {
                 plan.declared_path(root, task.workdir)
@@ -956,8 +954,9 @@ def _require_storable(root: Path, graph: Graph) -> None:
             "Where it adds none, a later line overrides them: remove it, or move "
             "lightcone's lines below it."
             + "".join(
-                f"\nThe analysis in {folder} keeps its results in its own folder: copy the "
-                f"project's .gitattributes into {folder}."
+                f"\nThe analysis in {folder} keeps its results in {folder}/results/: add "
+                f"`{folder}/results/** annex.largefiles=anything` at the end of the "
+                "project's .gitattributes."
                 for folder in elsewhere
             )
         )

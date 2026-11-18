@@ -256,10 +256,7 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     and `uv sync` together cost milliseconds.
     """
 
-    def build(spec: str, files: dict[str, str] | None = None, *, above: bool = False) -> Path:
-        """*files* are from the project root. With *above*, the repository
-        is the folder above the project, and a file given as ``../…`` is
-        one of an analysis beside it."""
+    def build(spec: str, files: dict[str, str] | None = None) -> Path:
         root = tmp_path / "analysis"
         for name in ("results", "data"):
             (root / name).mkdir(parents=True, exist_ok=True)
@@ -279,16 +276,15 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
 
         for argv in (["uv", "lock", "-q"], ["uv", "sync", "-q", "--locked", "--exact"]):
             _must(project._run([*argv, "--project", str(root)], cwd=root), argv)
-        top = root.parent if above else root
-        dataset.init_git(top)
+        dataset.init_git(root)
         for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-            dataset._git(["config", key, value], cwd=top)
-        dataset.init_annex(top)
+            dataset._git(["config", key, value], cwd=root)
+        dataset.init_annex(root)
         (root / ".datalad").mkdir(exist_ok=True)
         (root / ".datalad" / "config").write_text(
             templates.datalad_config(dataset_id="4b7b5c1e-0000-4000-8000-000000000000")
         )
-        dataset.save(top, [top], "scaffold")
+        dataset.save(root, [root], "scaffold")
         return root
 
     return build

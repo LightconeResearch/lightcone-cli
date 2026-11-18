@@ -325,12 +325,7 @@ def execute(
     task.path.parent.mkdir(parents=True, exist_ok=True)
     policy = container.policy_for(
         context.runtime,
-        [
-            *(path for path in task.inputs.values() if path.exists()),
-            # The folder its recipe runs in, whose code it runs: the
-            # project's, or that of an analysis beside it.
-            task.workdir,
-        ],
+        [path for path in task.inputs.values() if path.exists()],
         write_dir=task.path.parent,
         use_gpus=resources.gpus > 0,
     )
@@ -536,7 +531,7 @@ def main(argv: list[str]) -> int:
         # has changed by now is this result's own files, which it removed.
         if edited := sorted(
             path
-            for _, path in dataset.status(root, untracked_files=True, also=graph.beside)
+            for _, path in dataset.status(root, untracked_files=True)
             if not task.owns(root / path)
         ):
             print(

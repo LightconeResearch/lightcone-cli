@@ -78,7 +78,11 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     unchanged."""
     root = analysis(
         _DRIVES,
-        {"stage/astra.yaml": _STAGE, "stage/.gitattributes": templates.read("gitattributes.tmpl")},
+        {
+            "stage/astra.yaml": _STAGE,
+            ".gitattributes": templates.read("gitattributes.tmpl")
+            + "stage/results/** annex.largefiles=anything\n",
+        },
     )
     tasks = plan.build(root).tasks
 
@@ -99,74 +103,15 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
 def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(
     analysis: Callable[..., Path],
 ) -> None:
-    """Lightcone's `.gitattributes` lines reach the project's own
-    `results/`, not `stage`'s: the refusal says to give `stage` its own."""
+    """Lightcone's `.gitattributes` lines annex the project's own
+    `results/`, not `stage`'s: the refusal names the line that does."""
     root = analysis(_DRIVES, {"stage/astra.yaml": _STAGE})
 
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert "stage/results/v1/out.txt would be committed to git itself" in str(raised.value)
-    assert "copy the project's .gitattributes into stage" in str(raised.value)
-
-
-_SHARED = """
-spec_version: "0.1.0"
-inputs:
-  table: {path: data/table.txt}
-outputs:
-  rows:
-    type: data
-    format: txt
-    inputs: [table]
-    recipe:
-      command: bash rows.sh {inputs.table} {output}
-"""
-
-_READS_SHARED = """
-spec_version: "0.1.0"
-analyses:
-  shared: {path: ../shared}
-outputs:
-  report:
-    type: report
-    format: txt
-    inputs: [shared.rows]
-    recipe:
-      command: cat {inputs} > {output}
-"""
-
-
-def test_an_analysis_beside_the_project_runs_in_its_folder_and_is_kept_clean(
-    analysis: Callable[..., Path], inline: None
-) -> None:
-    """`shared` is beside the project, in the same repository: its recipe
-    runs in its folder and reads its own code and input there, outside the
-    project's tree, and its result is committed there. A change in its folder is a
-    change to the commit a record names, so a run refuses it."""
-    root = analysis(
-        _READS_SHARED,
-        {
-            "../shared/astra.yaml": _SHARED,
-            "../shared/data/table.txt": "one\ntwo\n",
-            "../shared/rows.sh": 'cat "$1" > "$2"\n',
-            "../shared/.gitattributes": templates.read("gitattributes.tmpl"),
-        },
-        above=True,
-    )
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert sorted(report.made) == ["report", "shared:rows"], (report.failed, report.warnings)
-    assert _lines(root / ".." / "shared" / "results" / "rows.txt") == ["one", "two"]
-    assert _lines(root / "results" / "report.txt") == ["one", "two"]
-    assert not dataset.status(root, also=["../shared"])
-
-    table = root / ".." / "shared" / "data" / "table.txt"
-    table.unlink()  # annexed thin: writing it in place would write its annex object
-    table.write_text("edited\n")
-    with pytest.raises(ProjectError, match="uncommitted changes"):
-        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert "add `stage/results/** annex.largefiles=anything`" in str(raised.value)
 
 
 # ---- analyses declared with a commit ------------------------------------------
