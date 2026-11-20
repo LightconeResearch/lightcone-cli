@@ -497,9 +497,26 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
 #: from holds them.
 NO_REMOTE = "no remote of this clone holds its bytes"
 
-#: What :func:`holders` calls a copy in this clone's own annex, where the
-#: file at its path is still a stand-in for it.
-HERE = "this clone's annex"
+
+def populate(directory: Path) -> None:
+    """Give every annexed file whose bytes this clone holds those bytes.
+
+    A file git checks out is a stand-in until git-annex fills it in from
+    its annex: its hooks do after a checkout or a merge, but ``git reset
+    --hard`` and ``git stash`` leave a stand-in even then, and nothing
+    does where ``core.hooksPath`` sends git's hooks elsewhere (measured).
+    ASTRA's checker reads such a file as bytes this clone lacks, and lc
+    would send whoever reads the status to fetch what is already here.
+    This is what those hooks run: nothing is transferred, and nothing git
+    compares changes.
+
+    Args:
+        directory: The repository root, where git-annex is set up.
+
+    Raises:
+        ProjectError: If git-annex cannot do it.
+    """
+    _git(["annex", "smudge", "--update"], cwd=directory)
 
 
 def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]:
@@ -518,7 +535,9 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
     fails on those (measured).
 
     The log says what was last heard of each remote: one may have lost a
-    copy since, which :func:`get` finds out.
+    copy since, which :func:`get` finds out. A copy in this clone's own
+    annex is not counted: :func:`populate` has given its bytes to every
+    file of it.
 
     Args:
         directory: The repository root.
@@ -526,8 +545,7 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
 
     Returns:
         For each file git-annex answers for, the remotes that hold its
-        bytes, by name, and :data:`HERE` where this clone's annex does;
-        empty where none does.
+        bytes, by name; empty where none does.
     """
     if not paths:
         return {}
@@ -550,11 +568,7 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
         answer = json.loads(line)
         copies = [*answer.get("whereis", []), *answer.get("untrusted", [])]
         held[answer["file"]] = tuple(
-            dict.fromkeys(
-                HERE if copy["here"] else remotes[copy["uuid"]]
-                for copy in copies
-                if copy["here"] or copy["uuid"] in remotes
-            )
+            dict.fromkeys(remotes[copy["uuid"]] for copy in copies if copy["uuid"] in remotes)
         )
     return held
 
@@ -589,7 +603,7 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
         # git-annex refused before it reached any file.
         return dict.fromkeys(paths, got.stderr.strip())
     named = holders(directory, list(failed))
-    for remote in sorted({name for names in named.values() for name in names} - {HERE}):
+    for remote in sorted({name for names in named.values() for name in names}):
         project._run(
             ["git", "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
              *(path for path in failed if remote in named.get(path, ()))],

@@ -571,13 +571,13 @@ def _report() -> object:
     return StatusReport(
         results=[
             ResultStatus(
-                "first#baseline", "unchanged", "", True, [], _astra("unchanged", "3f2a1c8ffff")
+                "first#baseline", "ok", "", False, [], _astra("unchanged", "3f2a1c8ffff")
             ),
             ResultStatus(
                 "second#baseline",
                 "behind",
                 "made under an earlier environment",
-                True,
+                False,
                 [],
                 _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             ),
@@ -602,7 +602,7 @@ def test_status_shows_each_result_its_state_and_its_commit(
     result = runner.invoke(main, ["status"])
 
     assert result.exit_code == 0
-    for fragment in ("first#baseline", "unchanged", "behind", "missing", "3f2a1c8"):
+    for fragment in ("first#baseline", " ok ", "behind", "missing", "3f2a1c8"):
         assert fragment in result.output
 
 
@@ -617,10 +617,10 @@ def test_status_says_each_results_state_and_not_why(
 
     for fragment in ("earlier environment", "no record", "mode:", "sandbox:"):
         assert fragment not in output
-    assert output.splitlines()[0].split()[:2] == ["·", "unchanged"]
+    assert output.splitlines()[0].split()[:2] == ["·", "ok"]
 
 
-def test_status_says_which_current_results_are_not_here_and_who_holds_them(
+def test_status_says_which_current_results_are_unfetched_and_who_holds_them(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What is current needs a fetch, not a run, and only that is said of
@@ -633,28 +633,28 @@ def test_status_says_which_current_results_are_not_here_and_who_holds_them(
     assert isinstance(report, StatusReport)
     first, second, third = report.results
     report.results = [
-        replace(first, here=False, remotes=["origin", "backup"]),
-        replace(second, here=False, remotes=["origin"]),
+        replace(first, unfetched=True, remotes=["origin", "backup"]),
+        replace(second, unfetched=True, remotes=["origin"]),
         third,
     ]
     _status_stub(monkeypatch, report)
 
     lines = runner.invoke(main, ["status"]).output.splitlines()
 
-    assert lines[0].endswith("not here, on origin, backup")
-    assert lines[1].endswith("not here, on origin")
-    assert "not here" not in lines[2]
-    assert lines[-1].endswith("2 not here — `lc fetch` brings them")
+    assert lines[0].endswith("unfetched, on origin, backup")
+    assert lines[1].endswith("unfetched, on origin")
+    assert "unfetched" not in lines[2]
+    assert lines[-1].endswith("2 unfetched — `lc fetch` brings them")
 
 
-def test_status_says_nothing_of_fetching_where_every_result_is_here(
+def test_status_says_nothing_of_fetching_where_no_result_is_unfetched(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _status_stub(monkeypatch, _report())
 
     output = runner.invoke(main, ["status"]).output
 
-    assert "not here" not in output and "lc fetch" not in output
+    assert "unfetched" not in output and "lc fetch" not in output
 
 
 def test_status_says_where_a_containerized_projects_image_stands(
@@ -711,13 +711,13 @@ def test_status_json_is_machine_readable(
     assert json.loads(result.output) == {
         "image": None,
         "environment": _ENV,
-        "counts": {"unchanged": 1, "behind": 1, "stale": 0, "missing": 1},
+        "counts": {"ok": 1, "behind": 1, "stale": 0, "missing": 1},
         "results": [
             {
                 "result": "first#baseline",
-                "state": "unchanged",
+                "state": "ok",
                 "why": "",
-                "here": True,
+                "unfetched": False,
                 "remotes": [],
                 "astra": _astra("unchanged", "3f2a1c8ffff"),
             },
@@ -725,7 +725,7 @@ def test_status_json_is_machine_readable(
                 "result": "second#baseline",
                 "state": "behind",
                 "why": "made under an earlier environment",
-                "here": True,
+                "unfetched": False,
                 "remotes": [],
                 "astra": _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             },
@@ -733,7 +733,7 @@ def test_status_json_is_machine_readable(
                 "result": "third#baseline",
                 "state": "missing",
                 "why": "no record is at the place",
-                "here": False,
+                "unfetched": False,
                 "remotes": [],
                 "astra": _astra("missing"),
             },
@@ -825,14 +825,14 @@ def test_fetch_json_is_machine_readable(
 ) -> None:
     from lightcone.engine.materialize import FetchReport
 
-    _fetch_stub(monkeypatch, FetchReport(fetched=["fit#baseline"], here=["summary#baseline"]))
+    _fetch_stub(monkeypatch, FetchReport(fetched=["fit#baseline"], present=["summary#baseline"]))
 
     result = runner.invoke(main, ["fetch", "--json"])
 
     assert json.loads(result.output) == {
         "ok": True,
         "fetched": ["fit#baseline"],
-        "here": ["summary#baseline"],
+        "present": ["summary#baseline"],
         "left": {},
         "failed": {},
         "warnings": [],

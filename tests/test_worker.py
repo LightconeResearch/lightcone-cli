@@ -197,11 +197,11 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
 # ---- deciding whether to run at all ----------------------------------------
 
 
-def test_an_unchanged_result_is_left_alone(root: Path) -> None:
+def test_an_ok_result_is_left_alone(root: Path) -> None:
     made = _make(root, "first#baseline")
     again = _make(root, "first#baseline")
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert (again.content_hash, again.size) == (made.content_hash, made.size)
 
 
@@ -216,7 +216,7 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
 
     again = _make(root, "first#baseline")
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert again.content_hash == made.content_hash
 
 
@@ -254,7 +254,7 @@ def test_refresh_does_not_remake_what_is_unchanged(root: Path) -> None:
     this it would be a rebuild-the-world flag wearing another name."""
     _make(root, "first#baseline")
 
-    assert _make(root, "first#baseline", refresh=True).status == "unchanged"
+    assert _make(root, "first#baseline", refresh=True).status == "ok"
 
 
 def _reads_first(result: TaskOutcome) -> list[dict[str, object]]:
@@ -370,7 +370,7 @@ def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root:
         root, _task(root, "second#baseline"), found, None, _context(root), False, _landed(read)
     )
 
-    assert result.status == "unchanged"
+    assert result.status == "ok"
     assert (result.content_hash, result.size) == ("sha256:" + "5" * 64, 7)
     assert not (root / _SECOND).exists()
 
@@ -430,7 +430,7 @@ def test_a_task_asks_astra_nothing_about_the_project(
         context, False, first,
     )
 
-    assert left.status == "unchanged"
+    assert left.status == "ok"
     assert made.status == "made", made.reason
     assert (root / _SECOND).read_text() == "one\n"
 
@@ -454,7 +454,7 @@ def test_a_byte_identical_remake_leaves_its_dependents_unchanged(root: Path) -> 
         remade,
     )
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert again.content_hash == second.content_hash
     assert content.stamp(root / _SECOND) == before, "the recipe ran again"
 
@@ -806,7 +806,7 @@ def test_the_module_reruns_unconditionally(
     monkeypatch.chdir(root)
     _make(root, "first#baseline")
     made = _record(root, _FIRST_RECORD)["generated_by"]["started"]
-    assert _make(root, "first#baseline").status == "unchanged"
+    assert _make(root, "first#baseline").status == "ok"
 
     assert worker.main(["first#baseline"]) == 0
     assert _record(root, _FIRST_RECORD)["generated_by"]["started"] != made

@@ -248,11 +248,11 @@ def test_status_names_the_commit_each_result_came_from(root: Path, inline: None)
     report = engine.status(root)
 
     assert [r.result for r in report.results] == ["first#baseline", "second#baseline"]
-    assert all(r.state == "unchanged" for r in report.results)
+    assert all(r.state == "ok" for r in report.results)
     # The commit the tree was at when the run *started* — the code that
     # produced the result, not the commit the run itself went on to make.
     assert all(r.commit == ran_against for r in report.results)
-    assert report.counts == {"unchanged": 2, "behind": 0, "stale": 0, "missing": 0}
+    assert report.counts == {"ok": 2, "behind": 0, "stale": 0, "missing": 0}
 
 
 def test_status_gives_astras_own_status_of_each_result(root: Path, inline: None) -> None:
@@ -281,7 +281,7 @@ def test_status_reports_behind_after_the_environment_moves(
 
     report = engine.status(root)
 
-    assert report.counts == {"unchanged": 0, "behind": 2, "stale": 0, "missing": 0}
+    assert report.counts == {"ok": 0, "behind": 2, "stale": 0, "missing": 0}
     assert all(r.commit == made_at for r in report.results), "the commit it was made at"
     assert "earlier environment" in report.results[0].why
     # Behind is exactly this: the record names another environment than
@@ -298,7 +298,7 @@ def test_status_leaves_a_never_made_result_missing_and_without_a_commit(root: Pa
     which would claim the result came from a commit that never made it."""
     report = engine.status(root)
 
-    assert report.counts == {"unchanged": 0, "behind": 0, "stale": 0, "missing": 2}
+    assert report.counts == {"ok": 0, "behind": 0, "stale": 0, "missing": 2}
     assert all(r.commit == "" and "record" not in r.astra for r in report.results)
     assert "no record" in report.results[0].why
 
@@ -309,7 +309,7 @@ def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "notes.md").write_text("in progress\n")
 
-    assert engine.status(root).counts["unchanged"] == 2
+    assert engine.status(root).counts["ok"] == 2
 
 
 def test_status_reports_a_result_reading_a_stale_one_as_stale(
@@ -1484,7 +1484,7 @@ _SECOND = "results/baseline/second.txt"
 _TWO = _SPEC.replace("cat {inputs.first} >", "cat {inputs.first} {inputs.first} >")
 
 
-def test_a_result_a_remote_holds_is_unchanged_and_not_here(
+def test_a_result_a_remote_holds_is_ok_and_unfetched(
     root: Path, inline: None, tmp_path: Path
 ) -> None:
     """What is current needs a transfer, not compute: status says where its
@@ -1494,17 +1494,40 @@ def test_a_result_a_remote_holds_is_unchanged_and_not_here(
     clone = clone_of(root, tmp_path)
     head = dataset.head(clone)
 
-    states = [(r.result, r.state, r.here, r.remotes) for r in engine.status(clone).results]
+    states = [(r.result, r.state, r.unfetched, r.remotes) for r in engine.status(clone).results]
 
     assert states == [
-        ("first#baseline", "unchanged", False, ["origin"]),
-        ("second#baseline", "unchanged", False, ["origin"]),
+        ("first#baseline", "ok", True, ["origin"]),
+        ("second#baseline", "ok", True, ["origin"]),
     ]
     assert engine.check(clone, []).up_to_date
     assert engine.materialize(clone, [], cluster_id=CLUSTER_ID).up_to_date
     with pytest.raises(content.ContentNotFetchedError):
         content.require_fetched(clone / _FIRST)
     assert dataset.head(clone) == head and not dataset.status(clone)
+
+
+def test_a_file_git_left_a_stand_in_for_bytes_this_clone_holds_is_filled_in(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """`git reset --hard` leaves an annexed file a stand-in even where the
+    clone holds its bytes, and git-annex's hooks do not fill it in
+    (measured): read as it is, the result would be one to fetch from where
+    it already is."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    assert engine.fetch(clone, []).ok
+    (clone / _FIRST).unlink()
+    dataset._git(["reset", "-q", "--hard"], cwd=clone)
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _FIRST)
+
+    states = [(r.state, r.unfetched) for r in engine.status(clone).results]
+
+    assert states == [("ok", False), ("ok", False)]
+    assert (clone / _FIRST).read_text() == "alpha\n"
+    assert not dataset.status(clone)
 
 
 def test_a_result_no_remote_holds_is_missing_and_made_again(
@@ -1551,9 +1574,11 @@ def test_fetch_brings_the_bytes_of_current_results_and_not_of_stale_ones(
     assert (clone / _FIRST).read_text() == "alpha\n"
     with pytest.raises(content.ContentNotFetchedError):
         content.require_fetched(clone / _SECOND)
-    assert [r.here for r in engine.status(clone).results] == [True, False]
+    assert [(r.state, r.unfetched) for r in engine.status(clone).results] == [
+        ("ok", False), ("stale", False)
+    ]
     assert not dataset.status(clone)
-    assert engine.fetch(clone, ["first"]).here == ["first#baseline"]
+    assert engine.fetch(clone, ["first"]).present == ["first#baseline"]
 
 
 def test_fetch_of_a_target_fetches_it_and_not_what_it_reads(
@@ -1564,7 +1589,7 @@ def test_fetch_of_a_target_fetches_it_and_not_what_it_reads(
     clone = clone_of(root, tmp_path)
 
     assert engine.fetch(clone, ["second"]).fetched == ["second#baseline"]
-    assert [r.here for r in engine.status(clone).results] == [False, True]
+    assert [r.unfetched for r in engine.status(clone).results] == [True, False]
 
 
 def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
@@ -1587,7 +1612,7 @@ def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
     assert report.failed["first#baseline"].startswith(dataset.NO_REMOTE)
     assert "lc materialize" in report.failed["first#baseline"]
     states = [(r.result, r.state) for r in engine.status(clone).results]
-    assert states == [("first#baseline", "missing"), ("second#baseline", "unchanged")]
+    assert states == [("first#baseline", "missing"), ("second#baseline", "ok")]
 
 
 def test_a_remote_that_cannot_be_reached_is_left_as_the_log_has_it(
@@ -1605,7 +1630,7 @@ def test_a_remote_that_cannot_be_reached_is_left_as_the_log_has_it(
     assert "origin" in report.failed["first#baseline"]
     assert not report.ok
     first = engine.status(clone).results[0]
-    assert (first.state, first.here, first.remotes) == ("unchanged", False, ["origin"])
+    assert (first.state, first.unfetched, first.remotes) == ("ok", True, ["origin"])
 
 
 def test_status_on_a_clone_where_git_annex_was_never_set_up_says_to_set_it_up(
@@ -2016,7 +2041,7 @@ def test_bytes_that_are_not_the_records_make_the_result_stale(
     assert first.state == "stale"
     assert "aren't the ones its record gives" in first.why
     assert [d["code"] for d in first.astra["why"]] == ["ABSENT_RESULT"]
-    assert (second.state, second.why) == ("unchanged", "")
+    assert (second.state, second.why) == ("ok", "")
 
     planned = engine.check(root, [])
     assert "aren't the ones its record gives" in planned.planned["first#baseline"]
@@ -2104,7 +2129,7 @@ def test_a_made_result_is_unchanged_until_something_it_is_made_from_moves(
         # ASTRA's checker found them present.
         made = graph.tasks[key].path
         assert content.digest_file(made) == (found.record.content_hash, found.record.size)
-        assert plan.classify(found=found, environment=environment).state == "unchanged"
+        assert plan.classify(found=found, environment=environment).state == "ok"
         assert plan.classify(found=found, environment=environment + "0").state == "behind"
     summary_made = graph.checked.statuses["summary"].record
     assert summary_made is not None
@@ -2126,7 +2151,7 @@ def test_a_made_result_is_unchanged_until_something_it_is_made_from_moves(
     assert (fit.state, fit.why, fit.stale_inputs) == ("stale", (), ("summary",))
     assert plan.classify(found=fit, environment=environment).state == "stale"
     kept = plan.classify(found=fit, environment=environment, read={"summary": recorded})
-    assert kept.state == "unchanged"
+    assert kept.state == "ok"
     remade = plan.classify(
         found=fit, environment=environment, read={"summary": ("sha256:" + "0" * 64, 15)}
     )

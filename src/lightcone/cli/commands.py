@@ -416,19 +416,19 @@ def materialize(
 def status(as_json: bool) -> None:
     """Report where each of the analysis's results stands.
 
-    For every result the analysis plans: unchanged; behind, where it is
-    unchanged but was made under an earlier environment; stale, where
-    something it is made from changed since it was made, or the file at its
-    place is not the one its recipe made; or missing, never made, or made
-    with its bytes in neither this clone nor any of its remotes. Beside
-    each, once it has been made, the commit it was made at. A result that
-    is behind is not wrong; that commit is where the code and the
-    environment which produced it can be read back.
+    For every result the analysis plans: ok; behind, where it is ok but
+    was made under an earlier environment; stale, where something it is
+    made from changed since it was made, or the file at its place is not
+    the one its recipe made; or missing, never made, or made with its
+    bytes in neither this clone nor any of its remotes. Beside each, once
+    it has been made, the commit it was made at. A result that is behind
+    is not wrong; that commit is where the code and the environment which
+    produced it can be read back.
 
-    An unchanged or behind result whose bytes this clone lacks is marked
-    not here, with the remotes that hold them: `lc fetch` brings it.
-    --json adds why each result is in its state, whether its bytes are
-    here and which remotes hold them, and its status as ASTRA's checker
+    An ok or behind result whose bytes this clone lacks is marked
+    unfetched, with the remotes that hold them: `lc fetch` brings it.
+    --json adds why each result is in its state, whether it is unfetched
+    and which remotes hold its bytes, and its status as ASTRA's checker
     reports it, under `astra`.
 
     Reads only. It runs nothing, fetches nothing, commits nothing, does not
@@ -455,7 +455,7 @@ def status(as_json: bool) -> None:
         }[state]
         lines += [f"  image: {tag} — {described}", ""]
     marks = {
-        "unchanged": "[dim]·[/dim]",
+        "ok": "[dim]·[/dim]",
         "behind": "[cyan]·[/cyan]",
         "stale": "[yellow]![/yellow]",
         "missing": "[yellow]![/yellow]",
@@ -463,32 +463,30 @@ def status(as_json: bool) -> None:
     width = max((len(r.result) for r in report.results), default=0)
     # The commit gets a column of its own, for every state and not only
     # the interesting ones: "which code made this" is the question the
-    # verb exists to answer, and it has an answer for an unchanged result
+    # verb exists to answer, and it has an answer for an ok result
     # too. Why a result is in its state is not shown: the state is the
     # answer at this level, and --json and `lc materialize --check` carry
-    # the reasons. Whether its bytes are here is, for a result that is
-    # current: one a run makes again needs no fetching.
-    away = 0
+    # the reasons. Whether it is unfetched is: that is a fetch, not a run.
     for r in report.results:
         commit = r.commit[:7] or "—"
-        line = f"  {marks[r.state]} {r.state:<9} {r.result:<{width}}  "
-        if r.state in ("unchanged", "behind") and not r.here:
-            away += 1
+        line = f"  {marks[r.state]} {r.state:<7} {r.result:<{width}}  "
+        if r.unfetched:
             on = f", on {escape(', '.join(r.remotes))}" if r.remotes else ""
-            line += f"{commit:<7}  [dim]not here{on}[/dim]"
+            line += f"{commit:<7}  [dim]unfetched{on}[/dim]"
         else:
             line += commit
         lines.append(line)
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
     counts = report.counts
+    unfetched = sum(r.unfetched for r in report.results)
     if not report.results:
         lines.append("[dim]The analysis plans no result.[/dim]")
     else:
         lines.append("")
         lines.append(
             " · ".join(f"{count} {state}" for state, count in counts.items() if count)
-            + (f" · {away} not here — `lc fetch` brings them" if away else "")
+            + (f" · {unfetched} unfetched — `lc fetch` brings them" if unfetched else "")
         )
     _console().print("\n".join(lines))
 
@@ -510,9 +508,9 @@ def fetch(targets: tuple[str, ...], as_json: bool) -> None:
     """Bring the bytes of current results into this clone.
 
     A clone, or a pull, holds each result as a small stand-in for its
-    bytes until they are fetched; `lc status` marks those results not
-    here, with the remotes that hold them. This fetches the ones that are
-    unchanged or behind. A result that is stale or missing is not
+    bytes until they are fetched; `lc status` marks those results
+    unfetched, with the remotes that hold them, and this fetches them:
+    the ones that are ok or behind. A result that is stale or missing is not
     fetched: what a remote holds of it is not what the analysis asks for,
     and `lc materialize` makes it again. A target is a result's id
     (`fit#baseline`), or an output's id (`fit`) for its result in every
@@ -578,7 +576,7 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
         f"  [cyan]·[/cyan] behind {name} — {escape(why)}"
         for name, why in report.behind.items()
     ]
-    lines += [f"  [dim]·[/dim] unchanged {name}" for name in report.unchanged]
+    lines += [f"  [dim]·[/dim] ok {name}" for name in report.unchanged]
     lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]

@@ -409,9 +409,9 @@ def declared_path(root: Path, path: Path) -> str:
 #
 # ASTRA's checker says what a result is: ``missing`` where it has no valid
 # record, ``stale`` where something it is made from has changed since the
-# commit its record names, ``unchanged`` otherwise. A runner adds one state,
-# ``behind``: unchanged, but made under another environment than the
-# project's. Nothing about it is wrong — its record's commit recreates that
+# commit its record names, ``unchanged`` otherwise, which lc calls ``ok``.
+# A runner adds one state, ``behind``: ok, but made under another
+# environment than the project's. Nothing about it is wrong — its record's commit recreates that
 # environment — so it is reported, and remade only when a run asks.
 #
 # lc also calls ``stale`` a result whose place holds bytes that are neither
@@ -429,12 +429,13 @@ def declared_path(root: Path, path: Path) -> str:
 # it, and nowhere else: what is current needs no compute, only a transfer,
 # which ``lc fetch`` makes.
 #
-# A result that is ``stale`` only through what it reads is unchanged again
+# A result that is ``stale`` only through what it reads is ok again
 # once each of those is made with the bytes its record gives, which only a
 # task knows, once they are made (``read``).
 
-#: Where a result stands: the checker's three states, and ``behind``.
-State = Literal["unchanged", "behind", "stale", "missing"]
+#: Where a result stands: the checker's three states, its ``unchanged``
+#: called ``ok``, and ``behind``.
+State = Literal["ok", "behind", "stale", "missing"]
 
 
 @dataclass(frozen=True)
@@ -442,7 +443,7 @@ class Verdict:
     """One result's state, and the sentence explaining it."""
 
     state: State
-    #: Why, for every state but ``unchanged``.
+    #: Why, for every state but ``ok``.
     why: str = ""
     #: Stale only through what it reads, and nothing else wrong with it:
     #: made again with the bytes its record gives, those leave it standing.
@@ -487,7 +488,7 @@ def classify(
             output's ``inputs``, once a run has made or kept each of them.
 
     Returns:
-        The state, with the reason for any but ``unchanged``.
+        The state, with the reason for any but ``ok``.
     """
     broken = [diagnostic.message for diagnostic in found.why if diagnostic.level == "error"]
     absent = [diagnostic.message for diagnostic in found.why if diagnostic.code == "ABSENT_RESULT"]
@@ -516,4 +517,4 @@ def classify(
         )
     if record.generated_by.environment.iri != environment:
         return Verdict("behind", "made under an earlier environment")
-    return Verdict("unchanged")
+    return Verdict("ok")

@@ -68,8 +68,9 @@ class MaterializeReport:
 
     #: Each result this run made and committed, by id.
     made: list[str] = field(default_factory=list)
-    #: Nothing they are made from changed, and the environment is the one
-    #: they were made under.
+    #: Ok: nothing they are made from changed, and the environment is the
+    #: one they were made under. Listed as ``unchanged`` because the
+    #: report's ``ok`` says whether the run finished.
     unchanged: list[str] = field(default_factory=list)
     #: Still what the spec asks for, but made under an earlier environment
     #: — id → why. Left alone; ``refresh`` is what remakes them.
@@ -138,7 +139,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     Returns:
         ``planned`` naming each result that would run and why, ``behind``
         those made under an earlier environment, and ``unchanged`` the
-        rest.
+        rest, which are ok.
 
     Raises:
         ProjectError: If the analysis or the lock cannot be read, or a
@@ -278,11 +279,12 @@ class ResultStatus:
     #: The result's id (``fit#baseline``).
     result: str
     state: plan.State
-    #: Why, for every state but ``unchanged``.
+    #: Why, for every state but ``ok``.
     why: str
-    #: Whether this clone holds the bytes its record gives.
-    here: bool
-    #: Where it does not, the remotes that do.
+    #: Ok or behind, and its bytes are not in this clone: what `lc fetch`
+    #: brings.
+    unfetched: bool
+    #: Where it is unfetched, the remotes that hold its bytes.
     remotes: list[str]
     #: ASTRA's own status of the result, as its report gives it in JSON:
     #: its record, which names the commit and the environment it was made
@@ -321,7 +323,7 @@ class StatusReport:
     @property
     def counts(self) -> dict[str, int]:
         """How many results are in each state, states with none included."""
-        tally = {"unchanged": 0, "behind": 0, "stale": 0, "missing": 0}
+        tally = {"ok": 0, "behind": 0, "stale": 0, "missing": 0}
         for result in self.results:
             tally[result.state] += 1
         return tally
@@ -371,13 +373,16 @@ def status(root: Path) -> StatusReport:
     checked = graph.checked.to_json()["statuses"]
     for found in _classify(root, graph, environment, refresh=False):
         held = found.found.bytes
+        unfetched = found.verdict.state in ("ok", "behind") and not (
+            held is None or held.state == "present"
+        )
         answer.results.append(
             ResultStatus(
                 result=found.task.id,
                 state=found.verdict.state,
                 why=found.verdict.why,
-                here=held is not None and held.state == "present",
-                remotes=list(found.remotes or ()),
+                unfetched=unfetched,
+                remotes=list(found.remotes or ()) if unfetched else [],
                 astra=checked[found.task.id],
             )
         )
@@ -397,7 +402,7 @@ class FetchReport:
     #: Each result whose bytes it fetched, by id.
     fetched: list[str] = field(default_factory=list)
     #: Those whose bytes this clone already held.
-    here: list[str] = field(default_factory=list)
+    present: list[str] = field(default_factory=list)
     #: Stale or missing, so not fetched: a run makes them again — id → state.
     left: dict[str, str] = field(default_factory=dict)
     #: Not fetched — id → why.
@@ -423,7 +428,7 @@ def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
     """Bring the bytes of current results into this clone.
 
     A clone, or a pull, gives each result as a stand-in for its bytes. A
-    result that is unchanged or behind is what the analysis asks for, so
+    result that is ok or behind is what the analysis asks for, so
     its bytes are fetched from a remote that holds them; one that is stale
     or missing is not, since a run makes it again. Nothing is made and
     nothing is committed: fetched bytes are the ones the record names, so
@@ -458,7 +463,7 @@ def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
         if found.verdict.state in ("stale", "missing"):
             report.left[key] = found.verdict.state
         elif held is None or held.state == "present":
-            report.here.append(key)
+            report.present.append(key)
         elif held.kept_by != "git-annex":
             report.failed[key] = f"its bytes are kept by {held.kept_by}, not git-annex"
         else:
@@ -672,7 +677,7 @@ def materialize(
 def _left_alone(found: _Classified, report: MaterializeReport) -> worker.TaskOutcome:
     """Report a result no run has to make, as the value its dependents read."""
     record = found.found.record
-    assert record is not None and found.verdict.state in ("unchanged", "behind")
+    assert record is not None and found.verdict.state in ("ok", "behind")
     if found.verdict.state == "behind":
         report.behind[found.task.id] = found.verdict.why
     else:
@@ -721,7 +726,7 @@ def _consume(
         report.made.append(name)
         return
 
-    if outcome.status == "unchanged":
+    if outcome.status == "ok":
         report.unchanged.append(name)
         return
 
@@ -1228,6 +1233,10 @@ def _graph(
         )
 
     environment = identity.environment(root)
+    if dataset.is_annexed(root):
+        # Before ASTRA's checker reads the place of each result: a file
+        # whose bytes are here, left as a stand-in, reads as one to fetch.
+        dataset.populate(root)
     graph = plan.build(root)
     report.warnings.extend(graph.notes)
     if targets:
