@@ -115,7 +115,8 @@ def _make(root: Path, key: str, *upstream: TaskOutcome, refresh: bool = False) -
     before the run, and its upstream results."""
     graph = plan.build(root)
     return worker.materialize(
-        root, graph.tasks[key], graph.checked.statuses[key], _context(root), refresh, *upstream
+        root, graph.tasks[key], graph.checked.statuses[key], None, _context(root), refresh,
+        *upstream,
     )
 
 
@@ -366,7 +367,7 @@ def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root:
     found = _stale_through_first(root, read)
 
     result = worker.materialize(
-        root, _task(root, "second#baseline"), found, _context(root), False, _landed(read)
+        root, _task(root, "second#baseline"), found, None, _context(root), False, _landed(read)
     )
 
     assert result.status == "unchanged"
@@ -383,6 +384,7 @@ def test_a_remake_that_gives_other_bytes_remakes_its_dependent(root: Path) -> No
         root,
         _task(root, "second#baseline"),
         found,
+        None,
         _context(root),
         False,
         _landed(_digest(b"two\n")),
@@ -407,6 +409,7 @@ def test_a_task_asks_astra_nothing_about_the_project(
         root,
         graph.tasks["first#baseline"],
         graph.checked.statuses["first#baseline"],
+        None,
         _context(root),
         False,
     )
@@ -420,11 +423,11 @@ def test_a_task_asks_astra_nothing_about_the_project(
 
     left = worker.materialize(
         root, graph.tasks["second#baseline"], _stale_through_first(root, first.digest),
-        context, False, first,
+        None, context, False, first,
     )
     made = worker.materialize(
-        root, graph.tasks["second#baseline"], graph.checked.statuses["second#baseline"], context,
-        False, first,
+        root, graph.tasks["second#baseline"], graph.checked.statuses["second#baseline"], None,
+        context, False, first,
     )
 
     assert left.status == "unchanged"
@@ -445,6 +448,7 @@ def test_a_byte_identical_remake_leaves_its_dependents_unchanged(root: Path) -> 
         root,
         graph.tasks["second#baseline"],
         graph.checked.statuses["second#baseline"],
+        None,
         _context(root),
         False,
         remade,
@@ -471,10 +475,11 @@ def test_a_remake_with_other_bytes_remakes_its_dependents(
     assert not [broken for broken in found.why if broken.level == "error"]
 
     remade = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
     again = worker.materialize(
-        root, graph.tasks["summary"], graph.checked.statuses["summary"], context, False, remade
+        root, graph.tasks["summary"], graph.checked.statuses["summary"], None, context, False,
+        remade,
     )
 
     assert remade.status == "made"
@@ -602,7 +607,7 @@ def test_a_task_takes_the_digest_the_driver_took_of_the_file_it_reads(
     _hashed_by(asked, monkeypatch)
 
     result = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
 
     assert result.status == "made", result.reason
@@ -625,7 +630,7 @@ def test_a_digest_taken_of_another_file_is_not_the_tasks(
     _hashed_by(asked, monkeypatch)
 
     result = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
 
     assert result.status == "made", result.reason

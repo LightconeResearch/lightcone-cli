@@ -1470,6 +1470,158 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     assert any("could not be fetched" in w for w in report.warnings)
 
 
+
+# ---- where the bytes are -----------------------------------------------------
+#
+# A clone holds each result as a stand-in until its bytes are fetched.
+# Whether a remote holds them is what decides between a fetch and a run.
+
+_FIRST = "results/baseline/first.txt"
+_SECOND = "results/baseline/second.txt"
+
+#: :data:`_SPEC`, `second` made of other bytes than `first`: git-annex
+#: stores one object for the same bytes, and fetches them for every file.
+_TWO = _SPEC.replace("cat {inputs.first} >", "cat {inputs.first} {inputs.first} >")
+
+
+def test_a_result_a_remote_holds_is_unchanged_and_not_here(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """What is current needs a transfer, not compute: status says where its
+    bytes are, `--check` plans nothing, and a run fetches nothing. Asking
+    git-annex leaves the branch and the tree as they were."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    head = dataset.head(clone)
+
+    states = [(r.result, r.state, r.here, r.remotes) for r in engine.status(clone).results]
+
+    assert states == [
+        ("first#baseline", "unchanged", False, ["origin"]),
+        ("second#baseline", "unchanged", False, ["origin"]),
+    ]
+    assert engine.check(clone, []).up_to_date
+    assert engine.materialize(clone, [], cluster_id=CLUSTER_ID).up_to_date
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _FIRST)
+    assert dataset.head(clone) == head and not dataset.status(clone)
+
+
+def test_a_result_no_remote_holds_is_missing_and_made_again(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A colleague pushed the commit and not the bytes: the log names the
+    repository that made them, which is no remote of this clone, so a run
+    can only make them again."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    dataset._git(["remote", "remove", "origin"], cwd=clone)
+
+    found = {r.result: (r.state, r.why) for r in engine.status(clone).results}
+    planned = engine.check(clone, []).planned
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert found == {
+        "first#baseline": ("missing", dataset.NO_REMOTE),
+        "second#baseline": ("missing", dataset.NO_REMOTE),
+    }
+    assert set(planned) == {"first#baseline", "second#baseline"}
+    assert report.made == ["first#baseline", "second#baseline"], report.warnings
+    assert (clone / _SECOND).read_text() == "alpha\nalpha\n"
+
+
+def test_fetch_brings_the_bytes_of_current_results_and_not_of_stale_ones(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A stale result's recorded bytes are not what the analysis asks for,
+    and a run makes it again: fetching them is a transfer for nothing."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(spec.read_text().replace("cat {inputs.first}", "cat -u {inputs.first}"))
+    dataset.save(clone, [spec], "change the second recipe")
+
+    report = engine.fetch(clone, [])
+
+    assert (report.fetched, report.left, report.failed) == (
+        ["first#baseline"], {"second#baseline": "stale"}, {}
+    )
+    assert (clone / _FIRST).read_text() == "alpha\n"
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _SECOND)
+    assert [r.here for r in engine.status(clone).results] == [True, False]
+    assert not dataset.status(clone)
+    assert engine.fetch(clone, ["first"]).here == ["first#baseline"]
+
+
+def test_fetch_of_a_target_fetches_it_and_not_what_it_reads(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+
+    assert engine.fetch(clone, ["second"]).fetched == ["second#baseline"]
+    assert [r.here for r in engine.status(clone).results] == [False, True]
+
+
+def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """The log says what was last heard of a remote, and `git annex get`
+    fails alike on a remote that lost a copy and on one it cannot reach.
+    Asked, the remote says which: what it lost is missing from then on."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    key = dataset._git(["annex", "lookupkey", _FIRST], cwd=root).strip()
+    stored = root / dataset._git(["annex", "contentlocation", key], cwd=root).strip()
+    stored.parent.chmod(0o755)
+    stored.unlink()  # behind git-annex's back: its log still says root holds it
+
+    report = engine.fetch(clone, [])
+
+    assert (list(report.failed), report.fetched) == (["first#baseline"], ["second#baseline"])
+    assert report.failed["first#baseline"].startswith(dataset.NO_REMOTE)
+    assert "lc materialize" in report.failed["first#baseline"]
+    states = [(r.result, r.state) for r in engine.status(clone).results]
+    assert states == [("first#baseline", "missing"), ("second#baseline", "unchanged")]
+
+
+def test_a_remote_that_cannot_be_reached_is_left_as_the_log_has_it(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """Unreachable is not lost: what the remote holds may be fetched later,
+    and calling it missing would have a run make it again."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    dataset._git(["remote", "set-url", "origin", str(tmp_path / "gone")], cwd=clone)
+
+    report = engine.fetch(clone, ["first"])
+
+    assert list(report.failed) == ["first#baseline"]
+    assert "origin" in report.failed["first#baseline"]
+    assert not report.ok
+    first = engine.status(clone).results[0]
+    assert (first.state, first.here, first.remotes) == ("unchanged", False, ["origin"])
+
+
+def test_status_on_a_clone_where_git_annex_was_never_set_up_says_to_set_it_up(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """Where its bytes are is git-annex's to say, and asking it in a clone
+    it was never set up in would set it up as a side effect."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+
+    with pytest.raises(ProjectError, match="`lc init` sets it up"):
+        engine.status(clone)
+    assert not dataset.is_annexed(clone)
+
+
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
@@ -1846,20 +1998,22 @@ def _forge(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def test_bytes_that_are_not_the_records_are_said_and_made_again(
+def test_bytes_that_are_not_the_records_make_the_result_stale(
     root: Path, inline: None
 ) -> None:
     """Written over after its run and committed: ASTRA's checker finds the
     record still holds and warns that the bytes at its place are not the
-    ones it gives. Status says so in ASTRA's words; nothing can fetch the
-    recorded bytes, so `--check` plans the result, and a run makes it."""
+    ones it gives. The result is not the one its recipe made, and nothing
+    can fetch the recorded bytes: it is stale, in ASTRA's words, `--check`
+    plans it, and a run makes it. What reads it read the recorded bytes,
+    so it stands until a rebuild gives others."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
 
     first, second = engine.status(root).results
-    assert first.state == "unchanged"
+    assert first.state == "stale"
     assert "aren't the ones its record gives" in first.why
     assert [d["code"] for d in first.astra["why"]] == ["ABSENT_RESULT"]
     assert (second.state, second.why) == ("unchanged", "")

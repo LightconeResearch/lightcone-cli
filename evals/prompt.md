@@ -24,6 +24,10 @@ This project is driven by two CLIs — use them rather than improvising:
       machine-readable form. It always exits 0. The pass/fail gate is
       `lc materialize --check`, which exits 1 while anything still needs
       making. `--check` needs no cluster.
+    - In a clone, a result made elsewhere is a small stand-in until its
+      bytes are fetched: `lc status` marks a current one `not here`, and
+      `lc fetch [<output_id>...]` brings it, with no cluster. One whose
+      bytes no remote holds is `missing`, and `lc materialize` makes it.
     - `lc run <cluster_id> -- <command>` runs an ad-hoc command in the project
       environment under the same isolation a recipe gets — useful for
       probing why a recipe would fail. Argv style, like `docker run` or

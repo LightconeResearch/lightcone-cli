@@ -34,7 +34,7 @@ needs; at execution time ordering is Dask's job.
 from __future__ import annotations
 
 import posixpath
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -414,13 +414,24 @@ def declared_path(root: Path, path: Path) -> str:
 # project's. Nothing about it is wrong — its record's commit recreates that
 # environment — so it is reported, and remade only when a run asks.
 #
-# Two things refine the checker's answer for a run. A result that is
-# ``stale`` only through what it reads is unchanged again once each of
-# those is made with the bytes its record gives, which only a task knows,
-# once they are made (``read``). And bytes at a result's place that are
-# neither its record's nor a stand-in for them (ASTRA's ``ABSENT_RESULT``)
-# are bytes no clone can fetch: the result stands as the checker says, and
-# a run makes it again.
+# lc also calls ``stale`` a result whose place holds bytes that are neither
+# its record's nor a stand-in for them (ASTRA's ``ABSENT_RESULT``): written
+# over by hand, or never there. The checker keeps that apart from the
+# state, as a warning about the bytes, since nothing the result is made
+# from has changed. To whoever reads ``lc status`` the result there is not
+# the one its recipe made, and no clone can fetch the one it did, so a run
+# makes it again.
+#
+# Whether the bytes a clone lacks can be fetched is a runner's to say, and
+# lc calls ``missing`` a result made, but whose bytes neither this clone
+# nor any of its remotes holds (``remotes``): a run can only make it again.
+# One a remote holds stands as it is. A run fetches it where a recipe reads
+# it, and nowhere else: what is current needs no compute, only a transfer,
+# which ``lc fetch`` makes.
+#
+# A result that is ``stale`` only through what it reads is unchanged again
+# once each of those is made with the bytes its record gives, which only a
+# task knows, once they are made (``read``).
 
 #: Where a result stands: the checker's three states, and ``behind``.
 State = Literal["unchanged", "behind", "stale", "missing"]
@@ -431,11 +442,8 @@ class Verdict:
     """One result's state, and the sentence explaining it."""
 
     state: State
-    #: Why, for every state but an ``unchanged`` result with its bytes.
+    #: Why, for every state but ``unchanged``.
     why: str = ""
-    #: The bytes at its place are neither its record's nor a stand-in for
-    #: them, so nothing can fetch them.
-    unfetchable: bool = False
     #: Stale only through what it reads, and nothing else wrong with it:
     #: made again with the bytes its record gives, those leave it standing.
     through_reads: bool = False
@@ -443,9 +451,8 @@ class Verdict:
     def calls_for_a_remake(self, *, refresh: bool) -> bool:
         """Whether a run would make this result again.
 
-        ``stale`` and ``missing`` always, and a result whose bytes no clone
-        can fetch; ``behind`` only when asked, because nothing about it is
-        wrong.
+        ``stale`` and ``missing`` always; ``behind`` only when asked,
+        because nothing about it is wrong.
 
         Args:
             refresh: Whether the caller asked for behind results too.
@@ -453,30 +460,34 @@ class Verdict:
         Returns:
             Whether to run the recipe.
         """
-        return (
-            self.state in ("stale", "missing")
-            or self.unfetchable
-            or (refresh and self.state == "behind")
-        )
+        return self.state in ("stale", "missing") or (refresh and self.state == "behind")
 
 
 def classify(
-    *, found: Status, environment: str, read: Mapping[str, Digest] | None = None
+    *,
+    found: Status,
+    environment: str,
+    remotes: Sequence[str] | None = None,
+    read: Mapping[str, Digest] | None = None,
 ) -> Verdict:
     """Decide where a result stands, from what ASTRA's checker found of it.
 
     The driver and a task differ by one value here, never by logic:
-    ``read``, which only a task knows. Without it the checker's state is
-    taken as it is, ``stale_inputs`` included.
+    ``read``, which only a task knows. Without it the checker's
+    ``stale_inputs`` are taken as they are.
 
     Args:
         found: What ASTRA's checker found of the result before the run.
         environment: The IRI of the project's environment as it now is.
+        remotes: Where this clone lacks the bytes its record gives, the
+            remotes that hold them (``dataset.holders``); none at all
+            makes the result missing. None where nothing was asked: the
+            bytes are here, or its place holds others.
         read: The bytes of each result this one reads, by entry of its
             output's ``inputs``, once a run has made or kept each of them.
 
     Returns:
-        The state, with the reason for any but a plain ``unchanged``.
+        The state, with the reason for any but ``unchanged``.
     """
     broken = [diagnostic.message for diagnostic in found.why if diagnostic.level == "error"]
     absent = [diagnostic.message for diagnostic in found.why if diagnostic.code == "ABSENT_RESULT"]
@@ -484,6 +495,8 @@ def classify(
         return Verdict("missing", "; ".join(dict.fromkeys(broken)))
     record = found.record
     assert record is not None  # the checker gives one wherever a result is not missing
+    if remotes is not None and not remotes:
+        return Verdict("missing", dataset.NO_REMOTE)
     if read is not None:
         recorded = {
             item.entry: (item.content_hash, item.size) for item in record.generated_by.inputs
@@ -495,17 +508,12 @@ def classify(
         ]
     else:
         reads = [f"`{entry}` has changed since this result read it" for entry in found.stale_inputs]
-    if broken or reads:
+    if broken or reads or absent:
         return Verdict(
             "stale",
             "; ".join(dict.fromkeys(broken + reads + absent)),
-            unfetchable=bool(absent),
             through_reads=not (broken or absent),
         )
-    behind = record.generated_by.environment.iri != environment
-    reasons = ["made under an earlier environment"] if behind else []
-    return Verdict(
-        "behind" if behind else "unchanged",
-        "; ".join(reasons + absent),
-        unfetchable=bool(absent),
-    )
+    if record.generated_by.environment.iri != environment:
+        return Verdict("behind", "made under an earlier environment")
+    return Verdict("unchanged")

@@ -235,14 +235,12 @@ def runtime_name(root: Path) -> str:
         if project._run(["docker", "info"], cwd=root).returncode != 0:
             raise ProjectError(
                 "docker is installed but its daemon is not reachable — start it "
-                "(or install podman, which needs no daemon), then retry. "
-                "`lc status` shows what this project needs."
+                "(or install podman, which needs no daemon), then retry."
             )
     elif not name:
         raise ProjectError(
             "this project is containerized and needs a container runtime: install "
-            "podman (recommended: https://podman.io/docs/installation) or docker. "
-            "`lc status` shows what this project needs."
+            "podman (recommended: https://podman.io/docs/installation) or docker."
         )
     return name
 

@@ -169,6 +169,7 @@ def materialize(
     root: Path,
     task: Task,
     found: Status,
+    remotes: tuple[str, ...] | None,
     context: RunContext,
     refresh: bool,
     *upstream: TaskOutcome,
@@ -187,6 +188,9 @@ def materialize(
         found: What ASTRA's checker found of the result before the run.
             Read by the driver, where git is; a task asks nothing of
             ASTRA.
+        remotes: Where this clone lacks the result's bytes, the remotes
+            that hold them, as the driver found them: whether a run can
+            fetch them is git-annex's to say, and a task asks git nothing.
         context: The run's driver-resolved facts.
         refresh: Whether to remake a result that is merely behind.
         *upstream: The results of this task's dependencies, arriving as
@@ -198,7 +202,7 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, found, context, refresh, upstream, output)
+        return _materialize(root, task, found, remotes, context, refresh, upstream, output)
     except Exception as e:  # the contract is that this function returns
         return TaskOutcome(task.id, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -207,6 +211,7 @@ def _materialize(
     root: Path,
     task: Task,
     found: Status,
+    remotes: tuple[str, ...] | None,
     context: RunContext,
     refresh: bool,
     upstream: tuple[TaskOutcome, ...],
@@ -224,6 +229,7 @@ def _materialize(
     verdict = plan.classify(
         found=found,
         environment=context.environment,
+        remotes=remotes,
         read={entry: reported[key].digest for entry, key in task.produced_by.items()},
     )
     if verdict.calls_for_a_remake(refresh=refresh):

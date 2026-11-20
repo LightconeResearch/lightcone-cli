@@ -18,10 +18,11 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
+import json
 import posixpath
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from lightcone.engine import project
@@ -486,6 +487,116 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
         rel = _rel(directory, path)
         _git(["clean", "-qfdx", "--", rel], cwd=directory)
         _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
+
+
+# =============================================================================
+# Where the bytes are
+# =============================================================================
+
+#: Why bytes are out of this clone's reach: no repository it can fetch
+#: from holds them.
+NO_REMOTE = "no remote of this clone holds its bytes"
+
+#: What :func:`holders` calls a copy in this clone's own annex, where the
+#: file at its path is still a stand-in for it.
+HERE = "this clone's annex"
+
+
+def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """Name where this clone could fetch each file's bytes from.
+
+    git-annex's answer, from its log of which repository holds what: kept
+    in git, and read without the network. ``whereis`` first merges into
+    the log what each remote's ``git-annex`` branch brought, a commit on
+    that branch alone that leaves HEAD and the working tree as they were
+    (measured); without it, the copies a ``git pull`` told of go unseen,
+    and a result a remote holds would be taken for one none does.
+
+    Only a repository this clone has as a remote counts. The log also
+    names repositories it cannot reach, the one a colleague made a result
+    in once they push the log but not the bytes, and ``git annex get``
+    fails on those (measured).
+
+    The log says what was last heard of each remote: one may have lost a
+    copy since, which :func:`get` finds out.
+
+    Args:
+        directory: The repository root.
+        paths: Annexed files, from the repository root.
+
+    Returns:
+        For each file git-annex answers for, the remotes that hold its
+        bytes, by name, and :data:`HERE` where this clone's annex does;
+        empty where none does.
+    """
+    if not paths:
+        return {}
+    remotes = {}
+    listed = _ask(["config", "--get-regexp", r"^remote\..+\.annex-uuid$"], cwd=directory)
+    for line in (listed or "").splitlines():
+        key, _, uuid = line.partition(" ")
+        remotes[uuid] = key.removeprefix("remote.").removesuffix(".annex-uuid")
+    asked = project._run(
+        ["git", "annex", "whereis", "--json", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{path}\n" for path in paths),
+    )
+    held = {}
+    # One line per file asked, and an empty one for a file git-annex keeps
+    # nothing of.
+    for line in asked.stdout.splitlines():
+        if not line.strip():
+            continue
+        answer = json.loads(line)
+        copies = [*answer.get("whereis", []), *answer.get("untrusted", [])]
+        held[answer["file"]] = tuple(
+            dict.fromkeys(
+                HERE if copy["here"] else remotes[copy["uuid"]]
+                for copy in copies
+                if copy["here"] or copy["uuid"] in remotes
+            )
+        )
+    return held
+
+
+def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
+    """Fetch each file's bytes into this clone, from wherever git-annex finds them.
+
+    ``git annex get`` says the same of a remote it cannot reach and of one
+    that no longer holds what the log says it does, and leaves the log as
+    it was (measured): every later fetch would try that remote again. So
+    each remote the log names for a file not fetched is asked whether it
+    holds it (``fsck --from --fast``), which corrects the log where it
+    does not; the file is then one :data:`NO_REMOTE` holds, and whatever
+    reads the log next says so. A remote that cannot be reached is left
+    as the log has it.
+
+    Args:
+        directory: The repository root.
+        paths: Annexed files, from the repository root.
+
+    Returns:
+        Why each file that was not fetched was not, by path.
+    """
+    if not paths:
+        return {}
+    got = project._run(["git", "annex", "get", "--json", "--", *paths], cwd=directory)
+    failed = {}
+    for line in got.stdout.splitlines():
+        if line.strip() and not (answer := json.loads(line)).get("success"):
+            failed[answer["file"]] = answer.get("note") or "; ".join(answer["error-messages"])
+    if got.returncode != 0 and not failed:
+        # git-annex refused before it reached any file.
+        return dict.fromkeys(paths, got.stderr.strip())
+    named = holders(directory, list(failed))
+    for remote in sorted({name for names in named.values() for name in names} - {HERE}):
+        project._run(
+            ["git", "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
+             *(path for path in failed if remote in named.get(path, ()))],
+            cwd=directory,
+        )  # fmt: skip
+    now = holders(directory, list(failed))
+    return {path: NO_REMOTE if now.get(path) == () else why for path, why in failed.items()}
 
 
 # =============================================================================
