@@ -11,14 +11,16 @@ and the one on which a file changes place without its bytes being
 written again. Recipes run there, and what the researcher edits, stages
 or commits meanwhile is no part of the run.
 
-**git-annex never runs in a checkout.** Run in a linked worktree, it fills
-every annexed file it holds the bytes of, by copy, and replaces the
-worktree's ``.git`` (measured). So every git command here, and whatever
-lc starts in a checkout, carries :data:`dataset.PLAIN`. Annexed files then
-check out as the stand-ins git stores, and :func:`fill` gives the ones a
-run reads their bytes itself, as one more name for the object the annex
-already holds. The others it removes: a recipe that read one would take a
-line of text for its data.
+**git-annex never runs in a checkout, nor does Git LFS.** Run in a linked
+worktree, git-annex fills every annexed file it holds the bytes of, by
+copy, and replaces the worktree's ``.git``; Git LFS downloads every file
+it keeps, or fails the checkout (both measured). So every git command
+here, and whatever lc starts in a checkout, carries :data:`dataset.PLAIN`.
+What either tool keeps then checks out as the stand-in git stores, and
+:func:`fill` gives the ones a run reads their bytes itself: an annexed
+file as one more name for the object the annex already holds. The others
+it removes: a recipe that read one would take a line of text for its
+data.
 
 **A result is written once.** Its recipe writes it in the checkout, where
 no other run and no commit sees it half made. The worker then moves it to
@@ -49,7 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from lightcone.engine import dataset, project
+from lightcone.engine import content, dataset, project
 from lightcone.engine.plan import COMMITS, Task
 from lightcone.engine.project import ProjectError
 
@@ -174,13 +176,14 @@ def fill(tree: Checkout, paths: Sequence[str]) -> None:
     now. One whose bytes this clone lacks stays the stand-in it is, and
     the task that reads it refuses it by name.
 
-    Every other annexed file is removed. No output declares it as an
+    A file among *paths* that another tool keeps is given from the
+    project's tree, where that tool put its bytes: what Git LFS keeps,
+    which checks out here as its pointer, and what DVC keeps, which git
+    ignores, so that the commit holds no file of it.
+
+    Every other file a tool keeps is removed. No output declares it as an
     input, and left as a stand-in it would be read all the same: a line of
     text, for data, by a recipe that then exits 0.
-
-    A file among *paths* that the commit holds no file of is one git
-    ignores, as it does what DVC keeps beside a ``.dvc`` file: it is given
-    from the project's tree, the one place it is.
 
     git is then told to take each for the commit's: left to compare, it
     finds bytes, or nothing, where it stored a stand-in.
@@ -190,7 +193,7 @@ def fill(tree: Checkout, paths: Sequence[str]) -> None:
         paths: Files a task of the run reads, from the project root.
 
     Raises:
-        ProjectError: If git-annex cannot be asked, or git cannot be told.
+        ProjectError: If git or git-annex cannot be asked, or git told.
     """
     wanted = set(paths)
     # Listed from the top of the repository, which the project may sit below.
@@ -201,20 +204,26 @@ def fill(tree: Checkout, paths: Sequence[str]) -> None:
         for path, key in dataset.annexed(tree.project, tree.commit).items()
         if path.startswith(inside)
     }
+    kept = annexed.keys() | set(dataset.filtered(tree.root, "lfs", dataset.PLAIN))
     stored = dataset.located(tree.project, [annexed[path] for path in wanted & annexed.keys()])
-    for path, key in annexed.items():
+    for path in kept:
         if path not in wanted:
             (tree.root / path).unlink(missing_ok=True)
-        elif key in stored:
-            _name(stored[key], tree.root / path)
+        elif annexed.get(path) in stored:
+            _name(stored[annexed[path]], tree.root / path)
     for path in wanted:
-        if not os.path.lexists(tree.root / path) and (tree.project / path).is_file():
-            _name(tree.project / path, tree.root / path)
-    if annexed:
+        here, there = tree.root / path, tree.project / path
+        if (
+            (not os.path.lexists(here) or content.standin(here))
+            and there.is_file()
+            and not content.standin(there)
+        ):
+            _name(there, here)
+    if kept:
         marked = project._run(
             ["git", *dataset.PLAIN, "update-index", "--assume-unchanged", "-z", "--stdin"],
             cwd=tree.root,
-            stdin="".join(f"{path}\0" for path in annexed),
+            stdin="".join(f"{path}\0" for path in sorted(kept)),
         )
         if marked.returncode != 0:
             raise ProjectError(f"`git update-index` failed:\n{marked.stderr.strip()}")
@@ -247,7 +256,7 @@ def hand_over(task: Task, root: Path) -> None:
         os.symlink(place, made)
 
 
-def land(tree: Checkout, task: Task, message: str) -> None:
+def land(tree: Checkout, task: Task, digest: tuple[str, int], message: str) -> None:
     """Commit a result a run made, where its worker left it in the project.
 
     Its record is given its place beside it only now, with the commit: a
@@ -257,6 +266,9 @@ def land(tree: Checkout, task: Task, message: str) -> None:
     Args:
         tree: The run's checkout.
         task: The result, as the run made it: in the checkout.
+        digest: The hash and size of the bytes its worker hashed for the
+            record. The file has been in a tree other runs write in since
+            then, and what git stages has to be those bytes.
         message: The commit message.
 
     Raises:
@@ -273,14 +285,18 @@ def land(tree: Checkout, task: Task, message: str) -> None:
                 "run builds, so its record would be true of nothing there. Check out a "
                 "branch that holds it and run again"
             )
-        for made, place in zip(task.record_paths, kept.record_paths, strict=True):
-            _name(made, place)
+        try:
+            for made, place in zip(task.record_paths, kept.record_paths, strict=True):
+                _name(made, place)
+        except OSError as e:
+            raise ProjectError(f"its record could not be given its place: {e}") from e
         dataset.save(
             tree.project,
             owned,
             message,
             annexed=kept.paths,
             in_git=kept.record_paths,
+            named=dict.fromkeys(kept.paths, digest),
             patience=LANDING,
         )
     except BaseException:

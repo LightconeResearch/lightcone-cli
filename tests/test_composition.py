@@ -11,6 +11,7 @@ all unchanged afterwards.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -411,10 +412,17 @@ def test_a_tree_that_cannot_be_given_leaves_no_clone_behind(
     elsewhere.mkdir()
     dataset._git(["init", "-q"], cwd=elsewhere)
 
+    killed = root / plan.COMMITS / ("0" * 40 + ".deadbeef.making")
+    recent = root / plan.COMMITS / ("0" * 40 + ".cafecafe.making")
+    for left in (killed, recent):
+        left.mkdir(parents=True)
+    os.utime(killed, (0, 0))
+
     with pytest.raises(ProjectError):
         commits.give(root, "0" * 40, str(elsewhere), ["results/fit.txt"])
 
-    assert list((root / plan.COMMITS).iterdir()) == []
+    # Its own clone, and one a run killed long ago left; another run's stays.
+    assert list((root / plan.COMMITS).iterdir()) == [recent]
 
 
 #: An analysis with nothing but an input, for another to read at a commit.

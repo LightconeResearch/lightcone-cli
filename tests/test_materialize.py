@@ -487,7 +487,7 @@ def test_a_tree_that_holds_uncommitted_work_is_refused(root: Path, inline: None)
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
-    assert "commit these" in message and "notes.md" in message
+    assert "git add -- notes.md && git commit" in message
     assert "stray.txt" not in message
 
 
@@ -940,6 +940,32 @@ def test_a_result_made_and_never_committed_is_committed_by_the_next_run(
         root / "results/baseline/first.txt"
     )
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
+
+
+def test_a_result_made_at_a_commit_the_history_no_longer_holds_is_put_back(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result made and never committed has a true record, of the commit
+    it was made at. Where the branch has been rewritten away from that
+    commit, the record is true of nothing here, as it is for a landing:
+    the result is put back as the last commit has it, and made again."""
+    from lightcone.engine import worker
+
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
+    dataset.save(root, [root], "edit the first recipe")
+    monkeypatch.chdir(root)
+    assert worker.main(["first#baseline"]) == 0
+    made_at = dataset.head(root)
+    dataset._git(["commit", "-q", "--amend", "-m", "edit the first recipe, reworded"], cwd=root)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["first#baseline", "second#baseline"], (report.failed, report.warnings)
+    assert any("first#baseline" in w and made_at[:7] in w for w in report.warnings)
+    record = json.loads((root / _FIRST_RECORD).read_text())
+    assert dataset.is_ancestor(root, record["generated_by"]["commit"])
+    assert not dataset.status(root)
 
 
 def _checkouts(root: Path) -> list[Path]:

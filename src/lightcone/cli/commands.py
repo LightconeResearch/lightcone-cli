@@ -374,8 +374,9 @@ def materialize(
     for its result in every universe.
 
     Each result is committed together with its ASTRA record, in a commit
-    that records the command that produced it. The git tree needs to be
-    clean before the run can start.
+    that records the command that produced it. A run builds the commit, in
+    a checkout of it: your own uncommitted work has to be committed before
+    it can start, and what you edit while it runs is no part of it.
 
     A result is made when ASTRA's checker finds it missing or stale: never
     made, or something it is made from changed since its record's commit —

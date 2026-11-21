@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
@@ -27,6 +28,10 @@ from uuid import uuid4
 from lightcone.engine import dataset, project
 from lightcone.engine.plan import COMMITS
 from lightcone.engine.project import ProjectError
+
+#: How old a clone that never became a commit's tree has to be before it
+#: is taken for one a killed run left, in seconds.
+_ABANDONED = 86400.0
 
 
 def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) -> None:
@@ -54,25 +59,27 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
         # the clone takes it from the project.
         keys = dataset.keys(root, [f"{commit}:{path}" for path in paths])
         if keys:
-            _fetch(
+            # Another run of the project may be fetching the same content,
+            # and is waited for.
+            fetched = dataset.transfer(
                 ["git", *reach, "annex", "get", "--batch-keys"],
-                root,
-                f"what {commit} holds could not be fetched into the project",
+                cwd=root,
                 stdin="".join(f"{key}\n" for key in keys.values()),
             )
-        fetch = ["git", "annex", "get", "-q", "--from", "origin", "--", *paths]
-    else:
-        fetch = ["git", *reach, "annex", "get", "-q", "--", *paths]
-    _fetch(fetch, tree, f"what {commit} holds could not be fetched into its tree")
-
-
-def _fetch(argv: list[str], cwd: Path, failure: str, stdin: str | None = None) -> None:
-    """Run a git-annex fetch that has to succeed. Another run of the
-    project may be fetching the same content into the same tree, and is
-    waited for (`dataset.transfer`)."""
-    fetched = dataset.transfer(argv, cwd=cwd, stdin=stdin)
-    if fetched.returncode != 0:
-        raise ProjectError(f"{failure}:\n{fetched.stderr.strip()}")
+            if fetched.returncode != 0:
+                raise ProjectError(
+                    f"what {commit} holds could not be fetched into the project:\n"
+                    f"{fetched.stderr.strip()}"
+                )
+    # On standard input, as every fetch: a multiverse reads more files of
+    # a commit than a command line holds.
+    if failed := dataset.get(
+        tree, paths, source="origin" if repository is None else None, reach=reach
+    ):
+        raise ProjectError(
+            f"what {commit} holds could not be fetched into its tree:\n  "
+            + "\n  ".join(f"{path}: {why}" for path, why in failed.items())
+        )
 
 
 def _intact(tree: Path, commit: str) -> bool:
@@ -116,6 +123,11 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
     making = tree.with_name(f"{commit}.{uuid4().hex[:8]}.making")
     replaced = tree.with_name(f"{commit}.{uuid4().hex[:8]}.replaced")
     making.parent.mkdir(parents=True, exist_ok=True)
+    # A run that was killed while it cloned left its clone: no clone takes
+    # a day, so one that old is nobody's.
+    for left in tree.parent.glob(f"{commit}.*.*"):
+        if time.time() - left.stat().st_mtime > _ABANDONED:
+            _discard(left)
     try:
         dataset._git(
             [*reach, "clone", "-q", "--no-checkout", "--", source, str(making)], cwd=root
@@ -139,7 +151,12 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
             raise ProjectError(f"the tree of {commit} could not be put in place at {tree}")
     finally:
         # Whichever was not moved into place, and whatever it replaced.
-        for left in (making, replaced):
-            for folder, _, _ in os.walk(left):
-                os.chmod(folder, 0o700)  # git-annex keeps its objects' folders read-only
-            shutil.rmtree(left, ignore_errors=True)
+        _discard(making)
+        _discard(replaced)
+
+
+def _discard(folder: Path) -> None:
+    """Remove a clone, whose annex keeps its objects' folders read-only."""
+    for inside, _, _ in os.walk(folder):
+        os.chmod(inside, 0o700)
+    shutil.rmtree(folder, ignore_errors=True)

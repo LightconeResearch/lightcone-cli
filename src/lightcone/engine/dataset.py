@@ -24,7 +24,7 @@ import posixpath
 import re
 import subprocess
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -270,6 +270,20 @@ def head(directory: Path) -> str:
     return _git(["rev-parse", "HEAD"], cwd=directory).strip()
 
 
+def repository(directory: Path) -> Path:
+    """Find the repository's own folder, which every working tree of it shares.
+
+    Args:
+        directory: A folder inside a repository.
+
+    Returns:
+        Its ``.git`` folder: for a linked worktree, the one of the
+        repository it is a worktree of.
+    """
+    found = _git(["rev-parse", "--git-common-dir"], cwd=directory).strip()
+    return (directory / found).resolve()
+
+
 def is_ancestor(directory: Path, commit: str) -> bool:
     """Whether the history ``HEAD`` is at holds *commit*.
 
@@ -298,6 +312,35 @@ def same(directory: Path, one: str | None, other: str | None, paths: Sequence[st
     if one is None or other is None:
         return False
     return _git_ok(["diff", "--quiet", one, other, "--", *paths], cwd=directory)
+
+
+def filtered(directory: Path, name: str, config: Sequence[str] = ()) -> list[str]:
+    """List the tracked files of the tree at *directory* that a filter takes.
+
+    Args:
+        directory: A folder of a working tree.
+        name: The filter, as ``.gitattributes`` names it: ``lfs``.
+        config: Options to put between ``git`` and its command.
+
+    Returns:
+        The path of each, from *directory*.
+
+    Raises:
+        ProjectError: If git cannot say.
+    """
+    listed = _git([*config, "ls-files", "-z", "--", "."], cwd=directory)
+    if not listed:
+        return []
+    asked = project._run(
+        ["git", *config, "check-attr", "-z", "--stdin", "filter"], cwd=directory, stdin=listed
+    )
+    if asked.returncode != 0:
+        raise project.ProjectError(f"`git check-attr` failed:\n{asked.stderr.strip()}")
+    # `<path> NUL filter NUL <value> NUL`, once per file.
+    answers = asked.stdout.split("\0")
+    return [
+        path for path, value in zip(answers[::3], answers[2::3], strict=False) if value == name
+    ]
 
 
 def submodules(directory: Path, config: Sequence[str] = ()) -> list[str]:
@@ -404,6 +447,7 @@ def save(
     *,
     annexed: Iterable[Path] = (),
     in_git: Iterable[Path] = (),
+    named: Mapping[Path, tuple[str, int]] | None = None,
     patience: float | None = None,
 ) -> bool:
     """Commit *paths*.
@@ -445,8 +489,8 @@ def save(
     leaves anything else in the index staged and untouched. Without the
     pathspec, ``git commit`` commits the whole index — so a file the
     user staged while a graph was running would be swept, silently,
-    into whichever save landed next. The end-of-run warning names such
-    edits; this is what keeps lc's commits from eating them.
+    into whichever save landed next. This is what keeps lc's commits from
+    eating them.
 
     The project's tree is in use while a run saves into it, and git
     refuses a second writer of the index rather than wait: every git
@@ -466,11 +510,17 @@ def save(
         message: The commit message.
         annexed: Files among *paths* whose bytes have to go to the annex.
         in_git: Files among *paths* that have to stay in git.
+        named: Files among *annexed* → the hash and size a record gives
+            their bytes. Checked against the key git-annex staged each
+            under, where that key is a SHA-256's: the file is in a tree
+            others write in, and what is committed has to be what was
+            hashed for the record.
         patience: How long to wait for another git command's hold on the
             index, in seconds; :data:`_PATIENCE` unless given.
 
     Returns:
-        False if there was nothing to commit.
+        False if there was nothing to commit, or nothing left to: the
+        files are in a commit either way.
 
     Raises:
         ProjectError: Naming each file staged where it must not go, with
@@ -501,6 +551,13 @@ def save(
                  for path in to_annex if not key.get(path)]
         wrong += [f"{path} was staged in the annex, where a clone with no content cannot read it"
                   for path in to_git if key.get(path)]
+        for path, (content_hash, size) in (named or {}).items():
+            staged = _SHA256_KEY.match(key.get(_rel(directory, path), ""))
+            if staged and (f"sha256:{staged[2]}", int(staged[1])) != (content_hash, size):
+                wrong.append(
+                    f"{_rel(directory, path)} was staged with other bytes than its record "
+                    "names: something replaced the file since its recipe ended"
+                )
         if wrong:
             _git(["reset", "-q", "--", *relative], cwd=directory, patience=patience)
             raise project.ProjectError(
@@ -512,11 +569,19 @@ def save(
     # The annex config rides on the commit too: a partial commit takes
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
-    _git(
-        [*annex, "commit", "-q", "-m", message, "--", *relative],
-        cwd=directory,
-        patience=patience,
-    )
+    try:
+        _git(
+            [*annex, "commit", "-q", "-m", message, "--", *relative],
+            cwd=directory,
+            patience=patience,
+        )
+    except project.ProjectError:
+        # Another run of the project may have committed these very files
+        # since they were staged, which leaves git nothing to commit: they
+        # are committed all the same.
+        if _git_ok(["diff", "--quiet", "HEAD", "--", *relative], cwd=directory):
+            return False
+        raise
     _git(
         ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
          "--no-commit"],
@@ -675,7 +740,12 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
     return held
 
 
-def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
+def get(
+    directory: Path,
+    paths: Sequence[str],
+    source: str | None = None,
+    reach: Sequence[str] | None = None,
+) -> dict[str, str]:
     """Fetch each file's bytes into this clone, from wherever git-annex finds them.
 
     ``git annex get`` says the same of a remote it cannot reach and of one
@@ -690,15 +760,20 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
     Args:
         directory: The repository root.
         paths: Annexed files, from the repository root.
+        source: The one remote to fetch from, where the log is not to be
+            asked which holds them.
+        reach: git's options for reaching a remote, where they are
+            another repository's than *directory*'s own (:func:`reaching`).
 
     Returns:
         Why each file that was not fetched was not, by path.
     """
     if not paths:
         return {}
-    reach = reaching(directory)
+    reach = reaching(directory) if reach is None else reach
     got = transfer(
-        ["git", *reach, "annex", "get", "--json", "--batch"],
+        ["git", *reach, "annex", "get", *(["--from", source] if source else []), "--json",
+         "--batch"],
         cwd=directory,
         stdin="".join(f"{path}\n" for path in paths),
     )
@@ -728,6 +803,10 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
 # =============================================================================
 # Where the bytes go
 # =============================================================================
+
+#: A key of git-annex's ``SHA256`` and ``SHA256E`` backends, which names
+#: the size and the hash of its bytes.
+_SHA256_KEY = re.compile(r"SHA256E?-s([0-9]+)--([0-9a-f]{64})")
 
 #: What git-annex says of content another of its processes is fetching:
 #: it refuses the second transfer, and the content is there once the first
@@ -1013,26 +1092,6 @@ def located(directory: Path, wanted: Iterable[str]) -> dict[str, Path]:
     # One line out per key in: its object, from *directory*, or empty.
     found = _batch(directory, ["contentlocation", "--batch"], asked)
     return {key: directory / place for key, place in zip(asked, found, strict=True) if place}
-
-
-def objects(directory: Path, files: Sequence[str]) -> dict[str, Path]:
-    """Find the object this clone's annex keeps the bytes of each file in.
-
-    Args:
-        directory: The repository root.
-        files: Each as ``<commit>:<path>``, as :func:`keys` takes them.
-
-    Returns:
-        Each file whose bytes this clone's annex holds → the object that
-        holds them. One git keeps itself, and one whose bytes are
-        elsewhere, are left out.
-
-    Raises:
-        ProjectError: If git-annex cannot be asked.
-    """
-    held = keys(directory, files)
-    stored = located(directory, held.values())
-    return {name: stored[key] for name, key in held.items() if key in stored}
 
 
 def _batch(directory: Path, command: list[str], asked: Sequence[str]) -> list[str]:
@@ -1323,28 +1382,47 @@ def _annex_log(directory: Path, log: str) -> dict[str, list[str]]:
     return {uuid: fields for uuid, (_, fields) in newest.items()}
 
 
-#: git's options for a tree git-annex must not run in: a linked worktree,
-#: where it would fill every annexed file it holds the bytes of, by copy
-#: (measured). No hooks, and no annex filter: annexed files are then the
-#: stand-ins git stores. ``required`` is cleared with the commands, or git
-#: reads a filter with none as one that failed.
+#: git's options for a tree no tool that keeps bytes elsewhere may run in:
+#: a linked worktree, where git-annex would fill every annexed file it
+#: holds the bytes of, by copy, and Git LFS download every file of the
+#: commit, or fail the checkout where it cannot (both measured). No hooks,
+#: and neither tool's filter: what they keep is then the stand-in git
+#: stores. ``required`` is cleared with the commands, or git reads a
+#: filter with none as one that failed.
 PLAIN = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "filter.annex.smudge=",
     "-c", "filter.annex.clean=",
     "-c", "filter.annex.process=",
     "-c", "filter.annex.required=false",
+    "-c", "filter.lfs.smudge=",
+    "-c", "filter.lfs.clean=",
+    "-c", "filter.lfs.process=",
+    "-c", "filter.lfs.required=false",
 ]  # fmt: skip
 
-#: :data:`PLAIN` as environment, for every git a command runs by itself.
-PLAIN_ENV = {
-    "GIT_CONFIG_COUNT": str(len(PLAIN) // 2),
-    **{
-        f"GIT_CONFIG_{part}_{n}": text
-        for n, option in enumerate(PLAIN[1::2])
-        for part, text in zip(("KEY", "VALUE"), option.split("=", 1), strict=True)
-    },
-}
+
+def plain_env(ambient: Mapping[str, str]) -> dict[str, str]:
+    """Give :data:`PLAIN` as environment, for every git a command runs by itself.
+
+    Numbered after whatever configuration *ambient* already gives git that
+    way: a CI's ``safe.directory``, or the address its credentials are for.
+
+    Args:
+        ambient: The environment the command would otherwise run in.
+
+    Returns:
+        The variables to add to it.
+    """
+    given = ambient.get("GIT_CONFIG_COUNT", "")
+    first = int(given) if given.isdigit() else 0
+    options = [option.split("=", 1) for option in PLAIN[1::2]]
+    return {
+        "GIT_CONFIG_COUNT": str(first + len(options)),
+        **{f"GIT_CONFIG_KEY_{first + n}": key for n, (key, _) in enumerate(options)},
+        **{f"GIT_CONFIG_VALUE_{first + n}": value for n, (_, value) in enumerate(options)},
+    }
+
 
 #: How many paths lc puts on one command line, far under what any system
 #: takes. Whatever git or git-annex reads from standard input goes there.

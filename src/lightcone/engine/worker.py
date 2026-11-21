@@ -453,8 +453,18 @@ def execute(
         # Made in a checkout, the file goes to its place in the project
         # now, last, and before anything is told it exists: what reads it
         # starts after this returns, and finds it through the link left
-        # here.
+        # here. Not once the run is over: a task goes on after the driver
+        # that submitted it is gone, and would put its file over what a
+        # later run has committed.
         if context.project is not None:
+            if _abandoned():
+                return TaskOutcome(
+                    task.id,
+                    "failed",
+                    reason="the run it was made for ended before it did, so it stays in "
+                    "that run's checkout",
+                    notes=outcome.notes,
+                )
             checkout.hand_over(task, context.project)
     except (OSError, ValueError, ProjectError) as e:
         return TaskOutcome(
@@ -466,6 +476,25 @@ def execute(
     return TaskOutcome(
         task.id, "made", content_hash=content_hash, size=size, stamp=stamp, notes=outcome.notes
     )
+
+
+def _abandoned() -> bool:
+    """Whether the run that submitted this task is gone.
+
+    Its scheduler knows: once the driver is, however it went, nothing
+    holds the task's result any more, and the scheduler tells the worker
+    so while the recipe runs on, since nothing can stop that. Asked where
+    a task runs on such a worker, and nowhere else: the rerun entry point
+    has no run to outlive.
+    """
+    from distributed import get_worker
+
+    try:
+        here = get_worker()
+    except ValueError:
+        return False
+    state = here.state.tasks.get(here.get_current_task())
+    return state is None or state.state == "cancelled"
 
 
 def _instant(moment: datetime) -> str:
@@ -559,7 +588,8 @@ def main(argv: list[str]) -> int:
             print(
                 f"error: uncommitted changes — {', '.join(edited)} — so the commit a "
                 "record names would not say what its recipe ran on (UNCOMMITTED_CHANGES). "
-                "Commit them first.",
+                "Commit your own first; what a run left where results go, "
+                "`lc materialize` settles.",
                 file=sys.stderr,
             )
             return 2

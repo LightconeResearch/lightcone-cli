@@ -569,7 +569,7 @@ def materialize(
     dsid = dataset.dataset_id(root)
     # Whatever changed is where results go, or the run was refused.
     if changes and _adopt(root, classified, dsid, report):
-        # The commit is another now, and the checkout has to be of it.
+        # The tree, or the commit, is another now.
         graph, environment = _graph(root, targets, MaterializeReport())
         classified = _classify(root, graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
@@ -616,11 +616,26 @@ def materialize(
                 + " — once a run is over, `git worktree remove --force --force <path>` "
                 "removes its checkout"
             )
-        # From here the run is in a checkout of the commit ASTRA read the
-        # analysis at, which every record it writes names: the project's
-        # tree is the researcher's again, bar the landing of each result.
-        assert graph.checked.head is not None  # the analysis is in a commit
-        tree = checkout.take(root, graph.checked.head, scheduler.allocation)
+        # From here the run is in a checkout of the commit the project is
+        # at, which every record it writes names: the project's tree is the
+        # researcher's again, bar the commit of each result. That commit
+        # may be a later one than the plan was read at: the image converge
+        # commits an archive, which a record's commit has to hold, and
+        # another run a result. It has to hold what the plan was made
+        # from, as the plan read it: the analysis, its environment and
+        # its inputs here, and each result further down.
+        commit = dataset.head(root)
+        if commit != graph.checked.head and not dataset.same(
+            root,
+            graph.checked.head,
+            commit,
+            [*graph.specs, *identity.files(root), *(path for _, path in graph.inputs.values())],
+        ):
+            raise ProjectError(
+                f"the analysis, its environment or an input was committed anew, from "
+                f"{graph.checked.head} to {commit}, while this run was preparing. Run again."
+            )
+        tree = checkout.take(root, commit, scheduler.allocation)
         tasks = {key: task.at(tree.root) for key, task in graph.tasks.items()}
         handles: list[Any] = []
         reported = 0
@@ -792,7 +807,7 @@ def materialize(
 def _adopt(
     root: Path, classified: Sequence[_Classified], dsid: str, report: MaterializeReport
 ) -> bool:
-    """Commit each result the project's tree holds that no commit does.
+    """Settle each result the project's tree holds that no commit does.
 
     A result is at its place in the project a moment before it is
     committed, and a run that ended in that moment leaves it there with
@@ -801,7 +816,8 @@ def _adopt(
     committed as its run would have: left as it is, ASTRA's checker would
     find it unchanged, no run would ever make or commit it, and no
     checkout, which holds what a commit does, would give it to what
-    reads it.
+    reads it. One made at a commit this history does not hold is put back
+    instead, as a landing refuses it: its record is true of nothing here.
 
     Whatever else is where results go is no true record of its bytes, and
     is left: the checker says so, and the run makes that result again.
@@ -810,36 +826,50 @@ def _adopt(
         root: The project root.
         classified: Where each result stands, as the tree has it.
         dsid: The dataset's UUID, for the run record.
-        report: The run's report, which says what was committed.
+        report: The run's report, which says what was done.
 
     Returns:
-        Whether anything was committed: the tree is then of another commit.
+        Whether any was settled: the plan was then read from a tree, or
+        at a commit, that is no more.
 
     Raises:
         ProjectError: If git does not store a result as lc stores one.
     """
     changed = {path for _, path in dataset.status(root, untracked_files=True)}
-    archive = container.image_state(root)[2]
+    # The archive a rerun fetches is one a commit holds, or none.
+    state, _, archive = container.image_state(root)
     adopted = False
     for found in classified:
         task = found.task
+        record = found.found.record
         mine = {plan.declared_path(root, path) for path in (*task.paths, *task.record_paths)}
         true = found.verdict.state in ("ok", "behind") or found.verdict.through_reads
-        if true and mine & changed:
-            # Nothing to commit where the run that made it has, since:
-            # the commit is another all the same.
-            if dataset.save(
-                root,
-                checkout.owns(task),
-                run_record(root, task, dsid, archive),
-                annexed=task.paths,
-                in_git=task.record_paths,
-                patience=checkout.LANDING,
-            ):
-                report.warnings.append(
-                    f"{task.id}: a run made it and never committed it — committed now"
-                )
-            adopted = True
+        if record is None or not true or not mine & changed:
+            continue
+        adopted = True
+        if not dataset.is_ancestor(root, record.generated_by.commit):
+            # True of a commit this history does not hold, as a landing
+            # refuses one: put back as the last commit has it, and the
+            # checker, which read the other, is asked again.
+            dataset.restore(root, checkout.owns(task), patience=checkout.LANDING)
+            report.warnings.append(
+                f"{task.id}: what was at its place was made at "
+                f"{record.generated_by.commit[:7]}, which this history does not hold — "
+                "put back as the last commit has it"
+            )
+        # Nothing to commit where the run that made it has, since: the
+        # commit is another all the same.
+        elif dataset.save(
+            root,
+            checkout.owns(task),
+            run_record(root, task, dsid, archive if state not in ("direct", "absent") else ""),
+            annexed=task.paths,
+            in_git=task.record_paths,
+            patience=checkout.LANDING,
+        ):
+            report.warnings.append(
+                f"{task.id}: a run made it and never committed it — committed now"
+            )
     return adopted
 
 
@@ -925,7 +955,9 @@ def _consume(
         elif not same:
             why = "its file is no longer the bytes its record names"
         else:
-            checkout.land(tree, task, run_record(tree.root, task, dsid, archive))
+            checkout.land(
+                tree, task, outcome.digest, run_record(tree.root, task, dsid, archive)
+            )
             report.made.append(name)
             return
         unlanded.add(name)
@@ -1485,14 +1517,20 @@ def _written(graph: Graph) -> tuple[str, ...]:
 
 
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
-    """The refusal of a tree that holds work no commit does."""
+    """The refusal of a tree that holds work no commit does.
+
+    The command names the paths: what a run left where results go is not
+    among them, and `git add -A` would commit it with the researcher's
+    work.
+    """
     return "\n".join(
         [
             f"uncommitted changes in {root} — a run builds the commit, in a checkout of "
             "it, so what is not committed would be no part of what it makes "
             "(UNCOMMITTED_CHANGES).",
             "",
-            '  commit these:   git add -A . && git commit -m "…"',
+            f"  commit these:   git add -- {shlex.join(path for _, path in changes)} "
+            '&& git commit -m "…"',
             *(f"      {code.strip() or '??'} {path}" for code, path in changes),
         ]
     )

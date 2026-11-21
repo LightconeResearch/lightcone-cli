@@ -7,15 +7,16 @@ project's tree ends as its commits have it are questions no stub answers.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from conftest import CLUSTER_ID, _Inline
@@ -69,6 +70,11 @@ def _taken(root: Path, allocation: str = CLUSTER_ID) -> checkout.Checkout:
     return checkout.take(root, dataset.head(root), allocation)
 
 
+def _object(root: Path, name: str) -> Path:
+    """The object this clone's annex keeps the bytes of `<commit>:<path>` in."""
+    return dataset.located(root, [dataset.keys(root, [name])[name]]).popitem()[1]
+
+
 def _held(root: Path) -> list[Path]:
     """The checkouts runs hold under *root*, as git lists them."""
     return sorted(checkout._held(root))
@@ -106,7 +112,7 @@ def test_fill_gives_a_file_the_annexs_bytes_under_one_more_name(root: Path) -> N
 
     assert (tree.root / "data/catalog.txt").read_text() == "1\n2\n"
     assert os.path.samefile(
-        tree.root / "data/catalog.txt", dataset.objects(root, [name])[name]
+        tree.root / "data/catalog.txt", _object(root, name)
     )
     assert not os.path.lexists(tree.root / "data/unread.txt")
     assert dataset.status(tree.root, untracked_files=True, config=dataset.PLAIN) == []
@@ -120,7 +126,7 @@ def test_fill_leaves_what_this_clone_lacks_the_bytes_of_for_its_task_to_refuse(
     annex stays the stand-in it is: the task that reads it refuses it by
     name, where a file that was simply gone would say nothing of why."""
     name = f"{dataset.head(root)}:./data/catalog.txt"
-    stored = dataset.objects(root, [name])[name]
+    stored = _object(root, name)
     (root / "data/catalog.txt").unlink()
     stored.parent.chmod(0o700)
     stored.unlink()
@@ -149,6 +155,26 @@ def test_fill_gives_a_file_git_ignores_from_the_projects_tree(root: Path) -> Non
     assert dataset.status(tree.root, untracked_files=True, config=dataset.PLAIN) == []
 
 
+def test_a_file_is_copied_where_the_filesystem_makes_no_second_name_for_it(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Across two filesystems, or for a file someone else owns, no hard
+    link is made. git-annex falls back to a copy there, and so does a
+    checkout: the bytes are the same, and in place whole."""
+    tree = _taken(root)
+
+    def refused(*args: object, **kwargs: object) -> None:
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "link", refused)
+
+    checkout.fill(tree, ["data/catalog.txt"])
+
+    assert (tree.root / "data/catalog.txt").read_text() == "1\n2\n"
+    assert not os.path.samefile(tree.root / "data/catalog.txt", root / "data/catalog.txt")
+    assert [path.name for path in (tree.root / "data").iterdir()] == ["catalog.txt"]
+
+
 def test_git_annex_run_in_a_checkout_copies_what_it_holds_so_no_git_there_runs_it(
     root: Path,
 ) -> None:
@@ -167,7 +193,7 @@ def test_git_annex_run_in_a_checkout_copies_what_it_holds_so_no_git_there_runs_i
             ["git", "status", "--porcelain"], cwd=tree.root, env=env, capture_output=True
         )
 
-    status({**child_env(), **dataset.PLAIN_ENV}, touched=1_000_000_000)
+    status({**child_env(), **dataset.plain_env({})}, touched=1_000_000_000)
     assert content.standin(unread) == "git-annex"
     assert (tree.top / ".git").is_file()
 
@@ -194,7 +220,7 @@ def test_a_recipe_in_a_checkout_reaches_neither_the_projects_tree_nor_git_annex(
     try:
         assert policy.grants(tree.root / "astra.yaml", policy.read)
         assert not policy.grants(root / "astra.yaml", policy.read)
-        assert runtime.env.items() >= dataset.PLAIN_ENV.items()
+        assert runtime.env.items() >= dataset.plain_env({}).items()
         assert "GIT_CONFIG_COUNT" not in project_runtime.env
     finally:
         shutil.rmtree(policy.tmp_home, ignore_errors=True)
@@ -224,7 +250,7 @@ def test_everything_a_run_starts_in_its_checkout_keeps_git_annex_out(
     assert engine.materialize(root, ["other"], cluster_id=CLUSTER_ID).ok
 
     for env in (started["sync"], started["recipe"]):
-        assert env is not None and env.items() >= dataset.PLAIN_ENV.items()
+        assert env is not None and env.items() >= dataset.plain_env({}).items()
 
 
 def test_a_checkout_that_declares_another_image_is_refused(
@@ -243,7 +269,7 @@ def test_a_checkout_that_declares_another_image_is_refused(
     )
     runtime = container.runtime_for_run(root, build=False)
 
-    assert runtime.at(root).in_checkout
+    assert runtime.at(root).repository == root / ".git"
     with pytest.raises(ProjectError, match="no longer what the commit"):
         runtime.at(tree)
 
@@ -345,6 +371,126 @@ def test_an_input_dvc_keeps_is_read_from_where_it_is(
     assert not dataset.status(root)
 
 
+_KEPT_BY_LFS = """
+spec_version: "0.1.0"
+
+inputs:
+  table: {path: tables/read.bin}
+
+outputs:
+  fit:
+    type: metric
+    format: txt
+    inputs: [table]
+    recipe:
+      command: cat {inputs.table} > {output}
+"""
+
+
+@pytest.mark.skipif(shutil.which("git-lfs") is None, reason="git-lfs is not installed")
+def test_a_checkout_asks_git_lfs_for_nothing(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """Checked out through its filter, every file Git LFS keeps would be
+    downloaded for each run, or fail the checkout where one cannot be:
+    here one was never pulled, and no remote has it. A checkout holds
+    their pointers; the one a task reads is given from the project's
+    tree, where `git lfs pull` put it, and the other is removed, like any
+    stand-in no output declares."""
+    root = analysis(_KEPT_BY_LFS, {"tables/read.bin": "read\n", "tables/unread.bin": "unread\n"})
+    for argv in (
+        # What `git lfs install` configures, without its hooks: git-annex has its own.
+        ["config", "filter.lfs.clean", "git-lfs clean -- %f"],
+        ["config", "filter.lfs.smudge", "git-lfs smudge -- %f"],
+        ["config", "filter.lfs.process", "git-lfs filter-process"],
+        ["config", "filter.lfs.required", "true"],
+        # Where it would download from, and nothing answers there.
+        ["config", "lfs.url", "http://127.0.0.1:9/"],
+        ["lfs", "track", "tables/*.bin"],
+        ["rm", "-q", "--cached", "tables/read.bin", "tables/unread.bin"],
+        ["add", ".gitattributes", "tables"],
+        ["commit", "-q", "-m", "keep the tables in Git LFS"],
+    ):
+        dataset._git(argv, cwd=root)
+    pointer = dataset._git(["cat-file", "-p", "HEAD:tables/unread.bin"], cwd=root)
+    assert pointer.startswith("version https://git-lfs.github.com/spec/v1")
+    oid = pointer.split("oid sha256:")[1].split()[0]
+    (root / ".git/lfs/objects" / oid[:2] / oid[2:4] / oid).unlink()
+    assert not dataset.status(root)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["fit"], (report.failed, report.warnings)
+    assert (root / "results/fit.txt").read_text() == "read\n"
+    assert (root / "tables/unread.bin").read_text() == "unread\n"
+    assert not dataset.status(root)
+
+
+def test_a_task_whose_run_is_gone_leaves_its_result_in_its_checkout(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recipe goes on after the driver that submitted it is gone, and
+    ends long after a later run has committed the same result. Its worker
+    asks before it moves anything: the file stays where the recipe wrote
+    it, and the project's tree is not touched."""
+    from lightcone.engine import worker
+
+    monkeypatch.setattr(worker, "_abandoned", lambda: True)
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.failed == ["other"] and not report.made
+    assert any("ended before it did" in w for w in report.warnings)
+    assert not os.path.lexists(root / "results/other.txt") and not dataset.status(root)
+
+
+def test_a_worker_knows_its_run_is_gone_from_its_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dask tells a worker that nothing holds a task's result any more
+    while the task runs on, since it cannot stop it. Outside a Dask
+    worker, where the rerun entry point and an in-thread scheduler run a
+    task, there is no run to outlive."""
+    import distributed
+
+    from lightcone.engine import worker
+
+    assert worker._abandoned() is False
+
+    class _Worker:
+        def __init__(self, state: str | None) -> None:
+            tasks = {} if state is None else {"lc-key": MagicMock(state=state)}
+            self.state = MagicMock(tasks=tasks)
+
+        def get_current_task(self) -> str:
+            return "lc-key"
+
+    for state, gone in (("executing", False), ("cancelled", True), (None, True)):
+        monkeypatch.setattr(distributed, "get_worker", lambda state=state: _Worker(state))
+        assert worker._abandoned() is gone
+
+
+def test_a_record_that_cannot_be_given_its_place_is_a_refusal(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full disk, or a folder that cannot be written: the result is not
+    committed, the project's tree is put back, and the run says so as it
+    says any refusal."""
+    name = checkout._name
+
+    def full(source: Path, target: Path) -> None:
+        if ".astra" in target.parts and checkout.RUNS not in target.as_posix():
+            raise OSError(28, "No space left on device")
+        name(source, target)
+
+    monkeypatch.setattr(checkout, "_name", full)
+
+    with pytest.raises(ProjectError, match="its record could not be given its place"):
+        engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert not os.path.lexists(root / "results/other.txt") and not dataset.status(root)
+
+
 def test_a_run_says_which_submodules_its_checkout_holds_no_file_of(
     root: Path, tmp_path: Path, inline: None
 ) -> None:
@@ -426,7 +572,7 @@ def test_a_result_is_written_once_and_the_tree_ends_as_its_commits_have_it(
     assert sorted(report.made) == ["fit", "other"], (report.failed, report.warnings)
     assert (root / "results/fit.txt").read_text() == "1\n2\n"
     made, name = root / "results/other.txt", "HEAD:./results/other.txt"
-    assert os.path.samefile(made, dataset.objects(root, [name])[name])
+    assert os.path.samefile(made, _object(root, name))
     assert made.stat().st_nlink == 2 and os.access(made, os.W_OK)
     assert not dataset.status(root)
     assert _held(root) == []
@@ -554,30 +700,65 @@ outputs:
 def test_a_plan_that_is_not_of_the_checkouts_commit_is_refused(
     analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan is read from the project's tree, where another run may
-    commit a result at any moment, and the checkout is of one commit. A
-    result the run leaves alone is read as its record in the plan gives
-    it: where the checkout holds another one, the run does not start,
-    since each record it wrote would name bytes no recipe read."""
+    """The plan is read from the project's tree, and the checkout is of
+    the commit the project is at when it is taken: another run may commit
+    a result in between. A result the run leaves alone is read as its
+    record in the plan gives it, so where the checkout holds another one
+    the run does not start: each record it wrote would name bytes no
+    recipe read."""
     root = analysis(_CHAIN, {"data/catalog.txt": "1\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    earlier = dataset.head(root)
-    (root / "data/catalog.txt").unlink()
-    (root / "data/catalog.txt").write_text("2\n")
-    dataset.save(root, [root / "data/catalog.txt"], "another catalog")
-    assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).made == ["fit"]
+    spec = root / "astra.yaml"
+    spec.write_text(spec.read_text().replace("cat {inputs.fit}", "cat -u {inputs.fit}"))
+    dataset.save(root, [spec], "another recipe for what reads the fit")
     build = plan.build
 
-    def read_before_the_other_run_committed(path: Path) -> plan.Graph:
+    def another_run_commits_the_fit_meanwhile(path: Path) -> plan.Graph:
         graph = build(path)
-        return replace(graph, checked=replace(graph.checked, head=earlier))
+        record = root / ".astra/records/fit.json"
+        made = json.loads(record.read_text())
+        record.write_text(json.dumps({**made, "size": made["size"] + 1}))
+        dataset.save(root, [record], "the fit, as another run made it")
+        return graph
 
-    monkeypatch.setattr(plan, "build", read_before_the_other_run_committed)
+    monkeypatch.setattr(plan, "build", another_run_commits_the_fit_meanwhile)
 
     with pytest.raises(ProjectError, match="another run committed it meanwhile"):
         engine.materialize(root, ["again"], cluster_id=CLUSTER_ID)
 
     assert not dataset.status(root) and _held(root) == []
+
+
+def test_a_run_is_of_the_commit_the_project_is_at_when_its_checkout_is_taken(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Between reading the plan and taking the checkout, the image
+    converge may commit an archive, and the researcher anything. The run
+    is of the later commit, which its records name, where that commit
+    holds the analysis, the environment and the inputs the plan was made
+    from; where one of them was committed anew, the plan is of nothing,
+    and the run does not start."""
+    root = analysis(_CHAIN, {"data/catalog.txt": "1\n"})
+    resolve = container.runtime_for_run
+
+    def committing(change: str) -> Callable[..., container.Runtime]:
+        def resolved(*args: Any, **kwargs: Any) -> container.Runtime:
+            (root / change).write_text("committed while the run was preparing\n")
+            dataset.save(root, [root / change], "meanwhile")
+            return resolve(*args, **kwargs)
+
+        return resolved
+
+    monkeypatch.setattr(container, "runtime_for_run", committing("notes.md"))
+    assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).made == ["fit"]
+    record = json.loads((root / ".astra/records/fit.json").read_text())
+    named = record["generated_by"]["commit"]
+    assert dataset._git(["log", "-1", "--format=%s", named], cwd=root).strip() == "meanwhile"
+
+    monkeypatch.setattr(container, "runtime_for_run", committing("data/catalog.txt"))
+    with pytest.raises(ProjectError, match="committed anew"):
+        engine.materialize(root, ["again"], cluster_id=CLUSTER_ID)
+    assert _held(root) == []
 
 
 def test_two_runs_at_once_each_land_what_they_make(

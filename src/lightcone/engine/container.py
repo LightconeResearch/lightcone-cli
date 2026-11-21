@@ -68,9 +68,9 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
-    #: Whether the run is in a checkout of its commit (:mod:`checkout`),
-    #: where git-annex must not run.
-    in_checkout: bool = False
+    #: For a run in a checkout of its commit (:mod:`checkout`), the
+    #: repository's own folder, which the checkout's ``.git`` only names.
+    repository: Path | None = None
 
     def at(self, root: Path) -> Runtime:
         """The same world, entered from a checkout of the project's commit.
@@ -100,17 +100,21 @@ class Runtime:
                 "every record would name an environment its recipe did not run in. Commit "
                 "the change, or undo it, and run again."
             )
-        return replace(self, root=root, env_dir=project.env_dir(root), in_checkout=True)
+        return replace(
+            self, root=root, env_dir=project.env_dir(root), repository=dataset.repository(root)
+        )
 
     @property
     def env(self) -> dict[str, str]:
         """The environment for whatever lc starts in this world's tree.
 
-        In a checkout, with the options that keep git-annex out of it
-        (:data:`dataset.PLAIN_ENV`): a build backend that asks git for a
-        version, or a recipe that runs git, would otherwise start it there.
+        In a checkout, with the options that keep git-annex and Git LFS
+        out of it (:func:`dataset.plain_env`): a build backend that asks
+        git for a version, or a recipe that runs git, would otherwise
+        start them there.
         """
-        return {**project.child_env(), **(dataset.PLAIN_ENV if self.in_checkout else {})}
+        ours = project.child_env()
+        return {**ours, **(dataset.plain_env(ours) if self.repository else {})}
 
     @property
     def supports_gpus(self) -> bool:
@@ -134,8 +138,9 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
     questions second: archive committed, content fetched (through the
     annex, by lc itself), loaded into the local store. Only the first
     check's miss differs by caller — *build* is true for ``lc build`` and
-    the materialize preflight, which may build and commit on a tree their
-    own dirty check just proved clean; everything else (the probe, the
+    the materialize preflight, which may build and commit in a tree their
+    own check found free of the researcher's uncommitted work; everything
+    else (the probe, the
     rerun entry point) refuses naming the exact ``lc build``, because
     ``lc run`` never builds and the worker never commits.
 
@@ -354,7 +359,8 @@ def build(root: Path) -> tuple[Runtime, str]:
         raise ProjectError(
             "uncommitted changes — the image is derived from pyproject.toml and "
             "committed into the repository, so `lc build` needs the tree to say "
-            "what it is building from. Commit first, then re-run `lc build`."
+            "what it is building from. Commit your own first; what a run left where "
+            "results go, `lc materialize` settles, and builds the image too."
         )
     dataset.require_free_index(root)
     existed = image_state(root)[0] != "absent"
@@ -440,6 +446,7 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         *uid_flags(runtime.runtime),
         "-v", f"{root}:{root}:rw",
         "-v", f"{cache}:{cache}:rw",
+        *_repository_flags(runtime),
         "--env", f"UV_CACHE_DIR={cache}",
         "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
         "-w", str(root),
@@ -448,6 +455,23 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         "uv", *project._SYNC_ARGS, "--project", str(root),
     ]  # fmt: skip
     return _check_call(argv, cwd=root)
+
+
+def _repository_flags(runtime: Runtime) -> list[str]:
+    """What a container needs for git to work in a run's checkout.
+
+    A checkout's ``.git`` names the repository, which is outside it: the
+    repository is mounted where it is, read-only, and git is given the
+    options that keep git-annex and Git LFS out of a checkout. A build
+    backend that asks git for a version finds one, as it did when the
+    project's own tree, ``.git`` and all, was what a container saw.
+    """
+    if runtime.repository is None:
+        return []
+    return [
+        "-v", f"{runtime.repository}:{runtime.repository}:ro",
+        *(f"--env={name}={value}" for name, value in dataset.plain_env({}).items()),
+    ]  # fmt: skip
 
 
 def converge(runtime: Runtime) -> list[str]:
@@ -465,7 +489,7 @@ def converge(runtime: Runtime) -> list[str]:
         Whatever uv warned about.
     """
     if runtime.mode == "direct":
-        return project.sync(runtime.root, runtime.env if runtime.in_checkout else None)
+        return project.sync(runtime.root, runtime.env if runtime.repository else None)
     return sync(runtime.root, runtime)
 
 
@@ -494,14 +518,20 @@ def policy_for(
         from lightcone.engine.sandbox.oci import require_gpu_runtime
 
         require_gpu_runtime(runtime.runtime)
-    return sandbox.exec_policy(
+    # A container sees what is mounted, and a checkout's `.git` names a
+    # repository outside it: mounted too, so git in the image works as it
+    # did in the project's own tree, with the options that keep git-annex
+    # and Git LFS out. A host mechanism grants no git to run.
+    repository = runtime.repository if runtime.mode == "containerized" else None
+    policy = sandbox.exec_policy(
         runtime.root,
-        read_paths=read_paths,
+        read_paths=[*read_paths, *([repository] if repository else [])],
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,
         use_gpus=use_gpus,
     )
+    return replace(policy, env={**policy.env, **dataset.plain_env({})}) if repository else policy
 
 
 def archive_identity(path: Path) -> tuple[str, str, list[str], str]:
@@ -623,7 +653,7 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     what makes "code edits never trigger a build" structural rather than
     observed. The archive commit is scoped to the environment directory
     plus ``.datalad/config`` (the ``datalad containers-run`` interop
-    keys), and the caller has already proven the tree clean.
+    keys), so nothing else the tree holds is committed with it.
     """
     relative = archive.relative_to(root).as_posix()
     # The archive is committed, so its routing must be checked *before*

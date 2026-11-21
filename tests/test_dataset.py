@@ -1193,3 +1193,66 @@ def test_a_fetch_waits_for_another_process_fetching_the_same_content(
     monkeypatch.setattr(project, "_run", lambda argv, **kwargs: failed)
     assert dataset.transfer(["git", "annex", "get", "--batch"], cwd=tmp_path) is failed
     assert len(waited) == 2
+
+
+def test_files_another_process_committed_since_they_were_staged_are_committed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs of one project may commit the same result: one that made
+    it, and one that found it made and never committed. Whichever commits
+    second finds nothing left to commit, which git reports as a failure:
+    the files are in a commit all the same."""
+    (repo / "results").mkdir(exist_ok=True)
+    made = repo / "results" / "fit.txt"
+    made.write_text("fit\n")
+    git = dataset._git
+
+    def raced(argv: list[str], **kwargs: Any) -> str:
+        if "commit" in argv:
+            subprocess.run(
+                ["git", "-c", "annex.thin=true", "commit", "-q", "-m", "the other run's", "--",
+                 "results/fit.txt"],
+                cwd=repo, check=True, capture_output=True,
+            )  # fmt: skip
+        return git(argv, **kwargs)
+
+    monkeypatch.setattr(dataset, "_git", raced)
+
+    assert dataset.save(repo, [made], "this run's", annexed=[made]) is False
+    assert not dataset.status(repo)
+    assert dataset._git(["log", "-1", "--format=%s"], cwd=repo).strip() == "the other run's"
+
+
+def test_bytes_staged_under_another_hash_than_their_record_names_are_not_committed(
+    repo: Path,
+) -> None:
+    """A result waits where other runs write until it is committed. What
+    git-annex staged it under names the bytes it hashed then: where those
+    are not the ones the record names, nothing is committed, and nothing
+    is left staged."""
+    (repo / "results").mkdir(exist_ok=True)
+    made = repo / "results" / "fit.txt"
+    made.write_text("another run's bytes\n")
+
+    with pytest.raises(project.ProjectError, match="staged with other bytes"):
+        dataset.save(
+            repo, [made], "fit", annexed=[made], named={made: ("sha256:" + "0" * 64, 1)}
+        )
+
+    assert dataset.status(repo) == [("??", "results/")]
+    assert dataset.save(
+        repo, [made], "fit", annexed=[made], named={made: content.digest_file(made)}
+    )
+
+
+def test_git_is_kept_plain_after_what_the_environment_already_tells_it() -> None:
+    """Configuration reaches git through numbered variables, and a CI or a
+    credential setup uses the first ones: lc's go after them."""
+    alone = dataset.plain_env({})
+    assert alone["GIT_CONFIG_COUNT"] == str(len(dataset.PLAIN) // 2)
+    assert alone["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+
+    ambient = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory"}
+    after = dataset.plain_env(ambient)
+    assert after["GIT_CONFIG_COUNT"] == str(1 + len(dataset.PLAIN) // 2)
+    assert "GIT_CONFIG_KEY_0" not in after and after["GIT_CONFIG_KEY_1"] == "core.hooksPath"
