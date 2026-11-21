@@ -148,8 +148,9 @@ def test_the_store_is_a_shared_git_annex_repository_declared_for_every_clone(
     assert _config(Path(store), "core.bare") == "true"
     assert _config(Path(store), "core.sharedrepository") in ("1", "group")
     assert _config(Path(store), "annex.uuid")
-    declared = dataset.store(published)
-    assert declared == dataset.Store("directory", store, {dataset.STORE: (store, True)})
+    [declared] = dataset.stores(published)
+    its_id = _config(Path(store), "annex.uuid")
+    assert declared == dataset.Store("directory", store, its_id, {dataset.STORE: (store, True)})
     assert f"location={store}" in dataset._git(["show", "git-annex:remote.log"], cwd=published)
     assert "autoenable=true" in dataset._git(["show", "git-annex:remote.log"], cwd=published)
 
@@ -312,6 +313,84 @@ def test_lc_confirms_no_declaration_but_the_one_it_writes_for_that_place(
     assert _config(clone, f"remote.{dataset.STORE}.annex-verified") == "automatic"
 
 
+def _declared_by_hand(root: Path, name: str, directory: Path) -> None:
+    """Declare a store in *directory* as someone does with git-annex, under *name*."""
+    dataset._git(["init", "-q", "--bare", "--shared=group", str(directory)], cwd=root)
+    dataset._git(["annex", "init", "-q"], cwd=directory)
+    dataset._git(
+        ["annex", "initremote", name, "type=git", f"location={directory}", "autoenable=true"],
+        cwd=root,
+    )
+
+
+def test_a_store_declared_by_hand_under_another_name_is_the_projects_store(
+    made: Path, store: str, tmp_path: Path
+) -> None:
+    """A store is what git-annex's branch declares, not what it is called:
+    lc asks for no `--data`, declares nothing more, and sends there. A
+    clone reads from it, and confirms it as it would one lc declared."""
+    _declared_by_hand(made, "shared", Path(store))
+
+    report = publish.publish(made, _URL, visibility="private")
+
+    assert report.ok and report.published and not report.declared
+    assert (report.store, report.sent[_FIT]) == (store, "result")
+    assert [list(each.remotes) for each in dataset.stores(made)] == [["shared"]]
+    assert _config(made, "remote.origin.datalad-publish-depends") == "shared"
+
+    clone = _join(tmp_path)
+    found = materialize.status(clone).results
+    assert [(r.state, r.unfetched, r.remotes) for r in found] == [("ok", True, ["shared"])] * 2
+    assert materialize.fetch(clone, []).fetched == ["fit", "summary"]
+    _remake(clone)
+    with pytest.raises(ProjectError) as refused:
+        publish.publish(clone)
+    assert f"lc publish --confirm-data {store}" in str(refused.value)
+    confirmed = publish.publish(clone, confirm=store)
+    assert confirmed.ok and confirmed.published and confirmed.confirmed
+    assert _config(clone, "remote.shared.annex-verified") == "verified"
+
+
+def test_a_store_of_a_kind_lc_does_not_publish_to_is_not_given_a_second(
+    made: Path, store: str, tmp_path: Path, github: GitHub
+) -> None:
+    """A project whose bytes go to a bucket someone declared has a store:
+    declaring another beside it would leave every clone with two, one of
+    them never confirmed. Refused before anything is created or declared."""
+    (tmp_path / "bucket").mkdir()
+    dataset._git(
+        ["annex", "initremote", "bucket", "type=directory", f"directory={tmp_path / 'bucket'}",
+         "encryption=none", "autoenable=true"],
+        cwd=made,
+    )  # fmt: skip
+
+    with pytest.raises(ProjectError, match="a kind lc does not publish to") as refused:
+        publish.publish(made, _URL, visibility="private", data=store)
+
+    assert "`bucket`" in str(refused.value)
+    assert not github.at("alice/analysis").exists() and not Path(store).exists()
+    assert dataset.STORE not in dataset._git(["show", "git-annex:remote.log"], cwd=made)
+
+
+def test_a_project_that_declares_two_stores_is_published_to_neither(
+    published: Path, tmp_path: Path, github: GitHub
+) -> None:
+    """Which of two stores the bytes go to would be a guess. Reading takes
+    from both."""
+    _declared_by_hand(published, "second", tmp_path / "second")
+    _remake(published)
+    before = _heads(github)
+
+    with pytest.raises(ProjectError, match="more than one data store") as refused:
+        publish.publish(published)
+    assert dataset.STORE in str(refused.value) and "second" in str(refused.value)
+    with pytest.raises(ProjectError, match="more than one data store"):
+        publish.publish(published, check=True)
+
+    assert _heads(github) == before
+    assert len(dataset.stores(published)) == 2
+
+
 def test_a_store_a_pull_brings_is_enabled_before_anything_is_read(
     made: Path, store: str, tmp_path: Path
 ) -> None:
@@ -321,7 +400,7 @@ def test_a_store_a_pull_brings_is_enabled_before_anything_is_read(
     colleague = clone_of(made, tmp_path)
     assert publish.publish(made, _URL, visibility="private", data=store).ok
     dataset._git(["pull", "-q"], cwd=colleague)
-    assert dataset.store(colleague) is None
+    assert dataset.stores(colleague) == []
 
     remotes = [r.remotes for r in materialize.status(colleague).results]
 
@@ -399,7 +478,7 @@ def test_a_store_is_not_made_where_something_else_is(
         publish.publish(made, _URL, visibility="private", data=str(tmp_path / "taken"))
 
     assert not github.at("alice/analysis").exists()
-    assert dataset.store(made) is None and not dataset.remote_url(made, "origin")
+    assert dataset.stores(made) == [] and not dataset.remote_url(made, "origin")
     assert sorted(path.name for path in (tmp_path / "taken").iterdir()) == ["notes.txt"]
 
 
@@ -853,13 +932,13 @@ def test_git_lfs_is_confirmed_address_by_address_as_lc_declares_it() -> None:
     store = dataset.Store(
         "github-lfs",
         "https://github.com/alice/analysis",
+        "1111",
         {
             dataset.STORE: ("https://github.com/alice/analysis", False),
             dataset.STORE_SSH: ("git@github.com:alice/analysis.git", False),
         },
     )
     over_https = engine_github.Repository("alice", "analysis")
-    over_ssh = engine_github.Repository("alice", "analysis", ssh=True)
 
     assert publish._settings(store, "git@github.com:alice/analysis.git") == {
         "type": "git-lfs",
@@ -868,9 +947,6 @@ def test_git_lfs_is_confirmed_address_by_address_as_lc_declares_it() -> None:
         "encryption": "none",
     }
     assert publish._described(store, over_https) == "GitHub LFS of github.com/alice/analysis"
-    # A clone sends over the address its `origin` uses.
-    assert publish._remote(store, over_https) == dataset.STORE
-    assert publish._remote(store, over_ssh) == dataset.STORE_SSH
     with pytest.raises(ProjectError) as refused:
         publish._require_same_store(store, None, "", over_https, check=False)
     assert "lc publish --confirm-data https://github.com/alice/analysis" in str(refused.value)
@@ -883,6 +959,7 @@ def test_git_lfs_of_another_repository_is_not_this_projects_store() -> None:
     store = dataset.Store(
         "github-lfs",
         "https://github.com/alice/analysis",
+        "1111",
         {
             dataset.STORE: ("https://github.com/alice/analysis", True),
             dataset.STORE_SSH: ("git@github.com:mallory/analysis.git", True),

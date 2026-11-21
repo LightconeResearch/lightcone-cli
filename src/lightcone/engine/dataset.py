@@ -524,7 +524,7 @@ def populate(directory: Path) -> None:
 
 
 def enable_store(directory: Path) -> None:
-    """Enable the store the project declares, where this clone has not yet.
+    """Enable each store the project declares that this clone has not yet.
 
     git-annex enables a declared store when it is first set up in a clone,
     and not afterwards: one a ``git pull`` brought stays unknown to this
@@ -534,7 +534,12 @@ def enable_store(directory: Path) -> None:
     store comes up exactly as in a fresh clone: read from freely, and
     written to by nothing until this clone confirms it
     (``annex-verified = automatic``, measured), which only ``lc publish``
-    does, and only when told to.
+    does, and only when told to. A store the clone already has is left as
+    it stands, confirmed or not (measured).
+
+    Forced only where a declaration waits, under whatever name. A store
+    marked dead stays declared and is enabled by nothing (measured), so
+    it is not waited for.
 
     Naming the store to ``git annex enableremote`` instead leaves it
     unreadable until confirmed (measured).
@@ -542,7 +547,16 @@ def enable_store(directory: Path) -> None:
     Args:
         directory: The repository root, where git-annex is set up.
     """
-    if not remote_url(directory, STORE):
+    here = _configured(directory)
+    waiting = {
+        settings["uuid"] for name, settings in _declared(directory).items() if name not in here
+    }
+    if not waiting:
+        return
+    dead = {
+        uuid for uuid, fields in _annex_log(directory, "trust.log").items() if fields[:1] == ["X"]
+    }
+    if waiting - dead:
         project._run(["git", "annex", "init", "--autoenable", "--force"], cwd=directory)
 
 
@@ -652,95 +666,112 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
 # Where the bytes go
 # =============================================================================
 
-#: The remote a project's data store is, in every clone. The store is
-#: declared once, in git-annex's branch, as a special remote git-annex
-#: enables by itself: no clone configures it, and DataLad finds it the
-#: same way.
+#: The name lc declares a project's data store under. A store is declared
+#: once, in git-annex's branch, as a special remote git-annex enables by
+#: itself: no clone configures it, and DataLad finds it the same way. The
+#: name is lc's choice and no part of what makes a remote a store
+#: (:func:`stores`).
 STORE = "origin-storage"
 
-#: A second remote for a store in a repository's Git LFS: the same store,
-#: at the repository's ssh address.
+#: The name lc declares a second remote under, for a store in a
+#: repository's Git LFS: the same store, at the repository's ssh address.
 STORE_SSH = "origin-storage-ssh"
 
 #: What git-annex records of a store it enabled that this clone has not
 #: confirmed: enabled by itself, or by name. It sends nothing to either.
 _UNCONFIRMED = ("automatic", "manual")
 
+#: The stores lc publishes a project's data to, by git-annex's type for
+#: each → what lc calls it.
+_KINDS: dict[str, Literal["github-lfs", "directory"]] = {
+    "git-lfs": "github-lfs",
+    "git": "directory",
+}
+
 
 @dataclass(frozen=True)
 class Store:
-    """The store a project's bytes are published to, as this clone has it."""
+    """A store the project declares for its bytes, as this clone has it."""
 
     #: A repository's Git LFS storage, or a git-annex repository in a
-    #: directory.
-    kind: Literal["github-lfs", "directory"]
+    #: directory: the kinds lc publishes to. None for a store of any
+    #: other, a bucket say.
+    kind: Literal["github-lfs", "directory"] | None
     #: Where it is: the repository's address, or the directory's, a path
-    #: or an ssh URL.
+    #: or an ssh URL. Empty for a store that is no git remote, which lc
+    #: publishes nothing to.
     location: str
-    #: Each remote that reaches it from this clone → its address there,
-    #: and whether this clone may send to it: it declared the store, or
-    #: confirmed it since.
+    #: git-annex's id for it, which its log places bytes by.
+    uuid: str
+    #: Each remote that reaches it from this clone, the one it was
+    #: declared as first → its address there, and whether this clone may
+    #: send to it: it declared the store, or confirmed it since.
     remotes: dict[str, tuple[str, bool]]
 
+    def remote(self, *, ssh: bool) -> str:
+        """Name the remote a clone sends through.
 
-def store(directory: Path) -> Store | None:
-    """Read the store this clone publishes the project's bytes to.
+        For Git LFS declared at two addresses, the one of the kind the
+        clone's ``origin`` uses, which is the one its credentials are for.
 
-    From this clone's own configuration, which is what git-annex acts on:
-    a store's declaration travels in git-annex's branch, and a change to
-    it that a pull brings takes effect only once confirmed.
+        Args:
+            ssh: Whether the clone reaches its ``origin`` over ssh.
 
-    Args:
-        directory: The repository root.
-
-    Returns:
-        The store, or None where the project declares none, or this clone
-        has not enabled it (:func:`enable_store`).
-    """
-    listed = _ask(
-        ["config", "--get-regexp",
-         rf"^remote\.({STORE}|{STORE_SSH})\.(url|annex-git-lfs|annex-verified)$"],
-        cwd=directory,
-    )  # fmt: skip
-    found: dict[str, dict[str, str]] = {}
-    for line in (listed or "").splitlines():
-        key, _, value = line.partition(" ")
-        name, _, setting = key.removeprefix("remote.").rpartition(".")
-        found.setdefault(name, {})[setting] = value
-    if not found.get(STORE, {}).get("url"):
-        return None
-    return Store(
-        kind="github-lfs" if found[STORE].get("annex-git-lfs") == "true" else "directory",
-        location=found[STORE]["url"],
-        remotes={
-            name: (settings["url"], settings.get("annex-verified") not in _UNCONFIRMED)
-            for name, settings in sorted(found.items())
-            if settings.get("url")
-        },
-    )
+        Returns:
+            That remote, or the one the store was declared as where no
+            address is of that kind.
+        """
+        return next(
+            (
+                name
+                for name, (address, _) in self.remotes.items()
+                if (there := github.parse(address)) is not None and there.ssh == ssh
+            ),
+            next(iter(self.remotes)),
+        )
 
 
-def store_uuid(directory: Path) -> str:
-    """Read which repository the project's store is, from its declaration.
+def stores(directory: Path) -> list[Store]:
+    """Read each store the project declares, as this clone has it.
 
-    git-annex's log places bytes in repositories by id. For a store in a
-    directory, git-annex notes that id in a clone's configuration only
-    once it has looked there (measured): a clone that has yet to reach its
-    store would take what the log places in it for bytes no remote of its
-    own holds. The declaration in git-annex's branch gives the id from
-    the start, one line per special remote, its id first.
+    What makes a remote a store is its declaration in git-annex's branch,
+    as one git-annex enables by itself. Its name is no part of that, nor
+    its kind: lc declares a store as :data:`STORE`, in Git LFS or in a
+    directory, and one declared by hand or by another tool, under another
+    name or of another kind, is the project's store all the same. A
+    project is meant to declare one; what to make of several, or of a
+    kind lc publishes nothing to, is the caller's.
+
+    Where a store is, and whether this clone may send to it, come from
+    the clone's own configuration, which is what git-annex acts on: a
+    change to a declaration that a pull brings takes effect only once
+    confirmed.
 
     Args:
         directory: The repository root.
 
     Returns:
-        The id, or empty where the project declares no store.
+        Each declared store this clone has enabled (:func:`enable_store`),
+        by id.
     """
-    declared = _ask(["show", "git-annex:remote.log"], cwd=directory) or ""
-    return next(
-        (line.split()[0] for line in declared.splitlines() if f"name={STORE}" in line.split()),
-        "",
-    )
+    here = _configured(directory)
+    kinds: dict[str, Literal["github-lfs", "directory"] | None] = {}
+    reached: dict[str, dict[str, tuple[str, bool]]] = {}
+    # A store's own declaration before another address of it.
+    for name, settings in sorted(
+        _declared(directory).items(), key=lambda item: ("sameas-uuid" in item[1], item[0])
+    ):
+        if name not in here:
+            continue
+        kinds.setdefault(settings["uuid"], _KINDS.get(settings.get("type", "")))
+        reached.setdefault(settings["uuid"], {})[name] = (
+            here[name].get("url", ""),
+            here[name].get("annex-verified") not in _UNCONFIRMED,
+        )
+    return [
+        Store(kinds[uuid], next(iter(remotes.values()))[0], uuid, remotes)
+        for uuid, remotes in sorted(reached.items())
+    ]
 
 
 def unsettled(directory: Path) -> dict[str, str]:
@@ -765,11 +796,9 @@ def unsettled(directory: Path) -> dict[str, str]:
     if published_to is None:
         return {}
     wanted = {"remote.origin.annex-ignore": "true"}
-    declared = store(directory)
-    if declared is not None:
-        wanted["remote.origin.datalad-publish-depends"] = (
-            STORE_SSH if published_to.ssh and STORE_SSH in declared.remotes else STORE
-        )
+    declared = stores(directory)
+    if len(declared) == 1:
+        wanted["remote.origin.datalad-publish-depends"] = declared[0].remote(ssh=published_to.ssh)
     return {
         key: value
         for key, value in wanted.items()
@@ -1063,20 +1092,78 @@ def reaching(directory: Path) -> list[str]:
 
 def _remotes(directory: Path) -> dict[str, str]:
     """Each repository this clone can fetch from, by git-annex's id for it
-    → the remote's name. A store reached at two addresses is named by the
-    first, and one this clone has yet to reach by its declaration
-    (:func:`store_uuid`)."""
-    listed = _ask(["config", "--get-regexp", r"^remote\..+\.annex-uuid$"], cwd=directory)
-    named = sorted(
-        (key.removeprefix("remote.").removesuffix(".annex-uuid"), uuid)
-        for key, _, uuid in (line.partition(" ") for line in (listed or "").splitlines())
-    )
-    if remote_url(directory, STORE) and (declared := store_uuid(directory)):
-        named.append((STORE, declared))
+    → the remote's name. One reached at two addresses is named by the
+    first.
+
+    git-annex's log places bytes in repositories by id. For a store in a
+    directory, git-annex notes that id in a clone's configuration only
+    once it has looked there (measured): until then the store's
+    declaration gives it, or what the log places in the store would read
+    as bytes no remote of the clone holds."""
+    here, declared = _configured(directory), _declared(directory)
     remotes: dict[str, str] = {}
-    for name, uuid in named:
-        remotes.setdefault(uuid, name)
+    for name in sorted(here):
+        if uuid := here[name].get("annex-uuid") or declared.get(name, {}).get("uuid"):
+            remotes.setdefault(uuid, name)
     return remotes
+
+
+def _configured(directory: Path) -> dict[str, dict[str, str]]:
+    """Each remote of this clone, by name → what its configuration says of
+    it: its ``url``, git-annex's id for what it reaches (``annex-uuid``),
+    and where confirming it stands (``annex-verified``)."""
+    listed = _ask(
+        ["config", "--get-regexp", r"^remote\..+\.(url|annex-uuid|annex-verified)$"],
+        cwd=directory,
+    )
+    found: dict[str, dict[str, str]] = {}
+    for line in (listed or "").splitlines():
+        key, _, value = line.partition(" ")
+        name, _, setting = key.removeprefix("remote.").rpartition(".")
+        found.setdefault(name, {})[setting] = value
+    return found
+
+
+def _declared(directory: Path) -> dict[str, dict[str, str]]:
+    """Each remote the project declares for git-annex to enable by itself,
+    by name → its declaration, with ``uuid``, the id of the repository it
+    reaches.
+
+    One line of ``remote.log`` each. A second address of a store is a line
+    of its own, which names the store by ``sameas-uuid`` and itself by
+    ``sameas-name`` (measured)."""
+    declared: dict[str, dict[str, str]] = {}
+    for uuid, fields in _annex_log(directory, "remote.log").items():
+        settings = dict(field.split("=", 1) for field in fields if "=" in field)
+        name = settings.get("sameas-name") or settings.get("name")
+        if name and settings.get("autoenable") == "true":
+            declared[name] = {**settings, "uuid": settings.get("sameas-uuid", uuid)}
+    return declared
+
+
+def _annex_log(directory: Path, log: str) -> dict[str, list[str]]:
+    """Read one of git-annex's logs of repositories: each id it names →
+    the fields of its newest line.
+
+    From the clone's own ``git-annex`` branch and from each one a remote
+    brought: git-annex merges those only when one of its commands runs
+    (measured), and what a ``git pull`` just told of is read before that.
+    A line is ``<id> <field>... timestamp=<seconds>s``, and where two name
+    one id the newer holds, which is how git-annex merges them."""
+    refs = _ask(
+        ["for-each-ref", "--format=%(refname)", "refs/heads/git-annex",
+         "refs/remotes/*/git-annex"],
+        cwd=directory,
+    )  # fmt: skip
+    newest: dict[str, tuple[float, list[str]]] = {}
+    for ref in (refs or "").split():
+        for line in (_ask(["show", f"{ref}:{log}"], cwd=directory) or "").splitlines():
+            uuid, *fields = line.split() or [""]
+            stamps = [field for field in fields if field.startswith("timestamp=")]
+            when = float(stamps[-1].removeprefix("timestamp=").rstrip("s")) if stamps else 0.0
+            if uuid and (uuid not in newest or when >= newest[uuid][0]):
+                newest[uuid] = (when, [field for field in fields if field not in stamps])
+    return {uuid: fields for uuid, (_, fields) in newest.items()}
 
 
 #: How many paths lc puts on one command line, far under what any system

@@ -8,8 +8,10 @@ GitHub holds git, not the bytes git-annex keeps, so those have a home of
 their own, the *store*: the repository's own Git LFS storage, or a
 git-annex repository in a directory on the group's cluster. It is declared
 once, at the first publication, in git-annex's branch, as a special remote
-git-annex enables by itself (``dataset.STORE``), so every clone learns it
-with nothing to configure, and DataLad reads it as it reads any dataset's.
+git-annex enables by itself, so every clone learns it with nothing to
+configure, and DataLad reads it as it reads any dataset's. That
+declaration is what makes it the project's store, under whatever name: one
+declared by hand, or by another tool, is published to like one lc declared.
 Nothing about a publication is kept in a file or a setting of lc's own.
 
 Two things are never decided here. Who may read the project: a repository
@@ -204,7 +206,7 @@ def publish(
                 f"{target.slug} is public, and lc offers no way back: copies made while it "
                 "was public remain."
             )
-    declared = dataset.store(root)
+    declared = _store(root)
     wanted = _wanted(data, target) if data else None
     homeless = declared is None and wanted is None
     if creating and (not visibility or homeless):
@@ -263,7 +265,7 @@ def publish(
     dataset.settle(root)
     if declared is None and wanted is not None:
         _declare(root, wanted, target)
-        declared, report.declared = dataset.store(root), True
+        declared, report.declared = _store(root), True
         dataset.settle(root)
     if declared is None:
         raise ProjectError(
@@ -281,7 +283,9 @@ def publish(
         unsent, report.nowhere = _lacking(root, declared, files, kinds)
 
     refused = dataset.send(
-        root, _remote(declared, target), list(dict.fromkeys(files[name] for name in unsent))
+        root,
+        declared.remote(ssh=target.ssh),
+        list(dict.fromkeys(files[name] for name in unsent)),
     )
     for name, kind in unsent.items():
         if (why := refused.get(files[name])) is None:
@@ -505,6 +509,35 @@ def _push(root: Path, branch: str, target: github.Repository) -> None:
 # =============================================================================
 
 
+def _store(root: Path) -> dataset.Store | None:
+    """The store the project declares, under whatever name, as this clone
+    has it; None where it declares none.
+
+    Raises:
+        ProjectError: If it declares several, since a project's bytes go
+            to one place, or one of a kind lc publishes nothing to: a
+            second store beside it would be two.
+    """
+    declared = dataset.stores(root)
+    if len(declared) > 1:
+        raise ProjectError(
+            "this project declares more than one data store, and lc publishes to one:\n"
+            + "\n".join(
+                f"    {', '.join(store.remotes)}: "
+                + (github.without_credentials(store.location) or "no git remote")
+                for store in declared
+            )
+            + "\nAll but one have to be retired, with git-annex, by whoever declared them."
+        )
+    if declared and declared[0].kind is None:
+        raise ProjectError(
+            f"this project's data store is `{', '.join(declared[0].remotes)}`, of a kind lc "
+            "does not publish to. lc publishes to a repository's Git LFS or to a directory, "
+            "and declares no second store beside the one a project has."
+        )
+    return declared[0] if declared else None
+
+
 @dataclass(frozen=True)
 class _Wanted:
     """A store ``--data`` names, before it is declared."""
@@ -591,14 +624,6 @@ def _require_same_store(
 def _described(store: dataset.Store, target: github.Repository) -> str:
     """The store, as people read it."""
     return f"GitHub LFS of {target.slug}" if store.kind == "github-lfs" else store.location
-
-
-def _remote(store: dataset.Store, target: github.Repository) -> str:
-    """The remote this clone sends to: for Git LFS, the address its
-    ``origin`` uses, which is the one its credentials are for."""
-    if target.ssh and dataset.STORE_SSH in store.remotes:
-        return dataset.STORE_SSH
-    return dataset.STORE
 
 
 def _settings(store: dataset.Store, address: str) -> dict[str, str]:
@@ -765,7 +790,7 @@ def _lacking(
         and the files whose bytes are in neither.
     """
     held = dataset.copies(root, dict.fromkeys(files.values()))
-    there = dataset.store_uuid(root) if store is not None else ""
+    there = store.uuid if store is not None else ""
     unsent, nowhere = {}, []
     for name, key in files.items():
         here, others = held.get(key, (False, frozenset()))

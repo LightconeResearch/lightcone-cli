@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -844,37 +845,136 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
 
 
 def test_a_clone_with_no_store_has_none(repo: Path) -> None:
-    assert dataset.store(repo) is None
+    assert dataset.stores(repo) == []
     assert dataset.remote_url(repo, "origin") == ""
 
 
-def test_a_store_in_git_lfs_is_read_with_both_its_addresses(repo: Path) -> None:
-    """Read from the clone's own configuration, as git-annex writes it when
-    it enables the store: no network, and no parsing of its branch. A
-    store this clone declared or confirmed is one it may send to; one
-    git-annex enabled by itself is not, yet."""
+_LFS, _ALIAS = "8878da48-bec0-44ca-adbd-e0ae1eddc4d1", "edc5cc1a-1a90-41ea-807e-db796b960ade"
+
+
+def _declares_git_lfs(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, name: str, alias: str, *more: str
+) -> None:
+    """Have *repo* declare a store in Git LFS at two addresses, enabled.
+
+    Its `remote.log` lines are git-annex's own for such a store, as
+    measured: declaring one for real asks GitHub about the address."""
+    lines = (
+        f"{_LFS} autoenable=true encryption=none name={name} type=git-lfs"
+        " url=https://github.com/alice/analysis.git",
+        f"{_ALIAS} autoenable=true sameas-name={alias} sameas-uuid={_LFS} type=git-lfs"
+        " url=git@github.com:alice/analysis.git",
+        *more,
+    )
+    declared = {line.split()[0]: line.split()[1:] for line in lines}
+    monkeypatch.setattr(
+        dataset, "_annex_log", lambda _directory, log: declared if log == "remote.log" else {}
+    )
+    for remote, url in (
+        (name, "https://github.com/alice/analysis.git"),
+        (alias, "git@github.com:alice/analysis.git"),
+    ):
+        dataset._git(["config", f"remote.{remote}.url", url], cwd=repo)
+
+
+def test_a_store_is_read_from_its_declaration_under_whatever_name(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What makes a remote a store is how git-annex's branch declares it:
+    enabled by itself. Here one declared by hand as `github-lfs`. Where it
+    is, and whether this clone may send to it, are the clone's own
+    configuration: a store it declared or confirmed is one it may send
+    to; one git-annex enabled by itself is not, yet."""
+    _declares_git_lfs(
+        monkeypatch,
+        repo,
+        "github-lfs",
+        "lfs-ssh",
+        # Enabled by nobody but who asks.
+        "2222 name=mine type=git location=/mine",
+        # Declared, and not enabled in this clone.
+        "3333 autoenable=true name=away type=git location=/away",
+    )
     for key, value in (
-        ("remote.origin-storage.url", "https://github.com/alice/analysis"),
-        ("remote.origin-storage.annex-git-lfs", "true"),
-        ("remote.origin-storage.annex-verified", "verified"),
-        ("remote.origin-storage-ssh.url", "git@github.com:alice/analysis.git"),
-        ("remote.origin-storage-ssh.annex-git-lfs", "true"),
-        ("remote.origin-storage-ssh.annex-verified", "automatic"),
+        ("remote.github-lfs.annex-verified", "verified"),
+        ("remote.lfs-ssh.annex-verified", "automatic"),
+        ("remote.mine.url", "/mine"),
         ("remote.backup.url", "/elsewhere"),
     ):
         dataset._git(["config", key, value], cwd=repo)
 
-    assert dataset.store(repo) == dataset.Store(
+    [store] = dataset.stores(repo)
+
+    assert store == dataset.Store(
         "github-lfs",
-        "https://github.com/alice/analysis",
+        "https://github.com/alice/analysis.git",
+        _LFS,
         {
-            "origin-storage": ("https://github.com/alice/analysis", True),
-            "origin-storage-ssh": ("git@github.com:alice/analysis.git", False),
+            "github-lfs": ("https://github.com/alice/analysis.git", True),
+            "lfs-ssh": ("git@github.com:alice/analysis.git", False),
         },
     )
+    # A clone sends over the address its `origin` uses.
+    assert (store.remote(ssh=False), store.remote(ssh=True)) == ("github-lfs", "lfs-ssh")
 
 
-def test_a_clone_notes_for_itself_what_no_clone_gets_from_another(repo: Path) -> None:
+def test_a_store_of_a_kind_lc_does_not_publish_to_is_the_projects_all_the_same(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bucket someone declared is where the project's bytes are: read
+    as its store, of no kind lc publishes to, so that nothing takes the
+    project for one without a store. It is no git remote, and has no
+    address a clone's configuration gives."""
+    declared = {"1111": "autoenable=true name=bucket type=S3 bucket=results".split()}
+    monkeypatch.setattr(
+        dataset, "_annex_log", lambda _directory, log: declared if log == "remote.log" else {}
+    )
+    for key, value in (
+        ("remote.bucket.annex-uuid", "1111"),
+        ("remote.bucket.annex-verified", "automatic"),
+    ):
+        dataset._git(["config", key, value], cwd=repo)
+
+    assert dataset.stores(repo) == [dataset.Store(None, "", "1111", {"bucket": ("", False)})]
+    assert dataset._remotes(repo) == {"1111": "bucket"}
+
+
+def test_a_store_at_one_address_is_sent_to_there_however_origin_is_reached() -> None:
+    store = dataset.Store("directory", "/shared/store", "1111", {"shared": ("/shared/store", True)})
+
+    assert (store.remote(ssh=False), store.remote(ssh=True)) == ("shared", "shared")
+
+
+def test_of_two_lines_about_one_repository_the_newer_holds(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git-annex's logs, read as it merges them, from the clone's own
+    branch and from each a remote brought and no command has merged yet."""
+    logs = {
+        "refs/heads/git-annex:remote.log": "u1 name=old autoenable=true timestamp=10s\n\n",
+        "refs/remotes/origin/git-annex:remote.log": (
+            "u1 name=new autoenable=true timestamp=20.5s\nu2 name=other type=git timestamp=5s\n"
+        ),
+    }
+
+    def ask(argv: list[str], *, cwd: Path) -> str | None:
+        if argv[0] == "for-each-ref":
+            return "refs/heads/git-annex\nrefs/remotes/origin/git-annex\n"
+        return logs.get(argv[1])
+
+    monkeypatch.setattr(dataset, "_ask", ask)
+
+    assert dataset._annex_log(repo, "remote.log") == {
+        "u1": ["name=new", "autoenable=true"],
+        "u2": ["name=other", "type=git"],
+    }
+    assert dataset._annex_log(repo, "trust.log") == {}
+    assert dataset._declared(repo) == {"new": {"name": "new", "autoenable": "true", "uuid": "u1"}}
+
+
+def test_a_clone_notes_for_itself_what_no_clone_gets_from_another(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """For an `origin` on GitHub: git-annex leaves it alone, and DataLad
     sends bytes to the store first. Over ssh, the store is the one reached
     over ssh."""
@@ -883,11 +983,7 @@ def test_a_clone_notes_for_itself_what_no_clone_gets_from_another(repo: Path) ->
     dataset._git(["remote", "add", "origin", "git@github.com:alice/analysis.git"], cwd=repo)
     assert dataset.unsettled(repo) == {"remote.origin.annex-ignore": "true"}
 
-    for name, url in (
-        ("origin-storage", "https://github.com/alice/analysis"),
-        ("origin-storage-ssh", "git@github.com:alice/analysis.git"),
-    ):
-        dataset._git(["config", f"remote.{name}.url", url], cwd=repo)
+    _declares_git_lfs(monkeypatch, repo, dataset.STORE, dataset.STORE_SSH)
     dataset.settle(repo)
 
     assert dataset.unsettled(repo) == {}
@@ -933,29 +1029,73 @@ def test_lcs_own_ssh_is_the_users_in_batch_mode(
     assert dataset.ssh(repo) == "ssh -F /etc/ssh/site -o BatchMode=yes"
 
 
-def test_the_store_is_known_by_its_declaration_before_it_is_ever_reached(
-    repo: Path, tmp_path: Path
-) -> None:
-    """git-annex's branch says which repository the store is. A clone's
-    configuration says so only once git-annex has looked there, and until
-    then what the store holds must not read as held by nobody."""
-    assert dataset.store_uuid(repo) == ""
-    store = tmp_path / "store"
-    dataset._git(["init", "-q", "--bare", str(store)], cwd=tmp_path)
+def _store_in(directory: Path) -> str:
+    """Make the git-annex repository a store in *directory* is, and give its id."""
+    dataset._git(["init", "-q", "--bare", str(directory)], cwd=directory.parent)
     for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=store)
-    dataset._git(["annex", "init", "-q"], cwd=store)
-    its_id = dataset._git(["config", "annex.uuid"], cwd=store).strip()
+        dataset._git(["config", key, value], cwd=directory)
+    dataset._git(["annex", "init", "-q"], cwd=directory)
+    return dataset._git(["config", "annex.uuid"], cwd=directory).strip()
+
+
+@pytest.mark.parametrize("name", [dataset.STORE, "shared"])
+def test_the_store_is_known_by_its_declaration_before_it_is_ever_reached(
+    repo: Path, tmp_path: Path, name: str
+) -> None:
+    """git-annex's branch says which repository the store is, under
+    whatever name. A clone's configuration says so only once git-annex has
+    looked there, and until then what the store holds must not read as
+    held by nobody."""
+    its_id = _store_in(tmp_path / "store")
     dataset._git(
-        ["annex", "initremote", dataset.STORE, "type=git", f"location={store}",
+        ["annex", "initremote", name, "type=git", f"location={tmp_path / 'store'}",
          "autoenable=true"],
         cwd=repo,
     )  # fmt: skip
 
-    assert dataset.store_uuid(repo) == its_id
+    [store] = dataset.stores(repo)
+    assert (store.kind, store.uuid, list(store.remotes)) == ("directory", its_id, [name])
     # git-annex has yet to look in the store, and has noted nothing of it.
-    assert not dataset._git_ok(["config", f"remote.{dataset.STORE}.annex-uuid"], cwd=repo)
-    assert dataset._remotes(repo)[its_id] == dataset.STORE
+    assert not dataset._git_ok(["config", f"remote.{name}.annex-uuid"], cwd=repo)
+    assert dataset._remotes(repo)[its_id] == name
+
+
+def test_a_declared_store_is_enabled_only_where_one_waits(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forcing git-annex to enable what the project declares is a command
+    more for every verb: asked only where a declaration has no remote in
+    this clone, and never for a store marked dead, which git-annex enables
+    for nobody (measured)."""
+    forced: list[list[str]] = []
+    run = project._run
+
+    def spy(argv: list[str], **kwargs: Any) -> Any:
+        if "--autoenable" in argv:
+            forced.append(argv)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(project, "_run", spy)
+
+    dataset.enable_store(repo)  # nothing declared
+    _store_in(tmp_path / "store")
+    dataset._git(
+        ["annex", "initremote", "shared", "type=git", f"location={tmp_path / 'store'}",
+         "autoenable=true"],
+        cwd=repo,
+    )  # fmt: skip
+    dataset.enable_store(repo)  # declared, and here
+    assert forced == []
+
+    dataset._git(["remote", "remove", "shared"], cwd=repo)
+    dataset.enable_store(repo)
+    assert forced == [["git", "annex", "init", "--autoenable", "--force"]]
+    assert dataset.remote_url(repo, "shared") == str(tmp_path / "store")
+
+    dataset._git(["annex", "dead", "shared"], cwd=repo)
+    dataset._git(["remote", "remove", "shared"], cwd=repo)
+    dataset.enable_store(repo)
+    assert len(forced) == 1
 
 
 def test_only_what_git_annex_says_it_sent_was_sent(repo: Path, tmp_path: Path) -> None:
