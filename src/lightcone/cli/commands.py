@@ -22,18 +22,47 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Lightcone Research's palette as a terminal shows it, each tone by the
+#: name markup calls it. A terminal never says whether its ground is dark
+#: or light, so a tone has to read on both. Antique Gold and Mushroom Cap
+#: do as they are; the others are too dark for a dark ground (Blue Ink is
+#: 2.5:1 there) and are mixed toward white until they read on either,
+#: near 4.5:1 on dark and 3.7:1 on light. On a terminal with fewer
+#: colours, rich takes the nearest it has.
+_PALETTE = {
+    "gold": "#a67c3c",  # Antique Gold
+    "ink": "#7a8394",  # Blue Ink, 25% toward white
+    "slate": "#5c8793",  # Slate Blue, 15%
+    "verdigris": "#588e88",  # Vert de Gris, 15%
+    "wax": "#b2735f",  # Wax Red, 15%
+    "mushroom": "#8b7d70",  # Mushroom Cap
+}
+
+# The marks every verb speaks with, each in the tone of what it says: done,
+# still to do, wants attention, failed, made under an earlier environment,
+# and nothing to do.
+_DONE = "[verdigris]✓[/verdigris]"
+_TODO = "[gold]·[/gold]"
+_WARN = "[gold]![/gold]"
+_FAILED = "[wax]✗[/wax]"
+_BEHIND = "[slate]·[/slate]"
+_QUIET = "[mushroom]·[/mushroom]"
+
 
 @functools.cache
 def _console() -> Console:
     """Build the rich console, once and on first use.
 
     Returns:
-        The console. Deferred so ``lc --help`` and shell completion never
-        pay for it.
+        The console, which knows the palette's tones by name. Deferred so
+        ``lc --help`` and shell completion never pay for it.
     """
     from rich.console import Console
+    from rich.theme import Theme
 
-    return Console()
+    # No highlighter: rich's own colours numbers, paths and quoted words in
+    # a terminal's cyan, magenta and green, which are no tone of the palette.
+    return Console(theme=Theme(_PALETTE), highlight=False)
 
 
 class _EngineErrorGroup(click.Group):
@@ -74,11 +103,19 @@ def main() -> None:
 # =============================================================================
 # lc init
 # =============================================================================
-_LIGHTCONE = """
-_______________________
-| . _ |_ _|_ _ _  _  _
-|_|(_|| | | (_(_)| |(/_
-_____|_________________
+#: What `lc init` opens with, for a person at a terminal. The mark is
+#: Lightcone's, stippled in braille, where a character is a grid of two
+#: dots by four: the two cones with their rims, the axis through them, and
+#: the line through the apex, which the rule beside it carries on. A blank
+#: cell of the mark is U+2800, so every row is as wide. Beside it: the
+#: tool's name, a rule that fades at both ends, and what lc is.
+_BANNER = """
+  [gold]⠀⠀⢀⡠⠤⡧⠤⣀⠀⠀[/gold]
+  [gold]⠀⠀⠑⢦⠤⡧⢤⠖⠁⠀[/gold]   [bold][gold]L I G H T C O N E[/gold][/bold]   [ink]C L I[/ink]
+  [gold]⠀⠀⢀⣈⣢⣧⣊⡠⠤⠤   ┈┈╌╌─────────────────────╌╌┈┈[/gold]
+  [gold]⠉⠉⠁⢀⠜⡟⢄⠀⠀⠀[/gold]   [slate]THE EXECUTION LAYER FOR ASTRA[/slate]
+  [gold]⠀⠀⡠⠗⠒⡗⠒⠧⡀⠀[/gold]
+  [gold]⠀⠀⠈⠑⠒⡗⠒⠉⠀⠀[/gold]
 """
 
 
@@ -114,8 +151,10 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     directory = directory.resolve()
     write = not check_only
 
-    if write and not as_json:
-        _console().print(f"[cyan]{_LIGHTCONE}[/cyan]")
+    # A transcript or a log has no use for a logo: an agent runs this verb
+    # more often than a person does.
+    if write and not as_json and _console().is_terminal:
+        _console().print(_BANNER)
 
     report = converge(directory, write=write)
 
@@ -143,33 +182,30 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
     """
     from rich.markup import escape
 
-    mark, style = ("·", "yellow") if dry_run else ("✓", "green")
+    mark = _TODO if dry_run else _DONE
     where = escape(str(directory))
 
     lines: list[str] = []
-    for items, label, item_mark, item_style in (
-        (report.created, "would create" if dry_run else "created", mark, style),
-        (report.repaired, "would repair" if dry_run else "repaired", mark, style),
-        (report.blocked, "blocked", "✗", "red"),
+    for items, label, item_mark in (
+        (report.created, "would create" if dry_run else "created", mark),
+        (report.repaired, "would repair" if dry_run else "repaired", mark),
+        (report.blocked, "blocked", _FAILED),
     ):
-        lines += [
-            f"  [{item_style}]{item_mark}[/{item_style}] {label} {escape(item)}"
-            for item in items
-        ]
-    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
+        lines += [f"  {item_mark} {label} {escape(item)}" for item in items]
+    lines += [f"  {_WARN} {escape(warning)}" for warning in report.warnings]
 
     if report.converged:
         # A dry run over a converged project finds nothing to do because
         # there is nothing to do — one line serves both moods.
-        verdict = f"[green]✓[/green] {where} is already converged — nothing to do"
+        verdict = f"{_DONE} {where} is already converged — nothing to do"
     elif report.blocked:
         # A write run that left an item blocked did not converge the
         # project either; only a dry run gets to be neutral about it.
-        verdict = f"[red]✗[/red] {where} is not converged"
+        verdict = f"{_FAILED} {where} is not converged"
     elif dry_run:
-        verdict = f"[yellow]![/yellow] {where} is not converged"
+        verdict = f"{_WARN} {where} is not converged"
     else:
-        verdict = f"[green]✓[/green] Project converged at {where}"
+        verdict = f"{_DONE} Project converged at {where}"
 
     if lines:
         lines.append("")  # space the verdict off the list
@@ -294,7 +330,7 @@ def build(as_json: bool) -> None:
         )
         return
     verb = "Built and committed" if action == "built" else "Already built —"
-    _console().print(f"[green]✓[/green] {verb} {runtime.image_tag} ({runtime.archive})")
+    _console().print(f"{_DONE} {verb} {runtime.image_tag} ({runtime.archive})")
 
 
 # =============================================================================
@@ -472,10 +508,10 @@ def status(as_json: bool) -> None:
         }[state]
         lines += [f"  image: {tag} — {described}", ""]
     marks = {
-        "ok": "[dim]·[/dim]",
-        "behind": "[cyan]·[/cyan]",
-        "stale": "[yellow]![/yellow]",
-        "missing": "[yellow]![/yellow]",
+        "ok": _QUIET,
+        "behind": _BEHIND,
+        "stale": _WARN,
+        "missing": _WARN,
     }
     width = max((len(r.result) for r in report.results), default=0)
     # The commit gets a column of its own, for every state and not only
@@ -489,16 +525,16 @@ def status(as_json: bool) -> None:
         line = f"  {marks[r.state]} {r.state:<7} {r.result:<{width}}  "
         if r.unfetched:
             on = f", on {escape(', '.join(r.remotes))}" if r.remotes else ""
-            line += f"{commit:<7}  [dim]unfetched{on}[/dim]"
+            line += f"{commit:<7}  [mushroom]unfetched{on}[/mushroom]"
         else:
             line += commit
         lines.append(line)
-    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
+    lines += [f"  {_WARN} {escape(warning)}" for warning in report.warnings]
 
     counts = report.counts
     unfetched = sum(r.unfetched for r in report.results)
     if not report.results:
-        lines.append("[dim]The analysis plans no result.[/dim]")
+        lines.append("[mushroom]The analysis plans no result.[/mushroom]")
     else:
         lines.append("")
         lines.append(
@@ -555,13 +591,13 @@ def fetch(targets: tuple[str, ...], as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
     else:
-        lines = [f"  [green]✓[/green] fetched {name}" for name in report.fetched]
+        lines = [f"  {_DONE} fetched {name}" for name in report.fetched]
         lines += [
-            f"  [yellow]·[/yellow] {state} {name} — `lc materialize` makes it again"
+            f"  {_TODO} {state} {name} — `lc materialize` makes it again"
             for name, state in report.left.items()
         ]
-        lines += [f"  [red]✗[/red] {name} — {escape(why)}" for name, why in report.failed.items()]
-        lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
+        lines += [f"  {_FAILED} {name} — {escape(why)}" for name, why in report.failed.items()]
+        lines += [f"  {_WARN} {escape(warning)}" for warning in report.warnings]
         def counted(names: Iterable[str]) -> str:
             inputs = sum(name in report.inputs for name in names)
             results = sum(name not in report.inputs for name in names)
@@ -573,11 +609,11 @@ def fetch(targets: tuple[str, ...], as_json: bool) -> None:
             )
 
         if report.failed:
-            verdict = f"[red]✗[/red] {counted(report.failed)} could not be fetched"
+            verdict = f"{_FAILED} {counted(report.failed)} could not be fetched"
         elif report.fetched:
-            verdict = f"[green]✓[/green] Fetched {counted(report.fetched)}"
+            verdict = f"{_DONE} Fetched {counted(report.fetched)}"
         else:
-            verdict = "[green]✓[/green] Nothing to fetch" + (
+            verdict = f"{_DONE} Nothing to fetch" + (
                 ""
                 if report.left
                 else " — it is all here"
@@ -717,30 +753,30 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
 
     where = escape(str(root))
     lines = [
-        f"  [yellow]·[/yellow] would run {name} — {escape(why)}"
+        f"  {_TODO} would run {name} — {escape(why)}"
         for name, why in report.planned.items()
     ]
-    lines += [f"  [green]✓[/green] made {name}" for name in report.made]
+    lines += [f"  {_DONE} made {name}" for name in report.made]
     # Behind is not a warning and not a problem: it is a fact about where
     # a result came from, and the only line here that tells you something
     # you could not have worked out from the exit code.
     lines += [
-        f"  [cyan]·[/cyan] behind {name} — {escape(why)}"
+        f"  {_BEHIND} behind {name} — {escape(why)}"
         for name, why in report.behind.items()
     ]
-    lines += [f"  [dim]·[/dim] ok {name}" for name in report.unchanged]
-    lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
-    lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
-    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
+    lines += [f"  {_QUIET} ok {name}" for name in report.unchanged]
+    lines += [f"  {_FAILED} failed {name}" for name in report.failed]
+    lines += [f"  {_FAILED} blocked {name}" for name in report.blocked]
+    lines += [f"  {_WARN} {escape(warning)}" for warning in report.warnings]
 
     if not report.ok:
-        verdict = f"[red]✗[/red] {where} did not finish"
+        verdict = f"{_FAILED} {where} did not finish"
     elif report.up_to_date:
-        verdict = f"[green]✓[/green] {where} is up to date — nothing to do"
+        verdict = f"{_DONE} {where} is up to date — nothing to do"
     elif dry_run:
-        verdict = f"[yellow]![/yellow] {len(report.planned)} result(s) would be made"
+        verdict = f"{_WARN} {len(report.planned)} result(s) would be made"
     else:
-        verdict = f"[green]✓[/green] Made {len(report.made)} result(s) in {where}"
+        verdict = f"{_DONE} Made {len(report.made)} result(s) in {where}"
     # On the verdict line as well as in the listing: on a large analysis the
     # listing scrolls away, and this is the one state that reports something
     # rather than doing it.
@@ -773,67 +809,65 @@ def _render_publish_output(report: PublishReport, *, dry_run: bool) -> None:
     from rich.markup import escape
 
     target, store = report.target, escape(report.store)
-    ok, todo = "[green]✓[/green]", "[yellow]·[/yellow]"
-    bad, note = "[red]✗[/red]", "[yellow]![/yellow]"
     lines = []
     if report.created:
-        lines.append(f"  {ok} created  {target}, {report.visibility}")
+        lines.append(f"  {_DONE} created  {target}, {report.visibility}")
     if report.declared:
-        lines.append(f"  {ok} store    {store}, where this project's data lives from now on")
+        lines.append(f"  {_DONE} store    {store}, where this project's data lives from now on")
     if report.confirmed:
-        lines.append(f"  {ok} store    {store}, confirmed for this clone")
+        lines.append(f"  {_DONE} store    {store}, confirmed for this clone")
     if report.sent:
-        lines.append(f"  {ok} data     {_counted(report.sent)} → {store}")
+        lines.append(f"  {_DONE} data     {_counted(report.sent)} → {store}")
     if report.unsent:
         lines.append(
-            f"  {todo} data     {_counted(report.unsent)} to send → {store or 'no store yet'}"
+            f"  {_TODO} data     {_counted(report.unsent)} to send → {store or 'no store yet'}"
         )
         lines += [f"      {escape(name)}" for name in report.unsent]
-    lines += [f"  {bad} {escape(name)} — {escape(why)}" for name, why in report.failed.items()]
+    lines += [f"  {_FAILED} {escape(name)} — {escape(why)}" for name, why in report.failed.items()]
     if report.nowhere:
         lines.append(
-            f"  {note} {len(report.nowhere)} file(s) with bytes in neither this clone nor the "
+            f"  {_WARN} {len(report.nowhere)} file(s) with bytes in neither this clone nor the "
             "store: other clones see those results as missing"
         )
         lines += [f"      {escape(name)}" for name in report.nowhere]
     if report.commits:
-        lines.append(f"  {ok} commits  {report.branch} at {report.commit[:7]} → {target}")
+        lines.append(f"  {_DONE} commits  {report.branch} at {report.commit[:7]} → {target}")
     if report.unpushed:
-        lines.append(f"  {todo} commits  {report.unpushed} of {report.branch} to send → {target}")
+        lines.append(f"  {_TODO} commits  {report.unpushed} of {report.branch} to send → {target}")
     if report.made_public:
-        lines.append(f"  {ok} license  {escape(report.license)}")
+        lines.append(f"  {_DONE} license  {escape(report.license)}")
         lines.append(
-            f"  {ok} visible  {target} is public, "
+            f"  {_DONE} visible  {target} is public, "
             + (
                 "and its data in GitHub LFS with it"
                 if report.store.startswith("GitHub LFS")
                 else f"and its data stays in {store}, for those who can reach it"
             )
         )
-    lines += [f"  {note} {escape(warning)}" for warning in report.warnings]
+    lines += [f"  {_WARN} {escape(warning)}" for warning in report.warnings]
     if report.uncommitted:
-        lines.append(f"  {note} {report.uncommitted} uncommitted change(s) are not published")
+        lines.append(f"  {_WARN} {report.uncommitted} uncommitted change(s) are not published")
 
     if report.failed:
         verdict = (
-            f"{bad} {len(report.failed)} file(s) could not be sent, so no commit was — "
+            f"{_FAILED} {len(report.failed)} file(s) could not be sent, so no commit was — "
             "publishing again continues from here"
         )
     elif dry_run:
         at = f"{report.branch} at {report.commit[:7]}"
         verdict = (
-            f"{ok} {target} holds {at}, and its data"
+            f"{_DONE} {target} holds {at}, and its data"
             if report.published
-            else f"{note} {target} does not hold all of {at} — `lc publish` sends it"
+            else f"{_WARN} {target} does not hold all of {at} — `lc publish` sends it"
         )
     elif report.created or report.declared:
         verdict = (
-            f"{ok} Published. A clone needs only: git clone https://{target} && lc init"
+            f"{_DONE} Published. A clone needs only: git clone https://{target} && lc init"
         )
     elif report.sent or report.commits or report.made_public or report.confirmed:
-        verdict = f"{ok} Published to {target}"
+        verdict = f"{_DONE} Published to {target}"
     else:
-        verdict = f"{ok} {target} is up to date — nothing to send"
+        verdict = f"{_DONE} {target} is up to date — nothing to send"
     if lines:
         lines.append("")
     _console().print("\n".join([*lines, verdict]))

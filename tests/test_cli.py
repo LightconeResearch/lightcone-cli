@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 from conftest import CLUSTER_ID
 
+from lightcone.cli import commands
 from lightcone.cli.commands import main
 
 # ---- top level ------------------------------------------------------------
@@ -47,6 +49,86 @@ def test_engine_errors_render_cleanly(
     assert result.exit_code == 1
     assert "uv is required" in result.output
     assert "Traceback" not in result.output
+
+
+# ---- the palette and the banner ---------------------------------------------
+
+
+@pytest.fixture
+def at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Have `lc` print as it does for a person: to a terminal with every
+    colour. The console is built once, so the one built here is dropped
+    again after the test."""
+    for name, value in (("FORCE_COLOR", "1"), ("COLORTERM", "truecolor"), ("TERM", "xterm")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    commands._console.cache_clear()
+    yield
+    commands._console.cache_clear()
+
+
+def test_init_opens_with_the_banner_at_a_terminal(
+    runner: CliRunner, tmp_path: Path, at_a_terminal: None
+) -> None:
+    """The mark, the tool's name and what it is, in the palette's gold, and
+    the check marks in its Vert de Gris."""
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
+
+    assert result.exit_code == 0, result.output
+    assert "L I G H T C O N E" in result.output
+    assert "THE EXECUTION LAYER FOR ASTRA" in result.output
+    assert "\x1b[38;2;166;124;60m" in result.output
+    assert "\x1b[38;2;88;142;136m✓" in result.output
+
+
+def test_a_transcript_gets_no_banner(runner: CliRunner, tmp_path: Path) -> None:
+    """An agent runs `lc init` more often than a person does, and reads
+    every line of it: where the output is no terminal, there is no logo
+    and no colour, only the report."""
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
+
+    assert result.exit_code == 0, result.output
+    assert "L I G H T C O N E" not in result.output
+    assert "\x1b[" not in result.output
+    assert "✓ created astra.yaml" in result.output
+
+
+def test_a_dry_run_has_no_banner_even_at_a_terminal(
+    runner: CliRunner, tmp_path: Path, at_a_terminal: None
+) -> None:
+    result = runner.invoke(main, ["init", "--check", str(tmp_path / "proj")])
+
+    assert "L I G H T C O N E" not in result.output
+    assert "would create" in result.output
+
+
+def test_every_tone_the_marks_and_the_banner_name_is_in_the_palette() -> None:
+    """rich leaves a tone it does not know unstyled, without a word: a
+    misspelt one would print in the terminal's own colour, and no output a
+    test captures would differ."""
+    marks = (
+        commands._DONE, commands._TODO, commands._WARN,
+        commands._FAILED, commands._BEHIND, commands._QUIET,
+    )
+    named = set(re.findall(r"\[([a-z]+)\]", "".join((*marks, commands._BANNER))))
+
+    assert named - {"bold"} == {"gold", "ink", "slate", "verdigris", "wax", "mushroom"}
+    assert named - {"bold"} <= commands._PALETTE.keys()
+
+
+def test_every_row_of_the_mark_is_as_wide() -> None:
+    """The mark is ten braille characters a row, its blank cells included:
+    a space in their place is narrower wherever braille comes from another
+    font, and the name beside the mark would no longer line up."""
+    from rich.text import Text
+
+    rows = [line for line in Text.from_markup(commands._BANNER).plain.splitlines() if line]
+
+    assert len(rows) == 6
+    for row in rows:
+        assert row[:2] == "  "
+        assert all("\u2800" <= cell <= "\u28ff" for cell in row[2:12]), row
+        assert row[12:13] in ("", " ")
 
 
 # ---- lc init: flags reach the engine --------------------------------------
