@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from astra import api
 
-from lightcone.engine import plan
+from lightcone.engine import dataset, plan
 from lightcone.engine.content import Digest
 from lightcone.engine.plan import Graph, classify
 from lightcone.engine.project import ProjectError
@@ -532,9 +532,9 @@ def test_a_result_with_no_record_is_missing_and_made() -> None:
     assert verdict.calls_for_a_remake(refresh=False)
 
 
-def test_an_unchanged_result_is_left_alone() -> None:
+def test_an_unchanged_result_is_ok_and_left_alone() -> None:
     verdict = classify(found=_unchanged(), environment=_ENV)
-    assert (verdict.state, verdict.why) == ("unchanged", "")
+    assert (verdict.state, verdict.why) == ("ok", "")
     assert not verdict.calls_for_a_remake(refresh=False)
     assert not verdict.calls_for_a_remake(refresh=True)
 
@@ -555,22 +555,49 @@ def test_one_reason_found_at_two_places_is_said_once() -> None:
     assert classify(found=found, environment=_ENV).why == "the command changed"
 
 
-def test_bytes_this_clone_has_not_fetched_change_nothing() -> None:
+def test_bytes_a_remote_holds_change_nothing() -> None:
     """A clone that has fetched no annex content holds stand-ins for
-    results that are perfectly up to date, and a run fetches them."""
-    verdict = classify(found=_unchanged(fetched=False), environment=_ENV)
-    assert (verdict.state, verdict.unfetchable) == ("unchanged", False)
+    results that are perfectly up to date: what they need is a fetch, not
+    a run."""
+    for remotes in (("origin",), ("origin", "backup")):
+        verdict = classify(found=_unchanged(fetched=False), environment=_ENV, remotes=remotes)
+        assert (verdict.state, verdict.why) == ("ok", "")
 
 
-def test_bytes_nothing_can_fetch_are_made_again_and_change_no_state() -> None:
-    """ASTRA only warns: the record breaks no rule, so the result stands as
-    the checker says. What is at its place is not what the record
-    describes, though — written over after its run, or never there — and
-    no clone can fetch the bytes it names, so a run makes them again."""
+def test_bytes_no_remote_holds_make_the_result_missing() -> None:
+    """Made, but nowhere this clone can fetch it from — a colleague pushed
+    the commit and not the bytes: a run can only make it again."""
+    verdict = classify(found=_unchanged(fetched=False), environment=_ENV, remotes=())
+    assert (verdict.state, verdict.why) == ("missing", dataset.NO_REMOTE)
+    assert verdict.calls_for_a_remake(refresh=False)
+
+
+def test_bytes_no_remote_holds_win_over_behind() -> None:
+    found = api.Status(
+        "unchanged", api.Bytes("absent", "git-annex"), _record("urn:lightcone:env:sha256:old")
+    )
+    assert classify(found=found, environment=_ENV, remotes=()).state == "missing"
+
+
+def test_bytes_no_remote_holds_win_over_reading_what_its_record_gives() -> None:
+    """Its upstream made again byte for byte leaves a result standing only
+    where its own bytes can be had: a task decides with the same value."""
+    found = api.Status("stale", api.Bytes("absent", "git-annex"), _record(), (), ("summary",))
+    verdict = classify(found=found, environment=_ENV, remotes=(), read={"summary": _READ})
+    assert verdict.state == "missing"
+    assert not verdict.through_reads
+
+
+def test_bytes_nothing_can_fetch_make_the_result_stale() -> None:
+    """ASTRA only warns: the record breaks no rule, and nothing the result
+    is made from changed. What is at its place is not what its recipe
+    made, though — written over after its run, or never there — and no
+    clone can fetch the bytes its record names: lc calls it stale, and a
+    run makes it again."""
     found = api.Status("unchanged", api.Bytes("absent"), _record(), (_OTHER_BYTES,))
     verdict = classify(found=found, environment=_ENV)
-    assert (verdict.state, verdict.why) == ("unchanged", _OTHER_BYTES.message)
-    assert verdict.unfetchable
+    assert (verdict.state, verdict.why) == ("stale", _OTHER_BYTES.message)
+    assert not verdict.through_reads
     assert verdict.calls_for_a_remake(refresh=False)
 
 
@@ -580,7 +607,7 @@ def test_another_warning_is_no_reason_to_remake() -> None:
     noted = api.Diagnostic("SOME_NOTE", "warning", "worth knowing", _AT)
     found = api.Status("unchanged", api.Bytes("present"), _record(), (noted,))
     verdict = classify(found=found, environment=_ENV)
-    assert (verdict.state, verdict.why) == ("unchanged", "")
+    assert (verdict.state, verdict.why) == ("ok", "")
     assert not verdict.calls_for_a_remake(refresh=False)
 
 
@@ -590,7 +617,7 @@ def test_another_warning_is_no_reason_to_remake() -> None:
 # that was made again with other bytes than the record gives: stale through
 # them, with nothing of its own in `why`. Once a run has made them, their
 # bytes are known, and a result that reads what its record gives is
-# unchanged again. That is what stops a byte-identical rebuild cascading.
+# ok again. That is what stops a byte-identical rebuild cascading.
 
 
 def test_a_result_stale_through_what_it_reads_says_which_entry() -> None:
@@ -609,7 +636,7 @@ def test_a_rebuild_that_gives_the_recorded_bytes_leaves_the_result_standing() ->
     """The cascade stops here: `summary` was stale, was remade, and came
     out as the bytes this result's record says it read."""
     verdict = classify(found=_READS_STALE, environment=_ENV, read={"summary": _READ})
-    assert verdict.state == "unchanged"
+    assert verdict.state == "ok"
     assert not verdict.calls_for_a_remake(refresh=True)
 
 
@@ -623,14 +650,12 @@ def test_a_rebuild_that_gives_other_bytes_makes_the_result_stale() -> None:
     )
 
 
-def test_an_unchanged_result_is_stale_once_what_it_reads_comes_out_differently() -> None:
+def test_an_ok_result_is_stale_once_what_it_reads_comes_out_differently() -> None:
     """ASTRA found nothing wrong, and nothing was: `summary` was remade
     because a run asked for it, and no longer gives what was read."""
     verdict = classify(found=_unchanged(), environment=_ENV, read={"summary": _OTHER})
     assert verdict.state == "stale"
-    assert classify(found=_unchanged(), environment=_ENV, read={"summary": _READ}).state == (
-        "unchanged"
-    )
+    assert classify(found=_unchanged(), environment=_ENV, read={"summary": _READ}).state == "ok"
 
 
 def test_the_size_read_is_compared_as_well_as_the_hash() -> None:
@@ -720,10 +745,11 @@ def test_bytes_nothing_can_fetch_are_said_beside_what_it_reads() -> None:
     assert verdict.why == (
         f"`summary` has changed since this result read it; {_OTHER_BYTES.message}"
     )
-    assert verdict.unfetchable and not verdict.through_reads
+    assert verdict.state == "stale" and not verdict.through_reads
 
 
-def test_bytes_nothing_can_fetch_are_said_beside_behind() -> None:
+def test_bytes_nothing_can_fetch_win_over_behind() -> None:
+    """As a changed command does: the result is made again either way."""
     found = api.Status(
         "unchanged",
         api.Bytes("absent"),
@@ -731,6 +757,5 @@ def test_bytes_nothing_can_fetch_are_said_beside_behind() -> None:
         (_OTHER_BYTES,),
     )
     verdict = classify(found=found, environment=_ENV)
-    assert verdict.state == "behind"
-    assert verdict.why == f"made under an earlier environment; {_OTHER_BYTES.message}"
+    assert (verdict.state, verdict.why) == ("stale", _OTHER_BYTES.message)
     assert verdict.calls_for_a_remake(refresh=False)

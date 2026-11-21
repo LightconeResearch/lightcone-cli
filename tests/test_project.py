@@ -81,6 +81,7 @@ def test_as_dict_carries_every_field() -> None:
         "unchanged",
         "blocked",
         "warnings",
+        "online",
     }
 
 
@@ -906,3 +907,60 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     with pytest.raises(ProjectError, match="no solution found"):
         converge(tmp_path / "proj")
+
+
+# ---- what a clone keeps of where the project is published ------------------
+
+
+def _origin_on_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Have git answer that `origin` is a repository on GitHub."""
+    from unittest.mock import MagicMock
+
+    from lightcone.engine import project
+
+    stubbed = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> object:
+        if argv == ["git", "config", "--get", "remote.origin.url"]:
+            stubbed(argv, cwd=cwd)  # recorded, like every other call
+            return MagicMock(returncode=0, stdout="https://github.com/lcr/analysis\n", stderr="")
+        return stubbed(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+
+
+def test_a_project_that_is_not_on_github_has_no_publication_settings(tmp_path: Path) -> None:
+    report = converge(tmp_path / "proj")
+
+    assert not report.online
+    assert "publication settings" not in report.created + report.unchanged
+
+
+def test_a_clone_from_github_is_set_up_without_asking_github_anything(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git-annex, set up beside an `origin` on GitHub, asks GitHub whether
+    it holds bytes (measured): told beforehand that it does not, `lc init`
+    works offline. The settings are the clone's own, so it converges them."""
+    _origin_on_github(monkeypatch)
+
+    report = converge(tmp_path / "proj")
+
+    assert report.online and report.as_dict()["online"]
+    assert "publication settings" in report.created
+    told = tools.index(["git", "config", "remote.origin.annex-ignore", "true"])
+    assert told < tools.index(["git", "annex", "init", "-q"])
+    assert "publication settings" in converge(tmp_path / "proj").unchanged
+
+
+def test_check_mode_writes_no_publication_setting(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    converge(tmp_path / "proj")
+    _origin_on_github(monkeypatch)
+    tools.clear()
+
+    report = converge(tmp_path / "proj", write=False)
+
+    assert report.created == ["publication settings"] and not report.converged
+    assert ["git", "config", "remote.origin.annex-ignore", "true"] not in tools

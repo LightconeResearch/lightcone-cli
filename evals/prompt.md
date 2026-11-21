@@ -19,11 +19,25 @@ This project is driven by two CLIs — use them rather than improvising:
       a run to one output's results and whatever they depend on. Re-running
       is idempotent: only what is missing or stale gets made — a result the
       spec now defines differently, or one whose declared inputs changed.
-    - `lc status` reports each result as `unchanged`, `stale`, `missing` or
+    - `lc status` reports each result as `ok`, `stale`, `missing` or
       `behind`, with the commit it was made at; `lc status --json` is the
       machine-readable form. It always exits 0. The pass/fail gate is
       `lc materialize --check`, which exits 1 while anything still needs
       making. `--check` needs no cluster.
+    - In a clone, a result made elsewhere is a small stand-in until its
+      bytes are fetched: `lc status` marks a current one `unfetched`, and
+      `lc fetch [<output_id>...]` brings it, with no cluster; naming an
+      input's id fetches that input. One whose bytes no remote holds is
+      `missing`, and `lc materialize` makes it.
+    - `lc publish` is how work is shared: it sends the bytes to the
+      project's data store, then the commits to GitHub. Never `git push`,
+      which sends the commits without their bytes. Take in others' work
+      with `git pull`. Who may read a project (`--private`, `--public`),
+      where its data lives (`--data`) and confirming a store
+      (`--confirm-data`) are the user's choices: ask, lay out the options,
+      recommend none, and never make anything public unasked. Publishing
+      is no part of this task: leave the project offline, whatever
+      `lc init` and `lc status` say about putting it online.
     - `lc run <cluster_id> -- <command>` runs an ad-hoc command in the project
       environment under the same isolation a recipe gets — useful for
       probing why a recipe would fail. Argv style, like `docker run` or

@@ -28,7 +28,9 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     listed = re.findall(r"^  (\S+)  ", result.output.partition("Commands:")[2], re.MULTILINE)
-    assert listed == ["build", "compute", "init", "materialize", "run", "status"]
+    assert listed == [
+        "build", "compute", "fetch", "init", "materialize", "publish", "run", "status",
+    ]
 
 
 def test_engine_errors_render_cleanly(
@@ -570,18 +572,28 @@ def _report() -> object:
 
     return StatusReport(
         results=[
-            ResultStatus("first#baseline", "unchanged", "", _astra("unchanged", "3f2a1c8ffff")),
+            ResultStatus(
+                "first#baseline", "ok", "", False, [], _astra("unchanged", "3f2a1c8ffff")
+            ),
             ResultStatus(
                 "second#baseline",
                 "behind",
                 "made under an earlier environment",
+                False,
+                [],
                 _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             ),
             ResultStatus(
-                "third#baseline", "missing", "no record is at the place", _astra("missing")
+                "third#baseline",
+                "missing",
+                "no record is at the place",
+                False,
+                [],
+                _astra("missing"),
             ),
         ],
         environment=_ENV,
+        online=True,
     )
 
 
@@ -593,34 +605,80 @@ def test_status_shows_each_result_its_state_and_its_commit(
     result = runner.invoke(main, ["status"])
 
     assert result.exit_code == 0
-    for fragment in ("first#baseline", "unchanged", "behind", "missing", "3f2a1c8"):
+    for fragment in ("first#baseline", " ok ", "behind", "missing", "3f2a1c8"):
         assert fragment in result.output
 
 
-def test_status_headers_answer_mode_image_and_sandbox(
+def test_status_says_each_results_state_and_not_why(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The three facts nothing else surfaces — where the denial note and
-    the runtime-missing refusal both point."""
+    """The state is the answer at this level; the reasons are --json's and
+    `lc materialize --check`'s. Nor is there a header in direct mode."""
+    _status_stub(monkeypatch, _report())
+
+    output = runner.invoke(main, ["status"]).output
+
+    for fragment in ("earlier environment", "no record", "mode:", "sandbox:"):
+        assert fragment not in output
+    assert output.splitlines()[0].split()[:2] == ["·", "ok"]
+
+
+def test_status_says_which_current_results_are_unfetched_and_who_holds_them(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What is current needs a fetch, not a run, and only that is said of
+    it: a result a run makes again needs no fetching, wherever it is."""
+    from dataclasses import replace
+
     from lightcone.engine.materialize import StatusReport
 
     report = _report()
     assert isinstance(report, StatusReport)
-    report.mode = "containerized"
+    first, second, third = report.results
+    report.results = [
+        replace(first, unfetched=True, remotes=["origin", "backup"]),
+        replace(second, unfetched=True, remotes=["origin"]),
+        third,
+    ]
+    _status_stub(monkeypatch, report)
+
+    lines = runner.invoke(main, ["status"]).output.splitlines()
+
+    assert lines[0].endswith("unfetched, on origin, backup")
+    assert lines[1].endswith("unfetched, on origin")
+    assert "unfetched" not in lines[2]
+    assert lines[-1].endswith("2 unfetched — `lc fetch` brings them")
+
+
+def test_status_says_nothing_of_fetching_where_no_result_is_unfetched(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _status_stub(monkeypatch, _report())
+
+    output = runner.invoke(main, ["status"]).output
+
+    assert "unfetched" not in output and "lc fetch" not in output
+
+
+def test_status_says_where_a_containerized_projects_image_stands(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing else surfaces whether the image a run needs is built."""
+    from lightcone.engine.materialize import StatusReport
+
+    report = _report()
+    assert isinstance(report, StatusReport)
     report.image = {
         "tag": "lc-env-0123456789abcdef",
         "state": "absent",
         "archive": ".datalad/environments/lc-env-0123456789abcdef/image",
     }
-    report.sandbox = "podman (fs: declared, network: allowed)"
     _status_stub(monkeypatch, report)
 
     output = runner.invoke(main, ["status"]).output
 
-    assert "mode:    containerized" in output
     assert "lc-env-0123456789abcdef" in output
     assert "needs build" in output and "lc build" in output
-    assert "podman" in output
 
 
 def test_build_on_a_direct_project_is_an_explanatory_no_op(
@@ -654,28 +712,33 @@ def test_status_json_is_machine_readable(
     result = runner.invoke(main, ["status", "--json"])
 
     assert json.loads(result.output) == {
-        "mode": "direct",
         "image": None,
-        "sandbox": "",
         "environment": _ENV,
-        "counts": {"unchanged": 1, "behind": 1, "stale": 0, "missing": 1},
+        "online": True,
+        "counts": {"ok": 1, "behind": 1, "stale": 0, "missing": 1},
         "results": [
             {
                 "result": "first#baseline",
-                "state": "unchanged",
+                "state": "ok",
                 "why": "",
+                "unfetched": False,
+                "remotes": [],
                 "astra": _astra("unchanged", "3f2a1c8ffff"),
             },
             {
                 "result": "second#baseline",
                 "state": "behind",
                 "why": "made under an earlier environment",
+                "unfetched": False,
+                "remotes": [],
                 "astra": _astra("unchanged", "3f2a1c8ffff", "urn:lightcone:env:sha256:old"),
             },
             {
                 "result": "third#baseline",
                 "state": "missing",
                 "why": "no record is at the place",
+                "unfetched": False,
+                "remotes": [],
                 "astra": _astra("missing"),
             },
         ],
@@ -692,3 +755,298 @@ def test_status_has_exactly_one_flag(runner: CliRunner) -> None:
     assert "--json" in options
     for flag in ("--check", "--refresh", "--verbose", "--all"):
         assert flag not in options
+
+
+# =============================================================================
+# lc fetch
+# =============================================================================
+
+
+def _fetch_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> list[tuple[str, ...]]:
+    from lightcone.engine import materialize as engine
+
+    asked: list[tuple[str, ...]] = []
+
+    def fetch(root: Path, targets: tuple[str, ...]) -> object:
+        asked.append(targets)
+        return report
+
+    monkeypatch.setattr(engine, "fetch", fetch)
+    return asked
+
+
+def test_fetch_takes_targets_and_no_cluster(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fetching is a transfer, not a run: it borrows no allocation."""
+    from lightcone.engine.materialize import FetchReport
+
+    asked = _fetch_stub(monkeypatch, FetchReport(fetched=["fit#baseline"]))
+
+    result = runner.invoke(main, ["fetch", "fit#baseline", "summary"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [("fit#baseline", "summary")]
+    assert "fetched fit#baseline" in result.output
+
+
+def test_fetch_says_a_result_a_run_makes_again_is_not_fetched(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import FetchReport
+
+    _fetch_stub(monkeypatch, FetchReport(left={"fit#baseline": "stale"}))
+
+    result = runner.invoke(main, ["fetch"])
+
+    assert result.exit_code == 0
+    assert "stale fit#baseline" in result.output and "lc materialize" in result.output
+    assert "Nothing to fetch" in result.output
+
+
+def test_fetch_exits_one_when_a_result_could_not_be_fetched(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import FetchReport
+
+    _fetch_stub(
+        monkeypatch,
+        FetchReport(
+            fetched=["fit#baseline"],
+            failed={"summary#baseline": "Unable to access these remotes: origin"},
+        ),
+    )
+
+    result = runner.invoke(main, ["fetch"])
+
+    assert result.exit_code == 1
+    assert "summary#baseline" in result.output and "origin" in result.output
+    assert "1 result(s) could not be fetched" in result.output
+
+
+def test_fetch_json_is_machine_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import FetchReport
+
+    _fetch_stub(monkeypatch, FetchReport(fetched=["fit#baseline"], present=["summary#baseline"]))
+
+    result = runner.invoke(main, ["fetch", "--json"])
+
+    assert json.loads(result.output) == {
+        "ok": True,
+        "fetched": ["fit#baseline"],
+        "present": ["summary#baseline"],
+        "left": {},
+        "failed": {},
+        "inputs": [],
+        "warnings": [],
+    }
+
+
+# ---- lc publish, and the notes that lead to it -------------------------------
+
+
+def _publish_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> list[dict[str, object]]:
+    from lightcone.engine import publish as engine
+
+    asked: list[dict[str, object]] = []
+
+    def publish(root: Path, url: str = "", **options: object) -> object:
+        asked.append({"url": url, **options})
+        return report
+
+    monkeypatch.setattr(engine, "publish", publish)
+    return asked
+
+
+def _published(**fields: object) -> object:
+    from lightcone.engine.publish import PublishReport
+
+    return PublishReport(
+        **{
+            "target": "github.com/alice/analysis",
+            "visibility": "private",
+            "store": "GitHub LFS of github.com/alice/analysis",
+            "branch": "main",
+            "commit": "3f2a1c8ffff",
+            **fields,
+        }  # type: ignore[arg-type]
+    )
+
+
+def test_publish_hands_the_two_choices_to_the_engine_and_makes_neither(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _publish_stub(monkeypatch, _published())
+
+    runner.invoke(main, ["publish", "github.com/alice/analysis", "--private", "--data", "/store"])
+    runner.invoke(main, ["publish", "--public", "--confirm-data", "/store", "--check"])
+    runner.invoke(main, ["publish"])
+
+    assert asked == [
+        {"url": "github.com/alice/analysis", "visibility": "private", "data": "/store",
+         "confirm": "", "check": False},
+        {"url": "", "visibility": "public", "data": "", "confirm": "/store", "check": True},
+        {"url": "", "visibility": "", "data": "", "confirm": "", "check": False},
+    ]  # fmt: skip
+
+
+def test_publish_takes_one_answer_to_who_can_read_the_project(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _publish_stub(monkeypatch, _published())
+
+    result = runner.invoke(main, ["publish", "--private", "--public"])
+
+    assert result.exit_code == 2 and not asked
+    assert "two answers to one question" in result.output
+
+
+def test_a_first_publication_says_what_it_created_sent_and_how_to_clone_it(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(
+        monkeypatch,
+        _published(
+            created=True,
+            declared=True,
+            sent={"results/fit.txt": "result", "results/all.txt": "result", "data/c.txt": "input"},
+            commits=4,
+        ),
+    )
+
+    result = runner.invoke(main, ["publish", "github.com/alice/analysis", "--private"])
+
+    assert result.exit_code == 0
+    assert "created  github.com/alice/analysis, private" in result.output
+    assert "data     2 results, 1 input → GitHub LFS of" in result.output
+    assert "commits  main at 3f2a1c8 → github.com/alice/analysis" in result.output
+    assert "git clone https://github.com/alice/analysis" in result.output
+
+
+def test_a_publication_with_nothing_to_send_says_so(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(uncommitted=2))
+
+    result = runner.invoke(main, ["publish"])
+
+    assert result.exit_code == 0
+    assert "is up to date — nothing to send" in result.output
+    assert "2 uncommitted change(s) are not published" in result.output
+
+
+def test_what_could_not_be_sent_fails_the_publication_and_what_nobody_holds_does_not(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(nowhere=["results/old.txt"], commits=1))
+    held_nowhere = runner.invoke(main, ["publish"])
+    _publish_stub(monkeypatch, _published(failed={"results/big.h5": "over the quota [x]"}))
+    refused = runner.invoke(main, ["publish"])
+
+    assert held_nowhere.exit_code == 0
+    assert "1 file(s) with bytes in neither this clone nor the" in held_nowhere.output
+    assert "results/old.txt" in held_nowhere.output
+    assert refused.exit_code == 1
+    assert "results/big.h5 — over the quota [x]" in refused.output
+    assert "publishing again" in refused.output
+
+
+def test_check_exits_1_while_anything_is_unpublished(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published())
+    held = runner.invoke(main, ["publish", "--check"])
+    _publish_stub(monkeypatch, _published(unsent={"results/fit.txt": "result"}, unpushed=2))
+    lacking = runner.invoke(main, ["publish", "--check"])
+
+    assert held.exit_code == 0 and "holds main at 3f2a1c8, and its data" in held.output
+    assert lacking.exit_code == 1
+    assert "1 result to send" in lacking.output and "results/fit.txt" in lacking.output
+    assert "2 of main to send" in lacking.output
+
+
+def test_check_says_a_project_is_not_online_and_exits_1(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.publish import PublishReport
+
+    _publish_stub(monkeypatch, PublishReport())
+
+    result = runner.invoke(main, ["publish", "--check"])
+
+    assert result.exit_code == 1
+    assert "Not online yet — `lc publish github.com/OWNER/proj --private`" in result.output
+
+
+def test_going_public_says_what_becomes_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(made_public=True, license="CC-BY-4.0"))
+    with_lfs = runner.invoke(main, ["publish", "--public"]).output
+    _publish_stub(
+        monkeypatch, _published(made_public=True, license="CC-BY-4.0", store="/cfs/lcr/store")
+    )
+    with_a_directory = runner.invoke(main, ["publish", "--public"]).output
+
+    assert "license  CC-BY-4.0" in with_lfs
+    assert "github.com/alice/analysis is public, and its data in" in with_lfs
+    assert "and its data stays in /cfs/lcr/store" in " ".join(with_a_directory.split())
+
+
+def test_publish_json_is_machine_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(sent={"results/fit.txt": "result"}, commits=1))
+
+    answer = json.loads(runner.invoke(main, ["publish", "--json"]).output)
+
+    assert answer["ok"] and answer["published"]
+    assert answer["sent"] == {"results/fit.txt": "result"}
+    assert answer["target"] == "github.com/alice/analysis"
+
+
+def test_status_ends_with_one_line_while_the_project_is_not_online(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And says nothing of publication once it is, even privately."""
+    from dataclasses import replace
+
+    report = _report()
+    _status_stub(monkeypatch, replace(report, online=False))  # type: ignore[type-var]
+    offline = runner.invoke(main, ["status"]).output.splitlines()
+    _status_stub(monkeypatch, report)
+    online = runner.invoke(main, ["status"]).output
+
+    assert offline[-1].startswith("Not online yet — `lc publish github.com/OWNER/proj --private`")
+    assert "lc publish" not in online and "online" not in online
+
+
+def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_there(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    result = runner.invoke(main, ["init", str(tmp_path / "analysis")])
+
+    assert result.exit_code == 0
+    assert result.output.rstrip().splitlines()[-3:] == [
+        "  Not online yet. To back it up and share it, choose who can read it:",
+        "    lc publish github.com/OWNER/analysis --private",
+        "    lc publish github.com/OWNER/analysis --public",
+    ]
+    assert "lc publish" not in runner.invoke(main, ["init", "--check", str(tmp_path / "b")]).output
+
+
+def test_init_says_nothing_of_publishing_for_a_project_that_is_online(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether it is online is the engine's to say, in its report."""
+    from lightcone.engine import project
+    from lightcone.engine.project import ConvergenceReport
+
+    online = ConvergenceReport(online=True)
+    monkeypatch.setattr(project, "converge", lambda directory, write: online)
+
+    result = runner.invoke(main, ["init", str(tmp_path / "analysis")])
+
+    assert result.exit_code == 0 and "lc publish" not in result.output

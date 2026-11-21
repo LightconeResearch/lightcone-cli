@@ -248,11 +248,11 @@ def test_status_names_the_commit_each_result_came_from(root: Path, inline: None)
     report = engine.status(root)
 
     assert [r.result for r in report.results] == ["first#baseline", "second#baseline"]
-    assert all(r.state == "unchanged" for r in report.results)
+    assert all(r.state == "ok" for r in report.results)
     # The commit the tree was at when the run *started* — the code that
     # produced the result, not the commit the run itself went on to make.
     assert all(r.commit == ran_against for r in report.results)
-    assert report.counts == {"unchanged": 2, "behind": 0, "stale": 0, "missing": 0}
+    assert report.counts == {"ok": 2, "behind": 0, "stale": 0, "missing": 0}
 
 
 def test_status_gives_astras_own_status_of_each_result(root: Path, inline: None) -> None:
@@ -281,7 +281,7 @@ def test_status_reports_behind_after_the_environment_moves(
 
     report = engine.status(root)
 
-    assert report.counts == {"unchanged": 0, "behind": 2, "stale": 0, "missing": 0}
+    assert report.counts == {"ok": 0, "behind": 2, "stale": 0, "missing": 0}
     assert all(r.commit == made_at for r in report.results), "the commit it was made at"
     assert "earlier environment" in report.results[0].why
     # Behind is exactly this: the record names another environment than
@@ -298,7 +298,7 @@ def test_status_leaves_a_never_made_result_missing_and_without_a_commit(root: Pa
     which would claim the result came from a commit that never made it."""
     report = engine.status(root)
 
-    assert report.counts == {"unchanged": 0, "behind": 0, "stale": 0, "missing": 2}
+    assert report.counts == {"ok": 0, "behind": 0, "stale": 0, "missing": 2}
     assert all(r.commit == "" and "record" not in r.astra for r in report.results)
     assert "no record" in report.results[0].why
 
@@ -309,7 +309,7 @@ def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "notes.md").write_text("in progress\n")
 
-    assert engine.status(root).counts["unchanged"] == 2
+    assert engine.status(root).counts["ok"] == 2
 
 
 def test_status_reports_a_result_reading_a_stale_one_as_stale(
@@ -1470,6 +1470,274 @@ def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
     assert any("could not be fetched" in w for w in report.warnings)
 
 
+
+# ---- where the bytes are -----------------------------------------------------
+#
+# A clone holds each result as a stand-in until its bytes are fetched.
+# Whether a remote holds them is what decides between a fetch and a run.
+
+_FIRST = "results/baseline/first.txt"
+_SECOND = "results/baseline/second.txt"
+
+#: :data:`_SPEC`, `second` made of other bytes than `first`: git-annex
+#: stores one object for the same bytes, and fetches them for every file.
+_TWO = _SPEC.replace("cat {inputs.first} >", "cat {inputs.first} {inputs.first} >")
+
+
+def test_a_result_a_remote_holds_is_ok_and_unfetched(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """What is current needs a transfer, not compute: status says where its
+    bytes are, `--check` plans nothing, and a run fetches nothing. Asking
+    git-annex leaves the branch and the tree as they were."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    head = dataset.head(clone)
+
+    states = [(r.result, r.state, r.unfetched, r.remotes) for r in engine.status(clone).results]
+
+    assert states == [
+        ("first#baseline", "ok", True, ["origin"]),
+        ("second#baseline", "ok", True, ["origin"]),
+    ]
+    assert engine.check(clone, []).up_to_date
+    assert engine.materialize(clone, [], cluster_id=CLUSTER_ID).up_to_date
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _FIRST)
+    assert dataset.head(clone) == head and not dataset.status(clone)
+
+
+def test_a_file_git_left_a_stand_in_for_bytes_this_clone_holds_is_filled_in(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """`git reset --hard` leaves an annexed file a stand-in even where the
+    clone holds its bytes, and git-annex's hooks do not fill it in
+    (measured): read as it is, the result would be one to fetch from where
+    it already is."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    assert engine.fetch(clone, []).ok
+    (clone / _FIRST).unlink()
+    dataset._git(["reset", "-q", "--hard"], cwd=clone)
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _FIRST)
+
+    states = [(r.state, r.unfetched) for r in engine.status(clone).results]
+
+    assert states == [("ok", False), ("ok", False)]
+    assert (clone / _FIRST).read_text() == "alpha\n"
+    assert not dataset.status(clone)
+
+
+def test_a_result_no_remote_holds_is_missing_and_made_again(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A colleague pushed the commit and not the bytes: the log names the
+    repository that made them, which is no remote of this clone, so a run
+    can only make them again."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    dataset._git(["remote", "remove", "origin"], cwd=clone)
+
+    found = {r.result: (r.state, r.why) for r in engine.status(clone).results}
+    planned = engine.check(clone, []).planned
+    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+
+    assert found == {
+        "first#baseline": ("missing", dataset.NO_REMOTE),
+        "second#baseline": ("missing", dataset.NO_REMOTE),
+    }
+    assert set(planned) == {"first#baseline", "second#baseline"}
+    assert report.made == ["first#baseline", "second#baseline"], report.warnings
+    assert (clone / _SECOND).read_text() == "alpha\nalpha\n"
+
+
+def test_fetch_brings_the_bytes_of_current_results_and_not_of_stale_ones(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A stale result's recorded bytes are not what the analysis asks for,
+    and a run makes it again: fetching them is a transfer for nothing."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    spec = clone / "astra.yaml"
+    spec.write_text(spec.read_text().replace("cat {inputs.first}", "cat -u {inputs.first}"))
+    dataset.save(clone, [spec], "change the second recipe")
+
+    report = engine.fetch(clone, [])
+
+    assert (report.fetched, report.left, report.failed) == (
+        ["first#baseline"], {"second#baseline": "stale"}, {}
+    )
+    assert (clone / _FIRST).read_text() == "alpha\n"
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / _SECOND)
+    assert [(r.state, r.unfetched) for r in engine.status(clone).results] == [
+        ("ok", False), ("stale", False)
+    ]
+    assert not dataset.status(clone)
+    assert engine.fetch(clone, ["first"]).present == ["first#baseline"]
+
+
+def test_fetch_of_a_target_fetches_it_and_not_what_it_reads(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+
+    assert engine.fetch(clone, ["second"]).fetched == ["second#baseline"]
+    assert [r.unfetched for r in engine.status(clone).results] == [True, False]
+
+
+_READS = """
+spec_version: "0.1.0"
+inputs:
+  catalog: {path: data/catalog.txt}
+outputs:
+  fit:
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} {inputs.catalog} > {output}
+"""
+
+
+def test_fetch_brings_an_input_named_by_its_id(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """An input is what its commit names, whatever reads it: fetched when
+    named, to read it, and never with a result or with no target."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+
+    assert engine.fetch(clone, []).fetched == ["fit"]
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / "data/catalog.txt")
+
+    report = engine.fetch(clone, ["catalog"])
+
+    assert (report.fetched, report.inputs, report.ok) == (["catalog"], ["catalog"], True)
+    assert (clone / "data/catalog.txt").read_text() == "catalog v1\n"
+    again = engine.fetch(clone, ["catalog", "fit"])
+    assert (again.fetched, again.present) == ([], ["catalog", "fit"])
+    assert not dataset.status(clone)
+
+
+def test_fetch_of_what_names_nothing_says_what_there_is(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+
+    with pytest.raises(ProjectError) as refused:
+        engine.fetch(root, ["catlog"])
+
+    assert "no result or input matches `catlog`" in str(refused.value)
+    assert "Results: fit. Inputs: catalog." in str(refused.value)
+
+
+def test_an_input_nobody_holds_is_not_said_to_be_one_a_run_makes(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A clone of a clone that never fetched the input: the log names the
+    first repository, which is no remote here. A result in that state is
+    made again; nothing makes an input, so nothing says so."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    (tmp_path / "second").mkdir()
+    second = clone_of(clone_of(root, tmp_path), tmp_path / "second")
+
+    report = engine.fetch(second, ["catalog"])
+
+    assert report.failed == {"catalog": dataset.NO_REMOTE}
+
+
+def test_fetching_an_input_does_not_set_git_annex_up_behind_lc_inits_back(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """Asked to fetch in a clone it was never set up in, git-annex sets
+    itself up (measured), without the flag that makes a missing filter
+    loud: the next `git add` could then put raw bytes in git."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    clone = tmp_path / "plain"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+
+    with pytest.raises(ProjectError, match="`lc init` sets it up"):
+        engine.fetch(clone, ["catalog"])
+
+    assert not dataset.is_annexed(clone)
+
+
+def test_status_says_whether_the_project_is_online_at_all(root: Path) -> None:
+    """From the clone's `origin` alone, with no network: a repository on
+    GitHub, or not."""
+    assert not engine.status(root).online
+
+    dataset._git(["remote", "add", "origin", "/a/colleague/analysis"], cwd=root)
+    assert not engine.status(root).online
+
+    dataset._git(["remote", "set-url", "origin", "git@github.com:lcr/analysis.git"], cwd=root)
+    assert engine.status(root).online and engine.status(root).as_dict()["online"]
+
+
+def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """The log says what was last heard of a remote, and `git annex get`
+    fails alike on a remote that lost a copy and on one it cannot reach.
+    Asked, the remote says which: what it lost is missing from then on."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    key = dataset._git(["annex", "lookupkey", _FIRST], cwd=root).strip()
+    stored = root / dataset._git(["annex", "contentlocation", key], cwd=root).strip()
+    stored.parent.chmod(0o755)
+    stored.unlink()  # behind git-annex's back: its log still says root holds it
+
+    report = engine.fetch(clone, [])
+
+    assert (list(report.failed), report.fetched) == (["first#baseline"], ["second#baseline"])
+    assert report.failed["first#baseline"].startswith(dataset.NO_REMOTE)
+    assert "lc materialize" in report.failed["first#baseline"]
+    states = [(r.result, r.state) for r in engine.status(clone).results]
+    assert states == [("first#baseline", "missing"), ("second#baseline", "ok")]
+
+
+def test_a_remote_that_cannot_be_reached_is_left_as_the_log_has_it(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """Unreachable is not lost: what the remote holds may be fetched later,
+    and calling it missing would have a run make it again."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    dataset._git(["remote", "set-url", "origin", str(tmp_path / "gone")], cwd=clone)
+
+    report = engine.fetch(clone, ["first"])
+
+    assert list(report.failed) == ["first#baseline"]
+    assert "origin" in report.failed["first#baseline"]
+    assert not report.ok
+    first = engine.status(clone).results[0]
+    assert (first.state, first.unfetched, first.remotes) == ("ok", True, ["origin"])
+
+
+def test_status_on_a_clone_where_git_annex_was_never_set_up_says_to_set_it_up(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """Where its bytes are is git-annex's to say, and asking it in a clone
+    it was never set up in would set it up as a side effect."""
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+
+    with pytest.raises(ProjectError, match="`lc init` sets it up"):
+        engine.status(clone)
+    assert not dataset.is_annexed(clone)
+
+
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
@@ -1846,23 +2114,25 @@ def _forge(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def test_bytes_that_are_not_the_records_are_said_and_made_again(
+def test_bytes_that_are_not_the_records_make_the_result_stale(
     root: Path, inline: None
 ) -> None:
     """Written over after its run and committed: ASTRA's checker finds the
     record still holds and warns that the bytes at its place are not the
-    ones it gives. Status says so in ASTRA's words; nothing can fetch the
-    recorded bytes, so `--check` plans the result, and a run makes it."""
+    ones it gives. The result is not the one its recipe made, and nothing
+    can fetch the recorded bytes: it is stale, in ASTRA's words, `--check`
+    plans it, and a run makes it. What reads it read the recorded bytes,
+    so it stands until a rebuild gives others."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged], "tweak colors")
 
     first, second = engine.status(root).results
-    assert first.state == "unchanged"
+    assert first.state == "stale"
     assert "aren't the ones its record gives" in first.why
     assert [d["code"] for d in first.astra["why"]] == ["ABSENT_RESULT"]
-    assert (second.state, second.why) == ("unchanged", "")
+    assert (second.state, second.why) == ("ok", "")
 
     planned = engine.check(root, [])
     assert "aren't the ones its record gives" in planned.planned["first#baseline"]
@@ -1950,7 +2220,7 @@ def test_a_made_result_is_unchanged_until_something_it_is_made_from_moves(
         # ASTRA's checker found them present.
         made = graph.tasks[key].path
         assert content.digest_file(made) == (found.record.content_hash, found.record.size)
-        assert plan.classify(found=found, environment=environment).state == "unchanged"
+        assert plan.classify(found=found, environment=environment).state == "ok"
         assert plan.classify(found=found, environment=environment + "0").state == "behind"
     summary_made = graph.checked.statuses["summary"].record
     assert summary_made is not None
@@ -1972,7 +2242,7 @@ def test_a_made_result_is_unchanged_until_something_it_is_made_from_moves(
     assert (fit.state, fit.why, fit.stale_inputs) == ("stale", (), ("summary",))
     assert plan.classify(found=fit, environment=environment).state == "stale"
     kept = plan.classify(found=fit, environment=environment, read={"summary": recorded})
-    assert kept.state == "unchanged"
+    assert kept.state == "ok"
     remade = plan.classify(
         found=fit, environment=environment, read={"summary": ("sha256:" + "0" * 64, 15)}
     )

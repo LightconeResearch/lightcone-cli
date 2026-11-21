@@ -92,6 +92,107 @@ def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite off GitHub, and off the developer's own credentials.
+
+    Nothing here may call GitHub's API, and no test may behave otherwise
+    on a host where ``gh`` is logged in or a token is exported. The
+    :func:`github` fixture puts a GitHub made of local repositories in
+    its place.
+    """
+    from lightcone.engine import github as engine
+
+    def refuse(method: str, path: str, token: str | None, body: object = None) -> object:
+        raise AssertionError(f"a test called GitHub's API: {method} {path}")
+
+    monkeypatch.setattr(engine, "_call", refuse)
+    monkeypatch.setattr(engine, "has_gh", lambda: False)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+class GitHub:
+    """A github.com made of bare repositories in a folder.
+
+    git reaches ``https://github.com/<owner>/<name>`` there through
+    ``url.<folder>.insteadOf``, so every clone, fetch and push a test
+    makes is a real one; the REST API is answered from the same folder.
+    The token's owner is ``alice``.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        #: Each call made to the API, as ``(method, path, body)``.
+        self.calls: list[tuple[str, str, object]] = []
+
+    def at(self, slug: str) -> Path:
+        """Where ``<owner>/<name>`` is kept."""
+        return self.folder / slug
+
+    def new(self, slug: str, *, private: bool = True) -> Path:
+        """Create ``<owner>/<name>``, empty, as someone does at github.com/new."""
+        repository = self.at(slug)
+        _must(_real_run(["git", "init", "-q", "--bare", str(repository)], cwd=self.folder), [])
+        (repository / "visibility").write_text("private" if private else "public")
+        return repository
+
+    def visibility(self, slug: str) -> str:
+        """Who can read ``<owner>/<name>``."""
+        return (self.at(slug) / "visibility").read_text()
+
+    def call(
+        self, method: str, path: str, token: str | None, body: dict[str, object] | None = None
+    ) -> tuple[int, dict[str, object]]:
+        """Answer one call to the REST API."""
+        self.calls.append((method, path, body))
+        parts = path.strip("/").split("/")
+        if path == "/user":
+            return (200, {"login": "alice"}) if token else (401, {"message": "Bad credentials"})
+        if method == "POST" and body is not None:
+            owner = "alice" if path == "/user/repos" else parts[1]
+            if self.at(f"{owner}/{body['name']}").exists():
+                return 422, {
+                    "message": "Repository creation failed.",
+                    "errors": [{"message": "name already exists on this account"}],
+                }
+            self.new(f"{owner}/{body['name']}", private=bool(body["private"]))
+            return 201, {}
+        repository = self.at(f"{parts[1]}/{parts[2]}")
+        if not repository.exists():
+            return 404, {"message": "Not Found"}
+        if method == "PATCH":
+            (repository / "visibility").write_text("public")
+            return 200, {}
+        private = self.visibility(f"{parts[1]}/{parts[2]}") == "private"
+        if private and not token:
+            return 404, {"message": "Not Found"}
+        return 200, {"private": private}
+
+
+@pytest.fixture
+def github(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> GitHub:
+    """Stand a local :class:`GitHub` in for github.com, with a token to create with.
+
+    The global git configuration is replaced by one that sends github.com
+    there, and carries the identity a clone commits with.
+    """
+    from lightcone.engine import github as engine
+
+    hub = GitHub(tmp_path / "github.com")
+    hub.folder.mkdir()
+    config = tmp_path / "gitconfig"
+    config.write_text(
+        f'[url "{hub.folder}/"]\n\tinsteadOf = https://github.com/\n'
+        "[user]\n\tname = Test\n\temail = t@example.com\n"
+        "[init]\n\tdefaultBranch = main\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GH_TOKEN", "a-token")
+    monkeypatch.setattr(engine, "_call", hub.call)
+    return hub
+
+
+@pytest.fixture(autouse=True)
 def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Fake every external tool convergence shells out to, so the suite is
     hermetic — no network, no real resolution, no subprocesses.

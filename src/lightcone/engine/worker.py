@@ -61,9 +61,9 @@ class TaskOutcome:
     """What one task did. Returned, never raised, and handed to dependents."""
 
     id: ResultId
-    #: ``made`` by this task, left alone as ``unchanged`` or ``behind``, or
-    #: not made at all.
-    status: Literal["made", "unchanged", "behind", "failed", "blocked"]
+    #: ``made`` by this task, left alone as ``ok`` or ``behind``, or not
+    #: made at all.
+    status: Literal["made", "ok", "behind", "failed", "blocked"]
     #: The hash and size of the result's bytes, as a record gives them.
     #: Present for the three states in which the bytes on disk are what
     #: the spec asks for — this is what a dependent records having read.
@@ -88,12 +88,12 @@ class TaskOutcome:
         """Whether a dependent may proceed on this result.
 
         Returns:
-            True for ``made``, ``unchanged`` and ``behind`` — the states in
+            True for ``made``, ``ok`` and ``behind`` — the states in
             which the bytes on disk are what the spec asks for. ``behind``
             is among them deliberately: it says the environment moved, not
             that the result is wrong.
         """
-        return self.status in ("made", "unchanged", "behind")
+        return self.status in ("made", "ok", "behind")
 
 
 @dataclass(frozen=True)
@@ -169,6 +169,7 @@ def materialize(
     root: Path,
     task: Task,
     found: Status,
+    remotes: tuple[str, ...] | None,
     context: RunContext,
     refresh: bool,
     *upstream: TaskOutcome,
@@ -187,6 +188,9 @@ def materialize(
         found: What ASTRA's checker found of the result before the run.
             Read by the driver, where git is; a task asks nothing of
             ASTRA.
+        remotes: Where this clone lacks the result's bytes, the remotes
+            that hold them, as the driver found them: whether a run can
+            fetch them is git-annex's to say, and a task asks git nothing.
         context: The run's driver-resolved facts.
         refresh: Whether to remake a result that is merely behind.
         *upstream: The results of this task's dependencies, arriving as
@@ -198,7 +202,7 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, found, context, refresh, upstream, output)
+        return _materialize(root, task, found, remotes, context, refresh, upstream, output)
     except Exception as e:  # the contract is that this function returns
         return TaskOutcome(task.id, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -207,6 +211,7 @@ def _materialize(
     root: Path,
     task: Task,
     found: Status,
+    remotes: tuple[str, ...] | None,
     context: RunContext,
     refresh: bool,
     upstream: tuple[TaskOutcome, ...],
@@ -224,6 +229,7 @@ def _materialize(
     verdict = plan.classify(
         found=found,
         environment=context.environment,
+        remotes=remotes,
         read={entry: reported[key].digest for entry, key in task.produced_by.items()},
     )
     if verdict.calls_for_a_remake(refresh=refresh):
@@ -234,7 +240,7 @@ def _materialize(
     # the files are stand-ins, and rehashing them would quietly report a
     # different result.
     record = found.record
-    assert record is not None and verdict.state in ("unchanged", "behind")  # the branch above
+    assert record is not None and verdict.state in ("ok", "behind")  # the branch above
     return TaskOutcome(
         task.id,
         verdict.state,
@@ -605,7 +611,7 @@ def _from_disk(root: Path, graph: plan.Graph, task: Task) -> dict[ResultId, Task
         try:
             content.require_fetched(path)
             upstream[key] = TaskOutcome(
-                key, "unchanged", *content.digest_file(path), stamp=content.stamp(path)
+                key, "ok", *content.digest_file(path), stamp=content.stamp(path)
             )
         except OSError as e:
             # This is the entry point a `datalad rerun` lands on, so it
@@ -656,7 +662,7 @@ def from_commit(key: ResultId, found: Status, path: Path) -> TaskOutcome:
         path: Where a run gives its bytes.
 
     Returns:
-        ``unchanged``, with its digest and the stamp of the file it is of,
+        ``ok``, with its digest and the stamp of the file it is of,
         or ``failed`` saying why it cannot be read.
     """
     if why := unreadable(found):
@@ -675,7 +681,7 @@ def from_commit(key: ResultId, found: Status, path: Path) -> TaskOutcome:
             reason="lacks its recorded bytes at its commit, so nothing is built from it "
             "(STALE_INPUT)",
         )
-    return TaskOutcome(key, "unchanged", *digest, stamp=stamp)
+    return TaskOutcome(key, "ok", *digest, stamp=stamp)
 
 
 if __name__ == "__main__":
