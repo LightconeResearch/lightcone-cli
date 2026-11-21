@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
     from lightcone.engine.materialize import MaterializeReport
     from lightcone.engine.project import ConvergenceReport
+    from lightcone.engine.publish import PublishReport
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,10 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
     Safe to re-run at any time: creates whatever is missing, repairs the
     pieces lightcone manages, and never overwrites files you own.
+
+    In a clone it sets up git-annex, which enables the store the project
+    declares for its data, so `lc fetch` works from there. It creates
+    nothing online: `lc publish` does, when you choose to.
     """
     from lightcone.engine.project import converge
 
@@ -117,9 +123,22 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
         click.echo(json.dumps(report.as_dict(), indent=2))
     else:
         _render_init_output(report, directory, dry_run=check_only)
+        if write and not report.blocked and not _online(directory):
+            click.echo(
+                "\n  Not online yet. To back it up and share it, choose who can read it:\n"
+                f"    lc publish github.com/OWNER/{directory.name} --private\n"
+                f"    lc publish github.com/OWNER/{directory.name} --public"
+            )
 
     if check_only and not report.converged:
         sys.exit(1)
+
+
+def _online(root: Path) -> bool:
+    """Whether the project is online at all: its `origin` is a repository on GitHub."""
+    from lightcone.engine import dataset, github
+
+    return github.parse(dataset.remote_url(root, "origin")) is not None
 
 
 def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
@@ -247,7 +266,7 @@ def build(as_json: bool) -> None:
     Containerized projects only — a project containerizes by declaring
     [tool.lightcone.image] in pyproject.toml. The image is saved into the
     repository (.datalad/environments/) as versioned content, so clones
-    obtain the exact bytes with `git annex get` instead of rebuilding.
+    fetch the exact bytes instead of rebuilding.
     Idempotent: an image that is already built and committed is left
     alone.
     """
@@ -431,6 +450,10 @@ def status(as_json: bool) -> None:
     and which remotes hold its bytes, and its status as ASTRA's checker
     reports it, under `astra`.
 
+    While the project is not online at all, a last line says so, with the
+    `lc publish` that puts it there. Once it is, what of it is published
+    is `lc publish --check`'s to say.
+
     Reads only. It runs nothing, fetches nothing, commits nothing, does not
     mind an unclean tree, and always exits 0 — a state is not a failure.
     Use `lc materialize --check` for a gate that exits nonzero.
@@ -438,7 +461,8 @@ def status(as_json: bool) -> None:
     from lightcone.engine import materialize as engine
     from lightcone.engine.project import current_project
 
-    report = engine.status(current_project())
+    root = current_project()
+    report = engine.status(root)
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
         return
@@ -489,6 +513,15 @@ def status(as_json: bool) -> None:
             + (f" · {unfetched} unfetched — `lc fetch` brings them" if unfetched else "")
         )
     _console().print("\n".join(lines))
+    if not report.online:
+        click.echo(_NOT_ONLINE.format(name=root.name))
+
+
+#: The one line that says a project is not online, and what puts it there.
+_NOT_ONLINE = (
+    "Not online yet — `lc publish github.com/OWNER/{name} --private` or `--public` "
+    "puts it there"
+)
 
 
 # =============================================================================
@@ -505,7 +538,7 @@ def status(as_json: bool) -> None:
     help="Emit the report as JSON on stdout.",
 )
 def fetch(targets: tuple[str, ...], as_json: bool) -> None:
-    """Bring the bytes of current results into this clone.
+    """Bring the bytes of current results, and of named inputs, into this clone.
 
     A clone, or a pull, holds each result as a small stand-in for its
     bytes until they are fetched; `lc status` marks those results
@@ -513,12 +546,12 @@ def fetch(targets: tuple[str, ...], as_json: bool) -> None:
     the ones that are ok or behind. A result that is stale or missing is not
     fetched: what a remote holds of it is not what the analysis asks for,
     and `lc materialize` makes it again. A target is a result's id
-    (`fit#baseline`), or an output's id (`fit`) for its result in every
-    universe; with none, every result.
+    (`fit#baseline`), an output's id (`fit`) for its result in every
+    universe, or an input's id (`catalog`); with none, every result.
 
-    Nothing is made or committed, and no cluster is used. Exits 1 if a
-    result could not be fetched. One that no remote holds any more is
-    missing from then on, and `lc materialize` makes it again.
+    Nothing is made or committed, and no cluster is used. Exits 1 if
+    something named could not be fetched. A result that no remote holds
+    any more is missing from then on, and `lc materialize` makes it again.
     """
     from rich.markup import escape
 
@@ -536,16 +569,141 @@ def fetch(targets: tuple[str, ...], as_json: bool) -> None:
         ]
         lines += [f"  [red]✗[/red] {name} — {escape(why)}" for name, why in report.failed.items()]
         lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
+        def counted(names: Iterable[str]) -> str:
+            inputs = sum(name in report.inputs for name in names)
+            results = sum(name not in report.inputs for name in names)
+            return " and ".join(
+                [
+                    *([f"{results} result(s)"] if results else []),
+                    *([f"{inputs} input(s)"] if inputs else []),
+                ]
+            )
+
         if report.failed:
-            verdict = f"[red]✗[/red] {len(report.failed)} result(s) could not be fetched"
+            verdict = f"[red]✗[/red] {counted(report.failed)} could not be fetched"
         elif report.fetched:
-            verdict = f"[green]✓[/green] Fetched {len(report.fetched)} result(s)"
+            verdict = f"[green]✓[/green] Fetched {counted(report.fetched)}"
         else:
             verdict = "[green]✓[/green] Nothing to fetch" + (
-                "" if report.left else " — every result is here"
+                ""
+                if report.left
+                else " — it is all here"
+                if report.inputs
+                else " — every result is here"
             )
         _console().print("\n".join([*lines, *([""] if lines else []), verdict]))
     if not report.ok:
+        sys.exit(1)
+
+
+# =============================================================================
+# lc publish
+# =============================================================================
+
+
+@main.command()
+@click.argument("url", required=False, default="", metavar="[URL]")
+@click.option(
+    "--private",
+    "private",
+    is_flag=True,
+    help="Create the repository readable only by people you invite.",
+)
+@click.option(
+    "--public",
+    "public",
+    is_flag=True,
+    help=(
+        "Create the repository readable by anyone, or make a private one public. "
+        "Permanent, and needs a license in pyproject.toml."
+    ),
+)
+@click.option(
+    "--data",
+    default="",
+    metavar="WHERE",
+    help=(
+        "Where the project's data lives, chosen once: github-lfs (the repository's Git "
+        "LFS storage), a new directory on your cluster, or ssh://HOST/DIRECTORY."
+    ),
+)
+@click.option(
+    "--confirm-data",
+    "confirm",
+    default="",
+    metavar="WHERE",
+    help=(
+        "Confirm, once for this clone, that WHERE is where the project's data goes. "
+        "Asked of a clone that did not choose it."
+    ),
+)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Report what is not published, sending nothing; exit 1 if anything is not.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as JSON on stdout.",
+)
+def publish(
+    url: str,
+    private: bool,
+    public: bool,
+    data: str,
+    confirm: str,
+    check_only: bool,
+    as_json: bool,
+) -> None:
+    """Put the project online: its commits on GitHub, its data in its store.
+
+    URL names the repository on GitHub (github.com/OWNER/NAME), and is
+    needed only the first time. The first publication makes the two
+    choices no tool should make for you: who can read the project
+    (--private or --public, when lc creates the repository), and where its
+    data lives (--data). Both are asked once; every clone learns them. A
+    repository that does not exist is created with a token from GH_TOKEN,
+    GITHUB_TOKEN or `gh`.
+
+    Every publication then sends, in this order, the bytes of what the
+    commit names and the store lacks, git-annex's log of where they are,
+    and the current branch. Run it again whenever there is something new:
+    with nothing to send it says so. A plain `git push` sends the commits
+    without their bytes, and every clone then sees those results as
+    missing.
+
+    A clone that did not choose the store confirms it once before it
+    publishes, with --confirm-data: lc shows where the data goes and
+    never confirms it by itself. Reading needs no confirmation.
+
+    Uncommitted changes are not published. Nothing is ever deleted, no
+    tag or other branch is sent, and nothing is merged: where GitHub has
+    commits this clone lacks, `git pull` first.
+    """
+    from lightcone.engine import publish as engine
+    from lightcone.engine.project import current_project
+
+    if private and public:
+        raise click.UsageError("--private and --public are two answers to one question.")
+    root = current_project()
+    report = engine.publish(
+        root,
+        url,
+        visibility="private" if private else "public" if public else "",
+        data=data,
+        confirm=confirm,
+        check=check_only,
+    )
+    if as_json:
+        click.echo(json.dumps(report.as_dict(), indent=2))
+    elif not report.target:
+        click.echo(_NOT_ONLINE.format(name=root.name))
+    else:
+        _render_publish_output(report, dry_run=check_only)
+    if not report.ok or (check_only and not report.published):
         sys.exit(1)
 
 
@@ -595,6 +753,93 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     if report.behind:
         verdict += f" · {len(report.behind)} behind — `--refresh` remakes them"
 
+    if lines:
+        lines.append("")
+    _console().print("\n".join([*lines, verdict]))
+
+
+def _counted(files: dict[str, str]) -> str:
+    """Count files by what each is: `2 results, 1 input`."""
+    tally: dict[str, int] = {}
+    for kind in files.values():
+        tally[kind] = tally.get(kind, 0) + 1
+    return ", ".join(
+        f"{count} {kind}{'s' if count > 1 else ''}"
+        for kind in ("result", "input", "file")
+        if (count := tally.get(kind))
+    )
+
+
+def _render_publish_output(report: PublishReport, *, dry_run: bool) -> None:
+    """Print what a publication sent, or what one would.
+
+    Engine prose, paths and what a remote said are escaped: they are
+    data, not markup.
+    """
+    from rich.markup import escape
+
+    target, store = report.target, escape(report.store)
+    ok, todo = "[green]✓[/green]", "[yellow]·[/yellow]"
+    bad, note = "[red]✗[/red]", "[yellow]![/yellow]"
+    lines = []
+    if report.created:
+        lines.append(f"  {ok} created  {target}, {report.visibility}")
+    if report.declared:
+        lines.append(f"  {ok} store    {store}, where this project's data lives from now on")
+    if report.confirmed:
+        lines.append(f"  {ok} store    {store}, confirmed for this clone")
+    if report.sent:
+        lines.append(f"  {ok} data     {_counted(report.sent)} → {store}")
+    if report.unsent:
+        lines.append(
+            f"  {todo} data     {_counted(report.unsent)} to send → {store or 'no store yet'}"
+        )
+        lines += [f"      {escape(name)}" for name in report.unsent]
+    lines += [f"  {bad} {escape(name)} — {escape(why)}" for name, why in report.failed.items()]
+    if report.nowhere:
+        lines.append(
+            f"  {note} {len(report.nowhere)} file(s) with bytes in neither this clone nor the "
+            "store: other clones see those results as missing"
+        )
+        lines += [f"      {escape(name)}" for name in report.nowhere]
+    if report.commits:
+        lines.append(f"  {ok} commits  {report.branch} at {report.commit[:7]} → {target}")
+    if report.unpushed:
+        lines.append(f"  {todo} commits  {report.unpushed} of {report.branch} to send → {target}")
+    if report.made_public:
+        lines.append(f"  {ok} license  {escape(report.license)}")
+        lines.append(
+            f"  {ok} visible  {target} is public, "
+            + (
+                "and its data in GitHub LFS with it"
+                if report.store.startswith("GitHub LFS")
+                else f"and its data stays in {store}, for those who can reach it"
+            )
+        )
+    lines += [f"  {note} {escape(warning)}" for warning in report.warnings]
+    if report.uncommitted:
+        lines.append(f"  {note} {report.uncommitted} uncommitted change(s) are not published")
+
+    if report.failed:
+        verdict = (
+            f"{bad} {len(report.failed)} file(s) could not be sent — publishing again "
+            "continues from here"
+        )
+    elif dry_run:
+        at = f"{report.branch} at {report.commit[:7]}"
+        verdict = (
+            f"{ok} {target} holds {at}, and its data"
+            if report.published
+            else f"{note} {target} does not hold all of {at} — `lc publish` sends it"
+        )
+    elif report.created or report.declared:
+        verdict = (
+            f"{ok} Published. A clone needs only: git clone https://{target} && lc init"
+        )
+    elif report.sent or report.commits or report.made_public or report.confirmed:
+        verdict = f"{ok} Published to {target}"
+    else:
+        verdict = f"{ok} {target} is up to date — nothing to send"
     if lines:
         lines.append("")
     _console().print("\n".join([*lines, verdict]))

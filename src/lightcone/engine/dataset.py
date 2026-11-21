@@ -19,13 +19,17 @@ asks anyone to run a git-annex command by hand.
 from __future__ import annotations
 
 import json
+import os
 import posixpath
+import re
 import subprocess
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from lightcone.engine import project
+from lightcone.engine import github, project
 
 # =============================================================================
 # The repository
@@ -519,6 +523,29 @@ def populate(directory: Path) -> None:
     _git(["annex", "smudge", "--update"], cwd=directory)
 
 
+def enable_store(directory: Path) -> None:
+    """Enable the store the project declares, where this clone has not yet.
+
+    git-annex enables a declared store when it is first set up in a clone,
+    and not afterwards: one a ``git pull`` brought stays unknown to this
+    clone, and what it holds reads as held nowhere. In a clone already set
+    up, git-annex enables it only when forced, since it cannot tell
+    whether another of its processes is running (measured). Forced, the
+    store comes up exactly as in a fresh clone: read from freely, and
+    written to by nothing until this clone confirms it
+    (``annex-verified = automatic``, measured), which only ``lc publish``
+    does, and only when told to.
+
+    Naming the store to ``git annex enableremote`` instead leaves it
+    unreadable until confirmed (measured).
+
+    Args:
+        directory: The repository root, where git-annex is set up.
+    """
+    if not remote_url(directory, STORE):
+        project._run(["git", "annex", "init", "--autoenable", "--force"], cwd=directory)
+
+
 def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]:
     """Name where this clone could fetch each file's bytes from.
 
@@ -549,16 +576,14 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
     """
     if not paths:
         return {}
-    remotes = {}
-    listed = _ask(["config", "--get-regexp", r"^remote\..+\.annex-uuid$"], cwd=directory)
-    for line in (listed or "").splitlines():
-        key, _, uuid = line.partition(" ")
-        remotes[uuid] = key.removeprefix("remote.").removesuffix(".annex-uuid")
     asked = project._run(
         ["git", "annex", "whereis", "--json", "--batch"],
         cwd=directory,
         stdin="".join(f"{path}\n" for path in paths),
     )
+    # Read after asking: git-annex learns which repository a store in a
+    # directory is the first time it looks there, which is then (measured).
+    remotes = _remotes(directory)
     held = {}
     # One line per file asked, and an empty one for a file git-annex keeps
     # nothing of.
@@ -566,9 +591,9 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
         if not line.strip():
             continue
         answer = json.loads(line)
-        copies = [*answer.get("whereis", []), *answer.get("untrusted", [])]
+        found = [*answer.get("whereis", []), *answer.get("untrusted", [])]
         held[answer["file"]] = tuple(
-            dict.fromkeys(remotes[copy["uuid"]] for copy in copies if copy["uuid"] in remotes)
+            dict.fromkeys(remotes[copy["uuid"]] for copy in found if copy["uuid"] in remotes)
         )
     return held
 
@@ -594,7 +619,8 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
     """
     if not paths:
         return {}
-    got = project._run(["git", "annex", "get", "--json", "--", *paths], cwd=directory)
+    reach = reaching(directory)
+    got = project._run(["git", *reach, "annex", "get", "--json", "--", *paths], cwd=directory)
     failed = {}
     for line in got.stdout.splitlines():
         if line.strip() and not (answer := json.loads(line)).get("success"):
@@ -605,12 +631,378 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
     named = holders(directory, list(failed))
     for remote in sorted({name for names in named.values() for name in names}):
         project._run(
-            ["git", "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
+            ["git", *reach, "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
              *(path for path in failed if remote in named.get(path, ()))],
             cwd=directory,
         )  # fmt: skip
     now = holders(directory, list(failed))
     return {path: NO_REMOTE if now.get(path) == () else why for path, why in failed.items()}
+
+
+# =============================================================================
+# Where the bytes go
+# =============================================================================
+
+#: The remote a project's data store is, in every clone. The store is
+#: declared once, in git-annex's branch, as a special remote git-annex
+#: enables by itself: no clone configures it, and DataLad finds it the
+#: same way.
+STORE = "origin-storage"
+
+#: A second remote for a store in a repository's Git LFS: the same store,
+#: at the repository's ssh address.
+STORE_SSH = "origin-storage-ssh"
+
+#: What git-annex records of a store it enabled that this clone has not
+#: confirmed: enabled by itself, or by name. It sends nothing to either.
+_UNCONFIRMED = ("automatic", "manual")
+
+
+@dataclass(frozen=True)
+class Store:
+    """The store a project's bytes are published to, as this clone has it."""
+
+    #: A repository's Git LFS storage, or a git-annex repository in a
+    #: directory.
+    kind: Literal["github-lfs", "directory"]
+    #: Where it is: the repository's address, or the directory's, a path
+    #: or an ssh URL.
+    location: str
+    #: Each remote that reaches it from this clone → its address there,
+    #: and whether this clone may send to it: it declared the store, or
+    #: confirmed it since.
+    remotes: dict[str, tuple[str, bool]]
+
+
+def store(directory: Path) -> Store | None:
+    """Read the store this clone publishes the project's bytes to.
+
+    From this clone's own configuration, which is what git-annex acts on:
+    a store's declaration travels in git-annex's branch, and a change to
+    it that a pull brings takes effect only once confirmed.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        The store, or None where the project declares none, or this clone
+        has not enabled it (:func:`enable_store`).
+    """
+    listed = _ask(
+        ["config", "--get-regexp",
+         rf"^remote\.({STORE}|{STORE_SSH})\.(url|annex-git-lfs|annex-verified)$"],
+        cwd=directory,
+    )  # fmt: skip
+    found: dict[str, dict[str, str]] = {}
+    for line in (listed or "").splitlines():
+        key, _, value = line.partition(" ")
+        name, _, setting = key.removeprefix("remote.").rpartition(".")
+        found.setdefault(name, {})[setting] = value
+    if not found.get(STORE, {}).get("url"):
+        return None
+    return Store(
+        kind="github-lfs" if found[STORE].get("annex-git-lfs") == "true" else "directory",
+        location=found[STORE]["url"],
+        remotes={
+            name: (settings["url"], settings.get("annex-verified") not in _UNCONFIRMED)
+            for name, settings in sorted(found.items())
+            if settings.get("url")
+        },
+    )
+
+
+def unsettled(directory: Path) -> dict[str, str]:
+    """Name what this clone has yet to note of where the project is published.
+
+    Two settings a clone keeps, for an ``origin`` that is a repository on
+    GitHub. GitHub holds no bytes for git-annex, so ``origin`` is marked
+    as a remote git-annex leaves alone, as DataLad marks a sibling on
+    GitHub: git-annex otherwise finds that out by asking GitHub. And
+    DataLad sends bytes to the store before it pushes there, as ``lc
+    publish`` does, through ``datalad-publish-depends``. Neither travels
+    with the repository, so each clone writes its own.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        Each setting this clone lacks → the value it takes; empty where
+        ``origin`` is not on GitHub.
+    """
+    target = github.parse(remote_url(directory, "origin"))
+    if target is None:
+        return {}
+    wanted = {"remote.origin.annex-ignore": "true"}
+    declared = store(directory)
+    if declared is not None:
+        wanted["remote.origin.datalad-publish-depends"] = (
+            STORE_SSH if target.ssh and STORE_SSH in declared.remotes else STORE
+        )
+    return {
+        key: value
+        for key, value in wanted.items()
+        if (_ask(["config", "--local", "--get", key], cwd=directory) or "").strip() != value
+    }
+
+
+def settle(directory: Path) -> None:
+    """Write what :func:`unsettled` names into this clone's configuration.
+
+    Args:
+        directory: The repository root.
+    """
+    for key, value in unsettled(directory).items():
+        _git(["config", key, value], cwd=directory)
+
+
+def confirm(directory: Path, remote: str, declared: dict[str, str]) -> None:
+    """Record that this clone may send to a store someone else declared.
+
+    A store's declaration is data from whoever can push to the
+    repository, and git-annex sends nothing to one this clone has not
+    confirmed. It shows the declaration and takes the code it gives with
+    it as the confirmation, so what is confirmed is what was shown. lc
+    confirms only a declaration that is, setting for setting, the one it
+    would write for the place the user named: anything more is not lc's
+    to vouch for.
+
+    Args:
+        directory: The repository root.
+        remote: The remote to confirm.
+        declared: The settings lc declares for the place the user named.
+
+    Raises:
+        ProjectError: If git-annex shows another declaration, with
+            nothing confirmed.
+    """
+    shown = _git(["annex", "verifyremote", remote], cwd=directory)
+    code = re.search(r"--safe (\S+)", shown)
+    if code is None:
+        # Nothing left to confirm: git-annex shows a code only with a
+        # declaration this clone has not confirmed.
+        return
+    settings = next((line.strip() for line in shown.splitlines() if line.startswith("\t")), "")
+    if dict(pair.split("=", 1) for pair in settings.split() if "=" in pair) != declared:
+        raise project.ProjectError(
+            f"what the project declares for `{remote}` is not what lc declares for that "
+            f"place, so lc does not confirm it:\n  {settings}\nNothing was sent."
+        )
+    _git(["annex", "verifyremote", remote, "--safe", code[1]], cwd=directory)
+
+
+def annexed(directory: Path, commit: str) -> dict[str, str]:
+    """List the files of *commit* that git-annex keeps the bytes of.
+
+    Asked of the commit, not of the working tree: what is published is
+    what the commit names, whatever has been edited since.
+
+    Args:
+        directory: The repository root.
+        commit: The commit.
+
+    Returns:
+        Each such file, from the top of the repository → the key
+        git-annex keeps its bytes under.
+    """
+    listed = _git(["annex", "find", f"--branch={commit}", "--anything", "--json"], cwd=directory)
+    return {
+        entry["file"]: entry["key"]
+        for entry in map(json.loads, filter(None, listed.splitlines()))
+    }
+
+
+def keys(directory: Path, files: Sequence[str]) -> dict[str, str]:
+    """Look up the key of files at other commits.
+
+    Args:
+        directory: The repository root.
+        files: Each as ``<commit>:<path from the top of the repository>``.
+
+    Returns:
+        Each file git-annex keeps → its key. One git keeps itself, or
+        that the commit does not hold, is left out.
+    """
+    if not files:
+        return {}
+    looked = project._run(
+        ["git", "annex", "lookupkey", "--ref", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{name}\n" for name in files),
+    )
+    # One line out per file in: its key, or empty.
+    return {
+        name: key
+        for name, key in zip(files, looked.stdout.split("\n"), strict=False)
+        if key.strip()
+    }
+
+
+def copies(directory: Path, wanted: Iterable[str]) -> dict[str, tuple[bool, frozenset[str]]]:
+    """Say where git-annex's log puts the bytes kept under each key.
+
+    The log, read without the network, with what each remote's
+    ``git-annex`` branch brought merged in first, as :func:`holders`
+    reads it.
+
+    Args:
+        directory: The repository root.
+        wanted: Keys.
+
+    Returns:
+        Each key → whether this clone holds its bytes, and the id of each
+        other repository the log says does.
+    """
+    asked = project._run(
+        ["git", "annex", "whereis", "--json", "--batch-keys"],
+        cwd=directory,
+        stdin="".join(f"{key}\n" for key in wanted),
+    )
+    held = {}
+    for line in asked.stdout.splitlines():
+        if not line.strip():
+            continue
+        answer = json.loads(line)
+        found = [*answer.get("whereis", []), *answer.get("untrusted", [])]
+        held[answer["key"]] = (
+            any(copy["here"] for copy in found),
+            frozenset(copy["uuid"] for copy in found if not copy["here"]),
+        )
+    return held
+
+
+def send(directory: Path, remote: str, wanted: Sequence[str]) -> dict[str, str]:
+    """Send the bytes kept under each key to *remote*, a store.
+
+    An explicit copy of exactly these, never ``git annex push`` or ``git
+    annex sync``: those push ``synced/`` branches, merge, and may drop
+    what a preferred-content setting does not want kept (measured).
+    ``--fast`` takes the log's word that the store lacks them, where
+    git-annex would otherwise ask the store about each before sending it.
+
+    Args:
+        directory: The repository root.
+        remote: The store's remote.
+        wanted: Keys whose bytes this clone holds.
+
+    Returns:
+        Why the bytes of each key that was not sent were not, by key.
+    """
+    if not wanted:
+        return {}
+    sent = project._run(
+        ["git", *reaching(directory), "annex", "copy", "--to", remote, "--fast", "--json",
+         "--json-error-messages", "--batch-keys"],
+        cwd=directory,
+        stdin="".join(f"{key}\n" for key in wanted),
+    )  # fmt: skip
+    answers = [json.loads(line) for line in sent.stdout.splitlines() if line.strip()]
+    failed = {
+        answer["key"]: "; ".join(answer.get("error-messages") or []) or "git-annex gave no reason"
+        for answer in answers
+        if not answer.get("success")
+    }
+    if sent.returncode != 0 and not failed:
+        # git-annex refused before it reached any of them.
+        return dict.fromkeys(wanted, sent.stderr.strip())
+    return failed
+
+
+def record_copies(directory: Path) -> None:
+    """Commit to git-annex's branch what it has noted of where bytes are.
+
+    git-annex keeps that in its journal until one of its own commands
+    commits it, and merges into its branch what each remote's
+    ``git-annex`` branch brought (measured): both have to be in the
+    branch before it is pushed. A sync of that branch alone, with no
+    remote and no content; never ``git annex merge``, which merges a
+    pending ``synced/`` branch into the one checked out (measured).
+
+    Args:
+        directory: The repository root.
+    """
+    _git(
+        ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
+         "--no-commit"],
+        cwd=directory,
+    )  # fmt: skip
+
+
+# =============================================================================
+# Reaching a remote
+# =============================================================================
+
+#: A git credential helper that answers for github.com with the token in
+#: the environment. It names the variables and never holds the token, so
+#: no command line carries one.
+_TOKEN_HELPER = (
+    '!f() { test "$1" = get && echo username=x-access-token && '
+    'echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'
+)
+
+
+def remote_url(directory: Path, name: str) -> str:
+    """Read the address of remote *name*.
+
+    Args:
+        directory: The repository root.
+        name: The remote.
+
+    Returns:
+        Its URL as configured, or empty where this clone has no such
+        remote.
+    """
+    return (_ask(["config", "--get", f"remote.{name}.url"], cwd=directory) or "").strip()
+
+
+def reaching(directory: Path) -> list[str]:
+    """Give git's options for a command that reaches a remote.
+
+    Nothing lc runs waits on anyone: git never prompts
+    (:func:`~lightcone.engine.project.child_env`), and ssh runs in batch
+    mode, so a missing key or an unknown host is a refusal, never a hang.
+    git takes its ssh command from ``core.sshCommand`` and git-annex its
+    ssh options from ``annex.ssh-options``, each ignoring the other's
+    (measured), so both are given, each as the repository has it with
+    that one option added. A ``GIT_SSH_COMMAND`` in the environment is
+    the user's, and both tools take it as it is.
+
+    A GitHub token in the environment is offered to git for github.com
+    alone, after the helpers git already has, and so is ``gh``'s where it
+    is installed: lc stores no credential, and writes none into the
+    repository. git passes these options on to git-annex.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        Options to put between ``git`` and its command.
+    """
+    ssh = (_ask(["config", "--get", "core.sshCommand"], cwd=directory) or "").strip() or "ssh"
+    more = (_ask(["config", "--get", "annex.ssh-options"], cwd=directory) or "").strip()
+    options = [
+        "-c", f"core.sshCommand={ssh} -o BatchMode=yes",
+        "-c", "annex.ssh-options=" + " ".join(filter(None, (more, "-o BatchMode=yes"))),
+    ]  # fmt: skip
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        options += ["-c", f"credential.https://github.com.helper={_TOKEN_HELPER}"]
+    elif github.has_gh():
+        options += ["-c", "credential.https://github.com.helper=!gh auth git-credential"]
+    return options
+
+
+def _remotes(directory: Path) -> dict[str, str]:
+    """Each repository this clone can fetch from, by git-annex's id for it
+    → the remote's name. A store reached at two addresses is named by the
+    first."""
+    listed = _ask(["config", "--get-regexp", r"^remote\..+\.annex-uuid$"], cwd=directory)
+    named = sorted(
+        (key.removeprefix("remote.").removesuffix(".annex-uuid"), uuid)
+        for key, _, uuid in (line.partition(" ") for line in (listed or "").splitlines())
+    )
+    remotes: dict[str, str] = {}
+    for name, uuid in named:
+        remotes.setdefault(uuid, name)
+    return remotes
 
 
 # =============================================================================

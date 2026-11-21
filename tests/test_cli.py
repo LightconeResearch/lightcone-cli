@@ -28,7 +28,9 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     listed = re.findall(r"^  (\S+)  ", result.output.partition("Commands:")[2], re.MULTILINE)
-    assert listed == ["build", "compute", "fetch", "init", "materialize", "run", "status"]
+    assert listed == [
+        "build", "compute", "fetch", "init", "materialize", "publish", "run", "status",
+    ]
 
 
 def test_engine_errors_render_cleanly(
@@ -591,6 +593,7 @@ def _report() -> object:
             ),
         ],
         environment=_ENV,
+        online=True,
     )
 
 
@@ -711,6 +714,7 @@ def test_status_json_is_machine_readable(
     assert json.loads(result.output) == {
         "image": None,
         "environment": _ENV,
+        "online": True,
         "counts": {"ok": 1, "behind": 1, "stale": 0, "missing": 1},
         "results": [
             {
@@ -835,5 +839,199 @@ def test_fetch_json_is_machine_readable(
         "present": ["summary#baseline"],
         "left": {},
         "failed": {},
+        "inputs": [],
         "warnings": [],
     }
+
+
+# ---- lc publish, and the notes that lead to it -------------------------------
+
+
+def _publish_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> list[dict[str, object]]:
+    from lightcone.engine import publish as engine
+
+    asked: list[dict[str, object]] = []
+
+    def publish(root: Path, url: str = "", **options: object) -> object:
+        asked.append({"url": url, **options})
+        return report
+
+    monkeypatch.setattr(engine, "publish", publish)
+    return asked
+
+
+def _published(**fields: object) -> object:
+    from lightcone.engine.publish import PublishReport
+
+    return PublishReport(
+        **{
+            "target": "github.com/alice/analysis",
+            "visibility": "private",
+            "store": "GitHub LFS of github.com/alice/analysis",
+            "branch": "main",
+            "commit": "3f2a1c8ffff",
+            **fields,
+        }  # type: ignore[arg-type]
+    )
+
+
+def test_publish_hands_the_two_choices_to_the_engine_and_makes_neither(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _publish_stub(monkeypatch, _published())
+
+    runner.invoke(main, ["publish", "github.com/alice/analysis", "--private", "--data", "/store"])
+    runner.invoke(main, ["publish", "--public", "--confirm-data", "/store", "--check"])
+    runner.invoke(main, ["publish"])
+
+    assert asked == [
+        {"url": "github.com/alice/analysis", "visibility": "private", "data": "/store",
+         "confirm": "", "check": False},
+        {"url": "", "visibility": "public", "data": "", "confirm": "/store", "check": True},
+        {"url": "", "visibility": "", "data": "", "confirm": "", "check": False},
+    ]  # fmt: skip
+
+
+def test_publish_takes_one_answer_to_who_can_read_the_project(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _publish_stub(monkeypatch, _published())
+
+    result = runner.invoke(main, ["publish", "--private", "--public"])
+
+    assert result.exit_code == 2 and not asked
+    assert "two answers to one question" in result.output
+
+
+def test_a_first_publication_says_what_it_created_sent_and_how_to_clone_it(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(
+        monkeypatch,
+        _published(
+            created=True,
+            declared=True,
+            sent={"results/fit.txt": "result", "results/all.txt": "result", "data/c.txt": "input"},
+            commits=4,
+        ),
+    )
+
+    result = runner.invoke(main, ["publish", "github.com/alice/analysis", "--private"])
+
+    assert result.exit_code == 0
+    assert "created  github.com/alice/analysis, private" in result.output
+    assert "data     2 results, 1 input → GitHub LFS of" in result.output
+    assert "commits  main at 3f2a1c8 → github.com/alice/analysis" in result.output
+    assert "git clone https://github.com/alice/analysis" in result.output
+
+
+def test_a_publication_with_nothing_to_send_says_so(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(uncommitted=2))
+
+    result = runner.invoke(main, ["publish"])
+
+    assert result.exit_code == 0
+    assert "is up to date — nothing to send" in result.output
+    assert "2 uncommitted change(s) are not published" in result.output
+
+
+def test_what_could_not_be_sent_fails_the_publication_and_what_nobody_holds_does_not(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(nowhere=["results/old.txt"], commits=1))
+    held_nowhere = runner.invoke(main, ["publish"])
+    _publish_stub(monkeypatch, _published(failed={"results/big.h5": "over the quota [x]"}))
+    refused = runner.invoke(main, ["publish"])
+
+    assert held_nowhere.exit_code == 0
+    assert "1 file(s) with bytes in neither this clone nor the" in held_nowhere.output
+    assert "results/old.txt" in held_nowhere.output
+    assert refused.exit_code == 1
+    assert "results/big.h5 — over the quota [x]" in refused.output
+    assert "publishing again" in refused.output
+
+
+def test_check_exits_1_while_anything_is_unpublished(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published())
+    held = runner.invoke(main, ["publish", "--check"])
+    _publish_stub(monkeypatch, _published(unsent={"results/fit.txt": "result"}, unpushed=2))
+    lacking = runner.invoke(main, ["publish", "--check"])
+
+    assert held.exit_code == 0 and "holds main at 3f2a1c8, and its data" in held.output
+    assert lacking.exit_code == 1
+    assert "1 result to send" in lacking.output and "results/fit.txt" in lacking.output
+    assert "2 of main to send" in lacking.output
+
+
+def test_check_says_a_project_is_not_online_and_exits_1(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.publish import PublishReport
+
+    _publish_stub(monkeypatch, PublishReport())
+
+    result = runner.invoke(main, ["publish", "--check"])
+
+    assert result.exit_code == 1
+    assert "Not online yet — `lc publish github.com/OWNER/proj --private`" in result.output
+
+
+def test_going_public_says_what_becomes_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(made_public=True, license="CC-BY-4.0"))
+    with_lfs = runner.invoke(main, ["publish", "--public"]).output
+    _publish_stub(
+        monkeypatch, _published(made_public=True, license="CC-BY-4.0", store="/cfs/lcr/store")
+    )
+    with_a_directory = runner.invoke(main, ["publish", "--public"]).output
+
+    assert "license  CC-BY-4.0" in with_lfs
+    assert "github.com/alice/analysis is public, and its data in" in with_lfs
+    assert "and its data stays in /cfs/lcr/store" in " ".join(with_a_directory.split())
+
+
+def test_publish_json_is_machine_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_stub(monkeypatch, _published(sent={"results/fit.txt": "result"}, commits=1))
+
+    answer = json.loads(runner.invoke(main, ["publish", "--json"]).output)
+
+    assert answer["ok"] and answer["published"]
+    assert answer["sent"] == {"results/fit.txt": "result"}
+    assert answer["target"] == "github.com/alice/analysis"
+
+
+def test_status_ends_with_one_line_while_the_project_is_not_online(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And says nothing of publication once it is, even privately."""
+    from dataclasses import replace
+
+    report = _report()
+    _status_stub(monkeypatch, replace(report, online=False))  # type: ignore[type-var]
+    offline = runner.invoke(main, ["status"]).output.splitlines()
+    _status_stub(monkeypatch, report)
+    online = runner.invoke(main, ["status"]).output
+
+    assert offline[-1].startswith("Not online yet — `lc publish github.com/OWNER/proj --private`")
+    assert "lc publish" not in online and "online" not in online
+
+
+def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_there(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    result = runner.invoke(main, ["init", str(tmp_path / "analysis")])
+
+    assert result.exit_code == 0
+    assert result.output.rstrip().splitlines()[-3:] == [
+        "  Not online yet. To back it up and share it, choose who can read it:",
+        "    lc publish github.com/OWNER/analysis --private",
+        "    lc publish github.com/OWNER/analysis --public",
+    ]
+    assert "lc publish" not in runner.invoke(main, ["init", "--check", str(tmp_path / "b")]).output

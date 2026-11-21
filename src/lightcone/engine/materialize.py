@@ -47,6 +47,7 @@ from lightcone.engine import (
     container,
     content,
     dataset,
+    github,
     identity,
     plan,
     project,
@@ -319,6 +320,10 @@ class StatusReport:
     #: The project's environment as a record made now would name it. A
     #: result whose own ``environment`` differs is the one that is behind.
     environment: str = ""
+    #: Whether the project is online at all: this clone's ``origin`` is a
+    #: repository on GitHub. What of it is published is `lc publish
+    #: --check`'s to say.
+    online: bool = False
 
     @property
     def counts(self) -> dict[str, int]:
@@ -337,6 +342,7 @@ class StatusReport:
         return {
             "image": self.image,
             "environment": self.environment,
+            "online": self.online,
             "counts": self.counts,
             "results": [result.as_dict() for result in self.results],
             "warnings": self.warnings,
@@ -370,6 +376,7 @@ def status(root: Path) -> StatusReport:
         answer.image = {"tag": tag, "state": state, "archive": archive}
     graph, environment = _graph(root, [], report)
     answer.environment = environment
+    answer.online = github.parse(dataset.remote_url(root, "origin")) is not None
     checked = graph.checked.to_json()["statuses"]
     for found in _classify(root, graph, environment, refresh=False):
         held = found.found.bytes
@@ -399,14 +406,17 @@ def status(root: Path) -> StatusReport:
 class FetchReport:
     """What a fetch brought into this clone, and what it did not."""
 
-    #: Each result whose bytes it fetched, by id.
+    #: Each result or input whose bytes it fetched, by id.
     fetched: list[str] = field(default_factory=list)
     #: Those whose bytes this clone already held.
     present: list[str] = field(default_factory=list)
-    #: Stale or missing, so not fetched: a run makes them again — id → state.
+    #: Results that are stale or missing, so not fetched: a run makes them
+    #: again — id → state.
     left: dict[str, str] = field(default_factory=dict)
     #: Not fetched — id → why.
     failed: dict[str, str] = field(default_factory=dict)
+    #: Which of the ids above are inputs': the ones a target named.
+    inputs: list[str] = field(default_factory=list)
     #: The lock scan's prose, and what ASTRA notes for the author.
     warnings: list[str] = field(default_factory=list)
 
@@ -425,20 +435,22 @@ class FetchReport:
 
 
 def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
-    """Bring the bytes of current results into this clone.
+    """Bring the bytes of current results, and of named inputs, into this clone.
 
     A clone, or a pull, gives each result as a stand-in for its bytes. A
     result that is ok or behind is what the analysis asks for, so
     its bytes are fetched from a remote that holds them; one that is stale
-    or missing is not, since a run makes it again. Nothing is made and
-    nothing is committed: fetched bytes are the ones the record names, so
-    the tree stays as it was.
+    or missing is not, since a run makes it again. A declared input is
+    what its commit names, whatever reads it, and is fetched when named.
+    Nothing is made and nothing is committed: fetched bytes are the ones
+    the record or the commit names, so the tree stays as it was.
 
     Args:
         root: The project root.
-        targets: Each a result's id, or an output's for its result in every
-            universe; empty means every result. Only these: what they read
-            is not fetched with them, as a run would make it.
+        targets: Each a result's id, an output's for its result in every
+            universe, or an input's; empty means every result. Only
+            these: what they read is not fetched with them, as a run
+            would make it.
 
     Returns:
         What was fetched, what was already here, and what was not fetched,
@@ -454,8 +466,29 @@ def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
     report = FetchReport()
     graph, environment = _graph(root, [], scan)
     report.warnings = scan.warnings
-    asked = set(graph.resolve(list(targets))) if targets else set(graph.tasks)
-    wanted: dict[str, ResultId] = {}
+    # ASTRA refuses an analysis in which an input and an output share an
+    # id (`AMBIGUOUS_ID`), so a target names one or the other.
+    named = {name for key, task in graph.tasks.items() for name in (key, task.name)}
+    for target in targets:
+        if target not in graph.inputs and target not in named:
+            raise ProjectError(
+                f"no result or input matches `{target}`. Results: "
+                f"{', '.join(sorted(graph.tasks)) or 'none'}. Inputs: "
+                f"{', '.join(sorted(graph.inputs)) or 'none'}."
+            )
+    report.inputs = [target for target in dict.fromkeys(targets) if target in graph.inputs]
+    results = [target for target in targets if target not in graph.inputs]
+    asked = set(graph.resolve(results)) if targets else set(graph.tasks)
+    wanted: dict[str, str] = {}
+    for name in report.inputs:
+        ref, declared = graph.inputs[name]
+        kept = graph.checked.inputs.get(ref)
+        if kept is None or kept.state == "present":
+            report.present.append(name)
+        elif kept.kept_by != "git-annex":
+            report.failed[name] = f"its bytes are kept by {kept.kept_by}, not git-annex"
+        else:
+            wanted[declared] = name
     for found in _classify(root, graph, environment, refresh=False):
         key, held = found.task.id, found.found.bytes
         if key not in asked:
@@ -1237,6 +1270,9 @@ def _graph(
         # Before ASTRA's checker reads the place of each result: a file
         # whose bytes are here, left as a stand-in, reads as one to fetch.
         dataset.populate(root)
+        # And before git-annex is asked who holds the rest: a store a pull
+        # brought is not one this clone fetches from until it is enabled.
+        dataset.enable_store(root)
     graph = plan.build(root)
     report.warnings.extend(graph.notes)
     if targets:

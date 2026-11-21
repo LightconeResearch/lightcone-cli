@@ -838,3 +838,122 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
     assert "not found" in added.stderr
     staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
     assert not staged.stdout.startswith("/annex/objects/")
+
+
+# ---- where the bytes go: the store, and what a clone keeps of it -------------
+
+
+def test_a_clone_with_no_store_has_none(repo: Path) -> None:
+    assert dataset.store(repo) is None
+    assert dataset.remote_url(repo, "origin") == ""
+
+
+def test_a_store_in_git_lfs_is_read_with_both_its_addresses(repo: Path) -> None:
+    """Read from the clone's own configuration, as git-annex writes it when
+    it enables the store: no network, and no parsing of its branch. A
+    store this clone declared or confirmed is one it may send to; one
+    git-annex enabled by itself is not, yet."""
+    for key, value in (
+        ("remote.origin-storage.url", "https://github.com/alice/analysis"),
+        ("remote.origin-storage.annex-git-lfs", "true"),
+        ("remote.origin-storage.annex-verified", "verified"),
+        ("remote.origin-storage-ssh.url", "git@github.com:alice/analysis.git"),
+        ("remote.origin-storage-ssh.annex-git-lfs", "true"),
+        ("remote.origin-storage-ssh.annex-verified", "automatic"),
+        ("remote.backup.url", "/elsewhere"),
+    ):
+        dataset._git(["config", key, value], cwd=repo)
+
+    assert dataset.store(repo) == dataset.Store(
+        "github-lfs",
+        "https://github.com/alice/analysis",
+        {
+            "origin-storage": ("https://github.com/alice/analysis", True),
+            "origin-storage-ssh": ("git@github.com:alice/analysis.git", False),
+        },
+    )
+
+
+def test_a_clone_notes_for_itself_what_no_clone_gets_from_another(repo: Path) -> None:
+    """For an `origin` on GitHub: git-annex leaves it alone, and DataLad
+    sends bytes to the store first. Over ssh, the store is the one reached
+    over ssh."""
+    assert dataset.unsettled(repo) == {}  # no origin, nothing to note
+
+    dataset._git(["remote", "add", "origin", "git@github.com:alice/analysis.git"], cwd=repo)
+    assert dataset.unsettled(repo) == {"remote.origin.annex-ignore": "true"}
+
+    for name, url in (
+        ("origin-storage", "https://github.com/alice/analysis"),
+        ("origin-storage-ssh", "git@github.com:alice/analysis.git"),
+    ):
+        dataset._git(["config", f"remote.{name}.url", url], cwd=repo)
+    dataset.settle(repo)
+
+    assert dataset.unsettled(repo) == {}
+    depends = dataset._git(["config", "remote.origin.datalad-publish-depends"], cwd=repo)
+    assert depends.strip() == "origin-storage-ssh"
+
+
+def test_an_origin_that_is_not_on_github_is_left_as_it_is(repo: Path, tmp_path: Path) -> None:
+    dataset._git(["remote", "add", "origin", str(tmp_path / "a-colleague")], cwd=repo)
+
+    assert dataset.unsettled(repo) == {}
+
+
+def test_a_command_that_reaches_a_remote_never_waits_on_anyone(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ssh runs in batch mode, on top of whatever the repository already
+    asks of it, and git's own prompts are off for every tool."""
+    assert dataset.reaching(repo) == [
+        "-c", "core.sshCommand=ssh -o BatchMode=yes",
+        "-c", "annex.ssh-options=-o BatchMode=yes",
+    ]  # fmt: skip
+    assert project.child_env()["GIT_TERMINAL_PROMPT"] == "0"
+
+    dataset._git(["config", "core.sshCommand", "ssh -i ~/.ssh/cluster"], cwd=repo)
+    dataset._git(["config", "annex.ssh-options", "-o ServerAliveInterval=30"], cwd=repo)
+
+    assert dataset.reaching(repo) == [
+        "-c", "core.sshCommand=ssh -i ~/.ssh/cluster -o BatchMode=yes",
+        "-c", "annex.ssh-options=-o ServerAliveInterval=30 -o BatchMode=yes",
+    ]  # fmt: skip
+
+
+def test_a_token_in_the_environment_is_offered_to_github_alone_and_never_written(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git asks the helper for github.com only, the helper names the
+    variable rather than holding the token, and nothing is stored: the
+    token is in no command line and no file."""
+    monkeypatch.setenv("GITHUB_TOKEN", "s3cret")
+
+    options = dataset.reaching(repo)
+
+    helper = next(option for option in options if option.startswith("credential."))
+    assert helper.startswith("credential.https://github.com.helper=!")
+    assert "s3cret" not in " ".join(options)
+    asked = subprocess.run(
+        ["git", *options, "credential", "fill"],
+        cwd=repo, input="protocol=https\nhost=github.com\n\n", env=project.child_env(),
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert "password=s3cret" in asked.stdout
+    elsewhere = subprocess.run(
+        ["git", *options, "credential", "fill"],
+        cwd=repo, input="protocol=https\nhost=example.org\n\n", env=project.child_env(),
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert "s3cret" not in elsewhere.stdout
+    assert "s3cret" not in (repo / ".git" / "config").read_text()
+
+
+def test_ghs_own_credentials_are_offered_where_it_is_installed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import github
+
+    monkeypatch.setattr(github, "has_gh", lambda: True)
+
+    assert "credential.https://github.com.helper=!gh auth git-credential" in dataset.reaching(repo)

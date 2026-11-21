@@ -161,6 +161,11 @@ class Graph:
     #: The file of each analysis read from the working tree, from the
     #: project root: what the commit a record names has to hold.
     specs: tuple[str, ...] = (SPEC_FILENAME,)
+    #: Each input an analysis read from the working tree declares, by the
+    #: name a target gives it, its id, after its analysis's key where
+    #: that is not the project's own (``catalog``, ``stage.catalog``) →
+    #: ASTRA's ref for it, and its file from the project root.
+    inputs: dict[str, tuple[str, str]] = field(default_factory=dict)
     #: What ASTRA notes about the analysis that a run would silently live
     #: with.
     notes: tuple[str, ...] = ()
@@ -327,6 +332,12 @@ def build(root: Path) -> Graph:
             for each in analysis.analyses
             if each.commit is None
         ),
+        inputs={
+            # A ref is its analysis's key, its collection and its id.
+            ".".join(filter(None, (each.key, ref.rpartition(".")[2]))): (ref, path)
+            for ref, (each, path) in of_input.items()
+            if each.commit is None
+        },
         notes=tuple(note.message for note in analysis.notes if note.code in _NOTED),
     )
 

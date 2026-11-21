@@ -33,7 +33,9 @@ dependencies = [
     "astra-spec>=0.1.0rc1,<0.2",
     "click>=8.0",
     "rich>=13.0",
-    "git-annex>=10.2026",
+    # 10.20261026 is the first git-annex that sends nothing to a store this
+    # clone did not confirm (`git annex verifyremote`).
+    "git-annex>=10.20261026",
     "distributed>=2026.7",
     "cryptography>=44",
     "psutil>=6",

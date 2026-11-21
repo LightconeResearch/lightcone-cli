@@ -1592,6 +1592,66 @@ def test_fetch_of_a_target_fetches_it_and_not_what_it_reads(
     assert [r.unfetched for r in engine.status(clone).results] == [True, False]
 
 
+_READS = """
+spec_version: "0.1.0"
+inputs:
+  catalog: {path: data/catalog.txt}
+outputs:
+  fit:
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} {inputs.catalog} > {output}
+"""
+
+
+def test_fetch_brings_an_input_named_by_its_id(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """An input is what its commit names, whatever reads it: fetched when
+    named, to read it, and never with a result or with no target."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+
+    assert engine.fetch(clone, []).fetched == ["fit"]
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(clone / "data/catalog.txt")
+
+    report = engine.fetch(clone, ["catalog"])
+
+    assert (report.fetched, report.inputs, report.ok) == (["catalog"], ["catalog"], True)
+    assert (clone / "data/catalog.txt").read_text() == "catalog v1\n"
+    again = engine.fetch(clone, ["catalog", "fit"])
+    assert (again.fetched, again.present) == ([], ["catalog", "fit"])
+    assert not dataset.status(clone)
+
+
+def test_fetch_of_what_names_nothing_says_what_there_is(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+
+    with pytest.raises(ProjectError) as refused:
+        engine.fetch(root, ["catlog"])
+
+    assert "no result or input matches `catlog`" in str(refused.value)
+    assert "Results: fit. Inputs: catalog." in str(refused.value)
+
+
+def test_status_says_whether_the_project_is_online_at_all(root: Path) -> None:
+    """From the clone's `origin` alone, with no network: a repository on
+    GitHub, or not."""
+    assert not engine.status(root).online
+
+    dataset._git(["remote", "add", "origin", "/a/colleague/analysis"], cwd=root)
+    assert not engine.status(root).online
+
+    dataset._git(["remote", "set-url", "origin", "git@github.com:lcr/analysis.git"], cwd=root)
+    assert engine.status(root).online and engine.status(root).as_dict()["online"]
+
+
 def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
     analysis: Callable[..., Path], inline: None, tmp_path: Path
 ) -> None:
