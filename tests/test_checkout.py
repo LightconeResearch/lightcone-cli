@@ -384,6 +384,12 @@ outputs:
     inputs: [table]
     recipe:
       command: cat {inputs.table} > {output}
+
+  undeclared:
+    type: metric
+    format: txt
+    recipe:
+      command: cat tables/read.bin > {output}
 """
 
 
@@ -418,12 +424,14 @@ def test_a_checkout_asks_git_lfs_for_nothing(
     (root / ".git/lfs/objects" / oid[:2] / oid[2:4] / oid).unlink()
     assert not dataset.status(root)
 
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert report.made == ["fit"], (report.failed, report.warnings)
+    assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).made == ["fit"]
     assert (root / "results/fit.txt").read_text() == "read\n"
     assert (root / "tables/unread.bin").read_text() == "unread\n"
     assert not dataset.status(root)
+
+    # The same file, read by a recipe whose output does not declare it.
+    report = engine.materialize(root, ["undeclared"], cluster_id=CLUSTER_ID)
+    assert report.failed == ["undeclared"] and not report.made
 
 
 def test_a_task_whose_run_is_gone_leaves_its_result_in_its_checkout(
