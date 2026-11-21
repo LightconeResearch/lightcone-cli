@@ -28,6 +28,8 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from lightcone.engine import assets, identity
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
@@ -244,7 +246,9 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
 
     Raises:
         ProjectError: Listing every structural and semantic error found,
-            in ASTRA's own words.
+            in ASTRA's own words — and every file that does not parse, in
+            YAML's own words, since a spec that fails inside the loader
+            raises before there is anything to validate.
     """
     from astra.validation import (
         validate_analysis_file,
@@ -252,18 +256,43 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
         validate_universe_file,
     )
 
-    problems = [
-        *validate_analysis_schema(spec_path),
-        *(str(e) for e in validate_analysis_file(spec_path)),
-    ]
-    for path in universes:
-        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    problems: list[str] = []
+    try:
+        problems += [
+            *validate_analysis_schema(spec_path),
+            *(str(e) for e in validate_analysis_file(spec_path)),
+        ]
+        for path in universes:
+            problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    except yaml.YAMLError as e:
+        problems.append(_parse_problem(e))
     if problems:
         listed = "\n".join(f"  {problem}" for problem in problems)
         raise ProjectError(
             f"{spec_path} does not validate, so there is nothing to materialize "
             f"from it:\n{listed}"
         )
+
+
+def _parse_problem(error: yaml.YAMLError) -> str:
+    """Render a YAML parse error as one problem line.
+
+    YAML's own error already names the file, line and column through
+    ``problem_mark``, so it is folded in as-is rather than reformatted —
+    just flattened to a single line, so the gate's two-space indentation
+    carries it like every other problem.
+
+    Args:
+        error: The error ``yaml.safe_load`` raised.
+
+    Returns:
+        One line: what is wrong, and where in which file.
+    """
+    problem = getattr(error, "problem", None) or str(error).splitlines()[0]
+    mark = getattr(error, "problem_mark", None)
+    if mark is None:
+        return problem
+    return f'{problem} in "{mark.name}", line {mark.line + 1}, column {mark.column + 1}'
 
 
 def _tasks(

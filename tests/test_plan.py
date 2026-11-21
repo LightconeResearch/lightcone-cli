@@ -203,6 +203,39 @@ def test_a_spec_astra_rejects_never_reaches_a_recipe(tmp_path: Path) -> None:
         _build(_project(tmp_path, spec))
 
 
+def test_a_spec_that_does_not_parse_is_a_clean_error(tmp_path: Path) -> None:
+    """A spec that fails inside YAML's loader raises before there is
+    anything for ASTRA to validate — so the gate catches ``YAMLError``
+    too and folds it into the same list, naming the file and the line.
+    A read-only verb never tracebacks."""
+    spec = (
+        'version: "0.1"\n'
+        "name: broken\n"
+        "outputs:\n"
+        "  - id: fit\n"
+        "    recipe:\n"
+        "      command: echo a: b > {output}\n"
+    )
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(_project(tmp_path, spec))
+    message = str(raised.value)
+    assert "astra.yaml" in message
+    assert "mapping values are not allowed here" in message
+    assert "line 6, column" in message
+
+
+def test_a_universe_that_does_not_parse_is_a_clean_error(tmp_path: Path) -> None:
+    """`validate_universe_file` loads both files, so a universe that does
+    not parse is folded in the same way — YAML's own mark names its file
+    and line."""
+    universe = "id: [unclosed\n  decisions: {method: a: b}\n"
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(_project(tmp_path, bad=universe))
+    message = str(raised.value)
+    assert "bad.yaml" in message
+    assert "line 2, column" in message
+
+
 # ---- ordering, closure, targets --------------------------------------------
 
 

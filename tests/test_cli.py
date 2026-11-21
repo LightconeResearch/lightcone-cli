@@ -435,6 +435,32 @@ def test_check_exits_nonzero_when_something_would_run(
     assert "would run baseline/fit" in result.output
 
 
+def test_a_malformed_spec_is_a_clean_error_on_the_read_only_verbs(
+    runner: CliRunner, project: Path
+) -> None:
+    """A spec that does not parse used to escape as a raw
+    `yaml.scanner.ScannerError` traceback from `lc status` and
+    `lc materialize --check`. Both must refuse instead, naming the file
+    and the line — a read-only verb never tracebacks."""
+    from lightcone.engine import templates
+
+    (project / ".python-version").write_text(templates.python_version())
+    (project / "astra.yaml").write_text(
+        'version: "0.1"\nname: broken\noutputs:\n  - id: fit\n    recipe:\n'
+        "      command: echo a: b > {output}\n"
+    )
+    (project / "universes").mkdir()
+    (project / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions: {}\n")
+
+    for argv in (["status"], ["materialize", "--check"]):
+        result = runner.invoke(main, argv)
+        assert result.exit_code == 1, result.output
+        assert "astra.yaml" in result.output
+        assert "mapping values are not allowed here" in result.output
+        assert "line 6, column" in result.output
+        assert "Traceback" not in result.output
+
+
 def test_check_treats_all_positionals_as_targets_without_querying_compute(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
