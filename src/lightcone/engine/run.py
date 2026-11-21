@@ -110,14 +110,18 @@ def read_spec(project: Path) -> dict[str, Any]:
 
     Returns:
         The spec with sub-analyses merged in; the top-level document alone
-        if the tree will not resolve; an empty spec if there is none.
+        if the tree will not resolve; an empty spec if there is none or it
+        does not parse.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
     spec_path = project / SPEC_FILENAME
     if not spec_path.exists():
         return {}
-    data: dict[str, Any] = load_yaml(spec_path)
+    try:
+        data: dict[str, Any] = load_yaml(spec_path)
+    except Exception:
+        return {}
     try:
         return dict(resolve_analysis_tree(data, project))
     except Exception:
