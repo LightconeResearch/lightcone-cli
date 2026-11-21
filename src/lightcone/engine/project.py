@@ -44,6 +44,9 @@ class ConvergenceReport:
     unchanged: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Whether the project is online at all: its ``origin`` is a repository
+    #: on GitHub. No part of ``converged``: a project is whole without it.
+    online: bool = False
 
     @property
     def converged(self) -> bool:
@@ -401,7 +404,17 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     # runs inline, and the filter item below must still know whether this
     # run created the annex (created) or found one (repaired).
     annexed = _can_ask_git(directory) and dataset.is_annexed(directory)
-    c.item("git-annex", annexed, lambda: dataset.init_annex(directory))
+    # Read here for the same reason: setting git-annex up settles part of it.
+    settled = not (_can_ask_git(directory) and dataset.unsettled(directory))
+
+    def annex() -> None:
+        # Settled first: asked to set itself up beside an `origin` on
+        # GitHub, git-annex asks GitHub whether it holds bytes (measured),
+        # and this has to work offline.
+        dataset.settle(directory)
+        dataset.init_annex(directory)
+
+    c.item("git-annex", annexed, annex)
     # The one thing `git annex init` does not set, and the reason it
     # matters is in `dataset.set_annex_filter_required`.
     c.item(
@@ -435,6 +448,16 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
         directory / ".datalad" / "config",
         lambda: templates.datalad_config(dataset_id=str(uuid.uuid4())),
     )
+    # What a clone keeps of where the project is published, which no clone
+    # gets from another. After git-annex is set up, which is what enables
+    # the store the project declares.
+    if _can_ask_git(directory) and dataset.target(directory) is not None:
+        c.report.online = True
+        c.item(
+            "publication settings",
+            settled and not dataset.unsettled(directory),
+            lambda: dataset.settle(directory),
+        )
     _converge_committable(c, directory)
 
 
@@ -723,13 +746,16 @@ def child_env() -> dict[str, str]:
     sync installs without moving ``env_version``, which is the identity
     hole the scrub closes.
 
+    ``GIT_TERMINAL_PROMPT`` is off for every tool: nothing lc runs waits
+    on anyone, so a credential git lacks is its refusal, never a prompt.
+
     Returns:
-        The current environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
+        The current environment without ``VIRTUAL_ENV`` or scrubbed
+        ``UV_*``, and with git's prompts off.
     """
     return {
-        k: v
-        for k, v in os.environ.items()
-        if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)
+        **{k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)},
+        "GIT_TERMINAL_PROMPT": "0",
     }
 
 

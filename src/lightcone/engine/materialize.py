@@ -68,8 +68,9 @@ class MaterializeReport:
 
     #: Each result this run made and committed, by id.
     made: list[str] = field(default_factory=list)
-    #: Nothing they are made from changed, and the environment is the one
-    #: they were made under.
+    #: Ok: nothing they are made from changed, and the environment is the
+    #: one they were made under. Listed as ``unchanged`` because the
+    #: report's ``ok`` says whether the run finished.
     unchanged: list[str] = field(default_factory=list)
     #: Still what the spec asks for, but made under an earlier environment
     #: — id → why. Left alone; ``refresh`` is what remakes them.
@@ -138,7 +139,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     Returns:
         ``planned`` naming each result that would run and why, ``behind``
         those made under an earlier environment, and ``unchanged`` the
-        rest.
+        rest, which are ok.
 
     Raises:
         ProjectError: If the analysis or the lock cannot be read, or a
@@ -147,7 +148,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     report = MaterializeReport()
     graph, environment = _graph(root, targets, report)
     blocked: set[ResultId] = set()
-    for found in _classify(graph, environment, refresh=refresh):
+    for found in _classify(root, graph, environment, refresh=refresh):
         verdict = found.verdict
         # What a run leaves alone reads nothing, so nothing it reads blocks it.
         stale = {
@@ -182,6 +183,9 @@ class _Classified:
     task: Task
     #: What ASTRA's checker found of the result.
     found: Status
+    #: Where this clone lacks the bytes its record gives, the remotes that
+    #: hold them; None where nothing was asked (`plan.classify`).
+    remotes: tuple[str, ...] | None
     #: Where it stands. Where something upstream may be remade, as the
     #: checker found it: only the task, once that has been made, can say
     #: more.
@@ -200,16 +204,19 @@ class _Classified:
         return self.verdict.calls_for_a_remake(refresh=refresh) and not through
 
 
-def _classify(graph: Graph, environment: str, *, refresh: bool) -> list[_Classified]:
+def _classify(
+    root: Path, graph: Graph, environment: str, *, refresh: bool
+) -> list[_Classified]:
     """Classify every task of *graph*, upstream first.
 
     The walk every mode shares, so there is one answer to "what is this
-    result" and not one per verb: what ASTRA's checker found of each,
-    through the one rule. A result that reads one a run may remake may
-    run too, whatever it is now: whether it stands once that is made is
-    the task's to say.
+    result" and not one per verb: what ASTRA's checker found of each, and
+    where git-annex finds the bytes this clone lacks, through the one
+    rule. A result that reads one a run may remake may run too, whatever
+    it is now: whether it stands once that is made is the task's to say.
 
     Args:
+        root: The project root.
         graph: The tasks to classify, each after the tasks it reads.
         environment: The IRI of the project's environment.
         refresh: Whether behind results count as running, which is what
@@ -217,15 +224,41 @@ def _classify(graph: Graph, environment: str, *, refresh: bool) -> list[_Classif
 
     Returns:
         One entry per task, in the graph's order.
+
+    Raises:
+        ProjectError: If this clone lacks a result's bytes and git-annex
+            is not set up in it, to say where they are.
     """
+    # Asked once, of every result whose place holds a git-annex stand-in
+    # for the bytes its record gives. Not of one whose place holds other
+    # bytes: a run makes that again, whoever holds the recorded ones. Not
+    # in a clone git-annex was never set up in either: asking would set it
+    # up, without the rest of what `lc init` converges.
+    away = {
+        key: plan.declared_path(root, task.path)
+        for key, task in graph.tasks.items()
+        if (found := graph.checked.statuses[key]).state != "missing"
+        and found.bytes is not None
+        and found.bytes.state == "absent"
+        and found.bytes.kept_by == "git-annex"
+        and not any(diagnostic.code == "ABSENT_RESULT" for diagnostic in found.why)
+    }
+    if away and not dataset.is_annexed(root):
+        raise ProjectError(
+            "git-annex is not set up in this clone, so lc cannot tell where the bytes of "
+            "the results it lacks are — `lc init` sets it up."
+        )
+    held = dataset.holders(root, list(away.values()))
     may_run: set[ResultId] = set()
     classified = []
     for key, task in graph.tasks.items():
         found = graph.checked.statuses[key]
+        remotes = held.get(away[key]) if key in away else None
         entry = _Classified(
             task,
             found,
-            plan.classify(found=found, environment=environment),
+            remotes,
+            plan.classify(found=found, environment=environment, remotes=remotes),
             next((dep for dep in task.depends_on if dep in may_run), ""),
         )
         if entry.may_run(refresh=refresh):
@@ -246,8 +279,13 @@ class ResultStatus:
     #: The result's id (``fit#baseline``).
     result: str
     state: plan.State
-    #: Why, for every state but an ``unchanged`` result with its bytes.
+    #: Why, for every state but ``ok``.
     why: str
+    #: Ok or behind, and its bytes are not in this clone: what `lc fetch`
+    #: brings.
+    unfetched: bool
+    #: Where it is unfetched, the remotes that hold its bytes.
+    remotes: list[str]
     #: ASTRA's own status of the result, as its report gives it in JSON:
     #: its record, which names the commit and the environment it was made
     #: in, where its bytes are, and each rule it breaks, by code.
@@ -274,25 +312,22 @@ class StatusReport:
     results: list[ResultStatus] = field(default_factory=list)
     #: The lock scan's prose, and what ASTRA notes for the author.
     warnings: list[str] = field(default_factory=list)
-    #: The three header facts nothing else surfaces: which world this
-    #: project executes in, where its image stands, and what would
-    #: enforce a run on this host. This is where the denial note and the
-    #: runtime-missing refusal point.
-    mode: str = "direct"
     #: ``{tag, state}`` for a containerized project; ``None`` in direct
     #: mode. ``state`` is repository fact only — ``present``, ``absent``
     #: or ``unfetched`` — so status needs no runtime and no network.
     image: dict[str, str] | None = None
-    #: One line naming the enforcement a run here would get.
-    sandbox: str = ""
     #: The project's environment as a record made now would name it. A
     #: result whose own ``environment`` differs is the one that is behind.
     environment: str = ""
+    #: Whether the project is online at all: this clone's ``origin`` is a
+    #: repository on GitHub. What of it is published is `lc publish
+    #: --check`'s to say.
+    online: bool = False
 
     @property
     def counts(self) -> dict[str, int]:
         """How many results are in each state, states with none included."""
-        tally = {"unchanged": 0, "behind": 0, "stale": 0, "missing": 0}
+        tally = {"ok": 0, "behind": 0, "stale": 0, "missing": 0}
         for result in self.results:
             tally[result.state] += 1
         return tally
@@ -304,10 +339,9 @@ class StatusReport:
             The header, the counts, then every result, then the warnings.
         """
         return {
-            "mode": self.mode,
             "image": self.image,
-            "sandbox": self.sandbox,
             "environment": self.environment,
+            "online": self.online,
             "counts": self.counts,
             "results": [result.as_dict() for result in self.results],
             "warnings": self.warnings,
@@ -317,10 +351,11 @@ class StatusReport:
 def status(root: Path) -> StatusReport:
     """Report what state every planned result is in.
 
-    Reads records through ASTRA's checker; runs nothing, commits nothing,
-    and does not care whether the tree is clean. Classified with
-    ``refresh=False``, because this says what the project *is* rather than
-    what some run would do to it.
+    Reads records through ASTRA's checker, and git-annex's log of which
+    remote holds the bytes this clone lacks; runs nothing, fetches
+    nothing, commits nothing, and does not care whether the tree is
+    clean. Classified with ``refresh=False``, because this says what the
+    project *is* rather than what some run would do to it.
 
     Args:
         root: The project root.
@@ -329,24 +364,31 @@ def status(root: Path) -> StatusReport:
         One status per planned result, upstream first.
 
     Raises:
-        ProjectError: If the analysis or the lock cannot be read.
+        ProjectError: If the analysis or the lock cannot be read, or
+            git-annex is not set up in a clone that lacks a result's
+            bytes.
     """
     report = MaterializeReport()
     answer = StatusReport()
-    answer.mode = project.mode(root)
     state, tag, archive = container.image_state(root)
     if state != "direct":
         answer.image = {"tag": tag, "state": state, "archive": archive}
-    answer.sandbox = _sandbox_line(answer.mode)
     graph, environment = _graph(root, [], report)
     answer.environment = environment
+    answer.online = dataset.target(root) is not None
     checked = graph.checked.to_json()["statuses"]
-    for found in _classify(graph, environment, refresh=False):
+    for found in _classify(root, graph, environment, refresh=False):
+        held = found.found.bytes
+        unfetched = found.verdict.state in ("ok", "behind") and not (
+            held is None or held.state == "present"
+        )
         answer.results.append(
             ResultStatus(
                 result=found.task.id,
                 state=found.verdict.state,
                 why=found.verdict.why,
+                unfetched=unfetched,
+                remotes=list(found.remotes or ()) if unfetched else [],
                 astra=checked[found.task.id],
             )
         )
@@ -354,24 +396,128 @@ def status(root: Path) -> StatusReport:
     return answer
 
 
-def _sandbox_line(mode: str) -> str:
-    """One line naming the enforcement a run on this host would get.
+# =============================================================================
+# Fetching — the bytes of current results, into this clone
+# =============================================================================
 
-    The prose restates each backend's constant attestation, because
-    `Backend.attest` needs a built policy and a status header must not
-    build one. Keep it in step with the `attest` implementations.
+
+@dataclass
+class FetchReport:
+    """What a fetch brought into this clone, and what it did not."""
+
+    #: Each result or input whose bytes it fetched, by id.
+    fetched: list[str] = field(default_factory=list)
+    #: Those whose bytes this clone already held.
+    present: list[str] = field(default_factory=list)
+    #: Results that are stale or missing, so not fetched: a run makes them
+    #: again — id → state.
+    left: dict[str, str] = field(default_factory=dict)
+    #: Not fetched — id → why.
+    failed: dict[str, str] = field(default_factory=dict)
+    #: Which of the ids above are inputs': the ones a target named.
+    inputs: list[str] = field(default_factory=list)
+    #: The lock scan's prose, and what ASTRA notes for the author.
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """Whether every result it set out to fetch is here."""
+        return not self.failed
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the report as JSON-ready data.
+
+        Returns:
+            Every field, with ``ok`` first.
+        """
+        return {"ok": self.ok, **asdict(self)}
+
+
+def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
+    """Bring the bytes of current results, and of named inputs, into this clone.
+
+    A clone, or a pull, gives each result as a stand-in for its bytes. A
+    result that is ok or behind is what the analysis asks for, so
+    its bytes are fetched from a remote that holds them; one that is stale
+    or missing is not, since a run makes it again. A declared input is
+    what its commit names, whatever reads it, and is fetched when named.
+    Nothing is made and nothing is committed: fetched bytes are the ones
+    the record or the commit names, so the tree stays as it was.
+
+    Args:
+        root: The project root.
+        targets: Each a result's id, an output's for its result in every
+            universe, or an input's; empty means every result. Only
+            these: what they read is not fetched with them, as a run
+            would make it.
+
+    Returns:
+        What was fetched, what was already here, and what was not fetched,
+        and why.
+
+    Raises:
+        ProjectError: If git-annex is not installed, or not set up in a
+            clone that lacks a result's bytes, the analysis or the lock
+            cannot be read, or a target matches nothing.
     """
-    if mode == "containerized":
-        if runtime := container.runtime_hint():
-            return f"{runtime} (fs: declared, network: allowed)"
-        return "no container runtime — install podman (or docker)"
-    from lightcone.engine import sandbox
-
-    found = sandbox.detect().capability
-    if found.kind == "none":
-        detail = f" — {found.detail}" if found.detail else ""
-        return f"none{detail} (fs: open, network: allowed)"
-    return f"{found.kind} (fs: declared, network: allowed)"
+    project.require_git_annex()
+    scan = MaterializeReport()
+    report = FetchReport()
+    graph, environment = _graph(root, [], scan)
+    report.warnings = scan.warnings
+    # ASTRA refuses an analysis in which an input and an output share an
+    # id (`AMBIGUOUS_ID`), so a target names one or the other.
+    named = {name for key, task in graph.tasks.items() for name in (key, task.name)}
+    for target in targets:
+        if target not in graph.inputs and target not in named:
+            raise ProjectError(
+                f"no result or input matches `{target}`. Results: "
+                f"{', '.join(sorted(graph.tasks)) or 'none'}. Inputs: "
+                f"{', '.join(sorted(graph.inputs)) or 'none'}."
+            )
+    report.inputs = [target for target in dict.fromkeys(targets) if target in graph.inputs]
+    results = [target for target in targets if target not in graph.inputs]
+    asked = set(graph.resolve(results)) if targets else set(graph.tasks)
+    wanted: dict[str, str] = {}
+    for name in report.inputs:
+        ref, declared = graph.inputs[name]
+        kept = graph.checked.inputs.get(ref)
+        if kept is None or kept.state == "present":
+            report.present.append(name)
+        elif kept.kept_by != "git-annex":
+            report.failed[name] = f"its bytes are kept by {kept.kept_by}, not git-annex"
+        else:
+            wanted[declared] = name
+    for found in _classify(root, graph, environment, refresh=False):
+        key, held = found.task.id, found.found.bytes
+        if key not in asked:
+            continue
+        if found.verdict.state in ("stale", "missing"):
+            report.left[key] = found.verdict.state
+        elif held is None or held.state == "present":
+            report.present.append(key)
+        elif held.kept_by != "git-annex":
+            report.failed[key] = f"its bytes are kept by {held.kept_by}, not git-annex"
+        else:
+            for path in found.task.paths:
+                wanted[plan.declared_path(root, path)] = key
+    if wanted and not dataset.is_annexed(root):
+        # Asked to fetch, git-annex would set itself up, without the rest
+        # of what `lc init` converges.
+        raise ProjectError(
+            "git-annex is not set up in this clone, so nothing can be fetched into it — "
+            "`lc init` sets it up."
+        )
+    for place, why in dataset.get(root, list(wanted)).items():
+        name = wanted[place]
+        # A result no remote holds any more is one a run makes; nothing
+        # makes an input.
+        lost = why == dataset.NO_REMOTE and name not in report.inputs
+        report.failed[name] = (
+            f"{why}, and it is missing now — `lc materialize` makes it again" if lost else why
+        )
+    report.fetched = [key for key in dict.fromkeys(wanted.values()) if key not in report.failed]
+    return report
 
 
 # =============================================================================
@@ -416,7 +562,7 @@ def materialize(
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
     worker.require_in_commit(root, graph.specs)
-    classified = _classify(graph, environment, refresh=refresh)
+    classified = _classify(root, graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
         # Nothing is submitted, so no allocation is needed.
@@ -528,6 +674,7 @@ def materialize(
                 root,
                 task,
                 found.found,
+                found.remotes,
                 context,
                 refresh,
                 *[pending[dep] for dep in task.depends_on],
@@ -571,7 +718,7 @@ def materialize(
 def _left_alone(found: _Classified, report: MaterializeReport) -> worker.TaskOutcome:
     """Report a result no run has to make, as the value its dependents read."""
     record = found.found.record
-    assert record is not None and found.verdict.state in ("unchanged", "behind")
+    assert record is not None and found.verdict.state in ("ok", "behind")
     if found.verdict.state == "behind":
         report.behind[found.task.id] = found.verdict.why
     else:
@@ -620,7 +767,7 @@ def _consume(
         report.made.append(name)
         return
 
-    if outcome.status == "unchanged":
+    if outcome.status == "ok":
         report.unchanged.append(name)
         return
 
@@ -795,16 +942,15 @@ def _to_fetch(
             )
             path = task.inputs[source.entry]
             at = plan.at_commit(root, path)
-            if held is not None and held.state == "absent" and held.kept_by not in (
-                None,
-                "git-annex",
-            ):
-                command = _FETCHED_BY.get(held.kept_by) if at is None else None
+            # The tool whose stand-in is there, for bytes this clone lacks.
+            keeper = held.kept_by if held is not None and held.state == "absent" else None
+            if keeper and keeper != "git-annex":
+                command = _FETCHED_BY.get(keeper) if at is None else None
                 how = f"; `{command}` fetches it" if command else ""
-                elsewhere.add(f"{plan.declared_path(root, path)} — kept by {held.kept_by}{how}")
+                elsewhere.add(f"{plan.declared_path(root, path)} — kept by {keeper}{how}")
             elif at is not None:
                 trees.setdefault(at[0], set()).add(at[1])
-            elif held is not None and held.state == "absent" and held.kept_by == "git-annex":
+            elif keeper:
                 wanted.add(plan.declared_path(root, path))
     if elsewhere:
         raise ProjectError(
@@ -817,19 +963,18 @@ def _to_fetch(
 def _fetch_inputs(root: Path, wanted: Sequence[str], report: MaterializeReport) -> None:
     """Fetch what git-annex keeps of what a run's recipes read.
 
-    lc fetches rather than telling anyone to, and only here: ``--check``
-    and ``status`` must not start network transfers. A failed fetch is a
-    warning, never a refusal: independent tasks still run, and a task
-    whose input is unreachable reports its own failure with the real
-    error.
+    lc fetches rather than telling anyone to, and only here and in
+    :func:`fetch`: ``--check`` and ``status`` must not start network
+    transfers. A failed fetch is a warning, never a refusal: independent
+    tasks still run, and a task whose input is unreachable reports its own
+    failure with the real error. A result found in no remote is missing
+    from then on, and the next run makes it.
     """
-    if not wanted:
-        return
-    got = project._run(["git", "annex", "get", "--", *wanted], cwd=root)
-    if got.returncode != 0:
+    if failed := dataset.get(root, wanted):
         report.warnings.append(
             "some of what this run reads could not be fetched into this clone — "
-            f"tasks needing it will report it:\n{got.stderr.strip()}"
+            "tasks needing it will report it:\n  "
+            + "\n  ".join(f"{path}: {why}" for path, why in failed.items())
         )
 
 
@@ -904,18 +1049,22 @@ def _require_storable(root: Path, graph: Graph) -> None:
         for task in graph.tasks.values()
         for record in task.record_paths
     ]
-    # NUL-separated both ways, as `check-attr` is below: git otherwise
-    # quotes a path holding an accent, and a space would end one. For
-    # `check-ignore` that means paths on stdin, the only way it takes `-z`.
+    # NUL-separated both ways, and on stdin: git otherwise quotes a path
+    # holding an accent, a space would end one, and a command line holds
+    # only so many. `check-ignore` takes `-z` no other way.
+    paths = "".join(f"{path}\0" for path in (*files, *records))
     asked = project._run(
-        ["git", "check-ignore", "-z", "--no-index", "--stdin"],
-        cwd=root,
-        stdin="".join(f"{path}\0" for path in (*files, *records)),
+        ["git", "check-ignore", "-z", "--no-index", "--stdin"], cwd=root, stdin=paths
     )
     ignored = [path for path in asked.stdout.split("\0") if path]
-    listed = dataset._git(
-        ["check-attr", "-z", "annex.largefiles", "filter", "--", *files, *records], cwd=root
-    ).split("\0")
+    attributed = project._run(
+        ["git", "check-attr", "-z", "--stdin", "annex.largefiles", "filter"],
+        cwd=root,
+        stdin=paths,
+    )
+    if attributed.returncode != 0:
+        raise ProjectError(f"`git check-attr` failed:\n{attributed.stderr.strip()}")
+    listed = attributed.stdout.split("\0")
     attributes = {
         (path, name): value
         for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)
@@ -1128,6 +1277,13 @@ def _graph(
         )
 
     environment = identity.environment(root)
+    if dataset.is_annexed(root):
+        # Before ASTRA's checker reads the place of each result: a file
+        # whose bytes are here, left as a stand-in, reads as one to fetch.
+        dataset.populate(root)
+        # And before git-annex is asked who holds the rest: a store a pull
+        # brought is not one this clone fetches from until it is enabled.
+        dataset.enable_store(root)
     graph = plan.build(root)
     report.warnings.extend(graph.notes)
     if targets:

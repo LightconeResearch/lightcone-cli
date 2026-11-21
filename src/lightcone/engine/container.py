@@ -184,11 +184,10 @@ def _fetch(root: Path, archive: Path) -> None:
         return
     except content.ContentNotFetchedError:
         pass
-    got = project._run(["git", "annex", "get", "--", relative], cwd=root)
-    if got.returncode != 0:
+    if failed := dataset.get(root, [relative]):
         raise ProjectError(
             f"the image archive `{relative}` is not in this clone, and fetching it "
-            f"failed:\n{got.stderr.strip()}\n"
+            f"failed:\n{failed[relative]}\n"
             "It needs a reachable remote that holds the content — or rebuild a new "
             "image with `lc build`."
         )
@@ -235,14 +234,12 @@ def runtime_name(root: Path) -> str:
         if project._run(["docker", "info"], cwd=root).returncode != 0:
             raise ProjectError(
                 "docker is installed but its daemon is not reachable — start it "
-                "(or install podman, which needs no daemon), then retry. "
-                "`lc status` shows what this project needs."
+                "(or install podman, which needs no daemon), then retry."
             )
     elif not name:
         raise ProjectError(
             "this project is containerized and needs a container runtime: install "
-            "podman (recommended: https://podman.io/docs/installation) or docker. "
-            "`lc status` shows what this project needs."
+            "podman (recommended: https://podman.io/docs/installation) or docker."
         )
     return name
 

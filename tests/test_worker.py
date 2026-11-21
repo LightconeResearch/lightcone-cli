@@ -115,7 +115,8 @@ def _make(root: Path, key: str, *upstream: TaskOutcome, refresh: bool = False) -
     before the run, and its upstream results."""
     graph = plan.build(root)
     return worker.materialize(
-        root, graph.tasks[key], graph.checked.statuses[key], _context(root), refresh, *upstream
+        root, graph.tasks[key], graph.checked.statuses[key], None, _context(root), refresh,
+        *upstream,
     )
 
 
@@ -196,11 +197,11 @@ def test_a_result_built_once_has_no_universe_directory(analysis: Callable[..., P
 # ---- deciding whether to run at all ----------------------------------------
 
 
-def test_an_unchanged_result_is_left_alone(root: Path) -> None:
+def test_an_ok_result_is_left_alone(root: Path) -> None:
     made = _make(root, "first#baseline")
     again = _make(root, "first#baseline")
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert (again.content_hash, again.size) == (made.content_hash, made.size)
 
 
@@ -215,7 +216,7 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
 
     again = _make(root, "first#baseline")
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert again.content_hash == made.content_hash
 
 
@@ -253,7 +254,7 @@ def test_refresh_does_not_remake_what_is_unchanged(root: Path) -> None:
     this it would be a rebuild-the-world flag wearing another name."""
     _make(root, "first#baseline")
 
-    assert _make(root, "first#baseline", refresh=True).status == "unchanged"
+    assert _make(root, "first#baseline", refresh=True).status == "ok"
 
 
 def _reads_first(result: TaskOutcome) -> list[dict[str, object]]:
@@ -366,10 +367,10 @@ def test_a_remake_that_gives_the_recorded_bytes_leaves_its_dependent_alone(root:
     found = _stale_through_first(root, read)
 
     result = worker.materialize(
-        root, _task(root, "second#baseline"), found, _context(root), False, _landed(read)
+        root, _task(root, "second#baseline"), found, None, _context(root), False, _landed(read)
     )
 
-    assert result.status == "unchanged"
+    assert result.status == "ok"
     assert (result.content_hash, result.size) == ("sha256:" + "5" * 64, 7)
     assert not (root / _SECOND).exists()
 
@@ -383,6 +384,7 @@ def test_a_remake_that_gives_other_bytes_remakes_its_dependent(root: Path) -> No
         root,
         _task(root, "second#baseline"),
         found,
+        None,
         _context(root),
         False,
         _landed(_digest(b"two\n")),
@@ -407,6 +409,7 @@ def test_a_task_asks_astra_nothing_about_the_project(
         root,
         graph.tasks["first#baseline"],
         graph.checked.statuses["first#baseline"],
+        None,
         _context(root),
         False,
     )
@@ -420,14 +423,14 @@ def test_a_task_asks_astra_nothing_about_the_project(
 
     left = worker.materialize(
         root, graph.tasks["second#baseline"], _stale_through_first(root, first.digest),
-        context, False, first,
+        None, context, False, first,
     )
     made = worker.materialize(
-        root, graph.tasks["second#baseline"], graph.checked.statuses["second#baseline"], context,
-        False, first,
+        root, graph.tasks["second#baseline"], graph.checked.statuses["second#baseline"], None,
+        context, False, first,
     )
 
-    assert left.status == "unchanged"
+    assert left.status == "ok"
     assert made.status == "made", made.reason
     assert (root / _SECOND).read_text() == "one\n"
 
@@ -445,12 +448,13 @@ def test_a_byte_identical_remake_leaves_its_dependents_unchanged(root: Path) -> 
         root,
         graph.tasks["second#baseline"],
         graph.checked.statuses["second#baseline"],
+        None,
         _context(root),
         False,
         remade,
     )
 
-    assert again.status == "unchanged"
+    assert again.status == "ok"
     assert again.content_hash == second.content_hash
     assert content.stamp(root / _SECOND) == before, "the recipe ran again"
 
@@ -471,10 +475,11 @@ def test_a_remake_with_other_bytes_remakes_its_dependents(
     assert not [broken for broken in found.why if broken.level == "error"]
 
     remade = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
     again = worker.materialize(
-        root, graph.tasks["summary"], graph.checked.statuses["summary"], context, False, remade
+        root, graph.tasks["summary"], graph.checked.statuses["summary"], None, context, False,
+        remade,
     )
 
     assert remade.status == "made"
@@ -602,7 +607,7 @@ def test_a_task_takes_the_digest_the_driver_took_of_the_file_it_reads(
     _hashed_by(asked, monkeypatch)
 
     result = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
 
     assert result.status == "made", result.reason
@@ -625,7 +630,7 @@ def test_a_digest_taken_of_another_file_is_not_the_tasks(
     _hashed_by(asked, monkeypatch)
 
     result = worker.materialize(
-        root, graph.tasks["fit"], graph.checked.statuses["fit"], context, False
+        root, graph.tasks["fit"], graph.checked.statuses["fit"], None, context, False
     )
 
     assert result.status == "made", result.reason
@@ -801,7 +806,7 @@ def test_the_module_reruns_unconditionally(
     monkeypatch.chdir(root)
     _make(root, "first#baseline")
     made = _record(root, _FIRST_RECORD)["generated_by"]["started"]
-    assert _make(root, "first#baseline").status == "unchanged"
+    assert _make(root, "first#baseline").status == "ok"
 
     assert worker.main(["first#baseline"]) == 0
     assert _record(root, _FIRST_RECORD)["generated_by"]["started"] != made

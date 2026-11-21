@@ -42,25 +42,25 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
             had, in git's or git-annex's own words.
     """
     tree = root / COMMITS / commit
+    # The tree's remotes are reached as the project's own are.
+    reach = dataset.reaching(root)
     if (tree / ".git").exists() and not _intact(tree, commit):
         # lc's own copy, changed since it was made: made again, never trusted.
         for folder, _, _ in os.walk(tree):
             os.chmod(folder, 0o700)  # git-annex keeps its objects' folders read-only
         shutil.rmtree(tree)
     if not (tree / ".git").exists():
-        _clone(root, commit, repository, tree)
+        _clone(root, commit, repository, tree, reach)
     if repository is None:
         # The project's own commit: what git-annex keeps is fetched into the
         # project, from wherever the project fetches its own content, and
         # the clone takes it from the project.
-        keys = project._run(
-            ["git", "annex", "lookupkey", "--ref", "--batch"],
-            cwd=root,
-            stdin="".join(f"{commit}:{path}\n" for path in paths),
-        ).stdout.split()
+        keys = dataset.keys(root, [f"{commit}:{path}" for path in paths])
         if keys:
             fetched = project._run(
-                ["git", "annex", "get", "--batch-keys"], cwd=root, stdin="\n".join(keys) + "\n"
+                ["git", *reach, "annex", "get", "--batch-keys"],
+                cwd=root,
+                stdin="".join(f"{key}\n" for key in keys.values()),
             )
             if fetched.returncode != 0:
                 raise ProjectError(
@@ -69,7 +69,7 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
                 )
         dataset._git(["annex", "get", "-q", "--from", "origin", "--", *paths], cwd=tree)
     else:
-        dataset._git(["annex", "get", "-q", "--", *paths], cwd=tree)
+        dataset._git([*reach, "annex", "get", "-q", "--", *paths], cwd=tree)
 
 
 def _intact(tree: Path, commit: str) -> bool:
@@ -85,7 +85,7 @@ def _intact(tree: Path, commit: str) -> bool:
     )
 
 
-def _clone(root: Path, commit: str, repository: str | None, tree: Path) -> None:
+def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: list[str]) -> None:
     """Clone the repository that holds *commit* into *tree*, checked out at it.
 
     Made beside *tree* and moved into place once whole, so a clone an
@@ -105,11 +105,11 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path) -> None:
     making = tree.with_name(f"{commit}.making")
     shutil.rmtree(making, ignore_errors=True)
     making.parent.mkdir(parents=True, exist_ok=True)
-    dataset._git(["clone", "-q", "--no-checkout", "--", source, str(making)], cwd=root)
+    dataset._git([*reach, "clone", "-q", "--no-checkout", "--", source, str(making)], cwd=root)
     # A clone holds what its source's branches reach; a commit no branch
     # reaches is asked for by its id.
     if not dataset._git_ok(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=making):
-        dataset._git(["fetch", "-q", "origin", commit], cwd=making)
+        dataset._git([*reach, "fetch", "-q", "origin", commit], cwd=making)
     dataset._git(["checkout", "-q", "--detach", commit], cwd=making)
     # git-annex commits to its own branch at its first fetch here.
     ident = dataset._git(["var", "GIT_COMMITTER_IDENT"], cwd=root)
