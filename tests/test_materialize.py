@@ -1640,6 +1640,37 @@ def test_fetch_of_what_names_nothing_says_what_there_is(
     assert "Results: fit. Inputs: catalog." in str(refused.value)
 
 
+def test_an_input_nobody_holds_is_not_said_to_be_one_a_run_makes(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A clone of a clone that never fetched the input: the log names the
+    first repository, which is no remote here. A result in that state is
+    made again; nothing makes an input, so nothing says so."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    (tmp_path / "second").mkdir()
+    second = clone_of(clone_of(root, tmp_path), tmp_path / "second")
+
+    report = engine.fetch(second, ["catalog"])
+
+    assert report.failed == {"catalog": dataset.NO_REMOTE}
+
+
+def test_fetching_an_input_does_not_set_git_annex_up_behind_lc_inits_back(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """Asked to fetch in a clone it was never set up in, git-annex sets
+    itself up (measured), without the flag that makes a missing filter
+    loud: the next `git add` could then put raw bytes in git."""
+    root = analysis(_READS, {"data/catalog.txt": "catalog v1\n"})
+    clone = tmp_path / "plain"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+
+    with pytest.raises(ProjectError, match="`lc init` sets it up"):
+        engine.fetch(clone, ["catalog"])
+
+    assert not dataset.is_annexed(clone)
+
+
 def test_status_says_whether_the_project_is_online_at_all(root: Path) -> None:
     """From the clone's `origin` alone, with no network: a repository on
     GitHub, or not."""

@@ -81,6 +81,7 @@ def test_as_dict_carries_every_field() -> None:
         "unchanged",
         "blocked",
         "warnings",
+        "online",
     }
 
 
@@ -931,6 +932,7 @@ def _origin_on_github(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_project_that_is_not_on_github_has_no_publication_settings(tmp_path: Path) -> None:
     report = converge(tmp_path / "proj")
 
+    assert not report.online
     assert "publication settings" not in report.created + report.unchanged
 
 
@@ -944,6 +946,7 @@ def test_a_clone_from_github_is_set_up_without_asking_github_anything(
 
     report = converge(tmp_path / "proj")
 
+    assert report.online and report.as_dict()["online"]
     assert "publication settings" in report.created
     told = tools.index(["git", "config", "remote.origin.annex-ignore", "true"])
     assert told < tools.index(["git", "annex", "init", "-q"])

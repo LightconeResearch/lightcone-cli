@@ -234,6 +234,26 @@ def test_a_clone_from_github_learns_the_store_and_fetches_from_it(
     assert _config(clone, "remote.origin.datalad-publish-depends") == dataset.STORE
 
 
+def test_a_clone_that_has_yet_to_reach_the_store_takes_nothing_for_lost(
+    published: Path, store: str, tmp_path: Path
+) -> None:
+    """git-annex notes which repository a store in a directory is only once
+    it has looked there (measured). Before that, the declaration says:
+    what the log places in the store is to fetch, never to make again."""
+    away = Path(store).rename(tmp_path / "unmounted")
+    clone = _join(tmp_path)
+
+    found = materialize.status(clone).results
+    assert [(r.state, r.unfetched, r.remotes) for r in found] == [("ok", True, [dataset.STORE])] * 2
+    assert materialize.check(clone, []).up_to_date
+    unreachable = materialize.fetch(clone, ["fit"])
+    assert not unreachable.ok and "lc materialize" not in unreachable.failed["fit"]
+    assert [r.state for r in materialize.status(clone).results] == ["ok", "ok"]
+
+    away.rename(store)
+    assert materialize.fetch(clone, ["fit"]).fetched == ["fit"]
+
+
 def test_a_clone_does_not_publish_to_a_store_it_has_not_confirmed(
     published: Path, store: str, tmp_path: Path, github: GitHub
 ) -> None:
@@ -368,19 +388,19 @@ def test_data_names_git_lfs_or_a_directory_and_nothing_else(
 
 
 def test_a_store_is_not_made_where_something_else_is(
-    made: Path, tmp_path: Path, store: str
+    made: Path, tmp_path: Path, github: GitHub
 ) -> None:
-    """The refusal comes once the repository exists, and publishing again
-    with a directory that can hold the store picks up from there."""
+    """The store is made before the repository is, so a directory that
+    cannot hold it is refused with nothing created online."""
     (tmp_path / "taken").mkdir()
     (tmp_path / "taken" / "notes.txt").write_text("mine\n")
 
     with pytest.raises(ProjectError, match="is not empty, and is not a store lc made"):
         publish.publish(made, _URL, visibility="private", data=str(tmp_path / "taken"))
 
-    assert dataset.store(made) is None
+    assert not github.at("alice/analysis").exists()
+    assert dataset.store(made) is None and not dataset.remote_url(made, "origin")
     assert sorted(path.name for path in (tmp_path / "taken").iterdir()) == ["notes.txt"]
-    assert publish.publish(made, data=store).published
 
 
 def test_the_store_is_chosen_once(published: Path, tmp_path: Path, store: str) -> None:
@@ -409,6 +429,18 @@ def test_a_clone_of_a_colleagues_directory_has_nowhere_to_publish_to(
         publish.publish(colleague, _URL, visibility="private")
 
     assert "git remote rename origin <name>" in str(refused.value)
+
+
+def test_an_origin_elsewhere_is_named_without_the_token_its_address_carries(
+    made: Path,
+) -> None:
+    dataset._git(["remote", "add", "origin", "https://bob:s3cret@gitlab.com/lab/a.git"], cwd=made)
+
+    with pytest.raises(ProjectError) as refused:
+        publish.publish(made, _URL, visibility="private")
+
+    assert "https://gitlab.com/lab/a.git" in str(refused.value)
+    assert "s3cret" not in str(refused.value)
 
 
 def test_a_branch_is_published_not_a_commit(published: Path) -> None:
@@ -598,8 +630,48 @@ def test_a_plain_git_push_breaks_nothing_and_the_next_publication_sends_the_byte
     assert states == [("ok", True), ("ok", True)]
 
 
+def test_bytes_that_were_not_sent_keep_the_commits_back(
+    published: Path, github: GitHub
+) -> None:
+    """A commit must not reach a clone before the bytes it names. Only what
+    git-annex says it sent was sent: for a key its log places here and its
+    annex does not hold, it answers nothing and exits 0 (measured)."""
+    _remake(published)
+    before = _heads(github)
+    key = dataset.annexed(published, dataset.head(published))[_FIT]
+    kept = Path(dataset._git(["annex", "contentlocation", key], cwd=published).strip())
+    (published / kept).parent.chmod(0o700)
+    (published / kept).unlink()
+
+    report = publish.publish(published)
+
+    assert not report.ok and not report.published
+    assert list(report.failed) == [_FIT] and report.sent == {_SUMMARY: "result"}
+    assert report.commits == 0 and _heads(github) == before
+    # Publishing again sends only what is still to send, and still no commit.
+    again = publish.publish(published)
+    assert list(again.failed) == [_FIT] and not again.sent and _heads(github) == before
+
+
+def test_git_lfs_is_not_sent_a_file_it_takes_on_no_plan() -> None:
+    """Refused before anything is created or sent, naming the file."""
+    files = {"results/cube.h5": "SHA256E-s6442450944--0f3a.h5", _FIT: "SHA256E-s9--1c.txt"}
+
+    publish._require_lfs_takes({_FIT: "result"}, files)
+    with pytest.raises(ProjectError) as refused:
+        publish._require_lfs_takes({"results/cube.h5": "result", _FIT: "result"}, files)
+
+    assert "results/cube.h5 (6.0 GB)" in str(refused.value)
+    assert _FIT not in str(refused.value)
+
+
 def test_what_the_analysis_reads_at_a_commit_it_declares_is_sent_too(
-    github: GitHub, analysis: Callable[..., Path], inline: None, store: str, tmp_path: Path
+    github: GitHub,
+    analysis: Callable[..., Path],
+    inline: None,
+    store: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A result read at an earlier commit is no branch's current version:
     sent with the rest, or no clone could make what reads it."""
@@ -614,8 +686,20 @@ def test_what_the_analysis_reads_at_a_commit_it_declares_is_sent_too(
     spec = clone / "astra.yaml"
     spec.write_text(spec.read_text().replace("cat {inputs}", "cat {inputs} {inputs}"))
     dataset.save(clone, [spec], "compare twice")
+    real, ran = project._run, []
+
+    def recording(argv: list[str], **kwargs: object) -> object:
+        ran.append(argv)
+        return real(argv, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(project, "_run", recording)
     assert materialize.materialize(clone, ["compare"], cluster_id=CLUSTER_ID).made == ["compare"]
     assert (clone / "results/compare.txt").read_text() == "second\nfirst\n" * 2
+    # What the run clones and fetches for that commit, it reaches as `lc fetch` does.
+    cloned = [argv for argv in ran if "clone" in argv]
+    fetched = [argv for argv in ran if argv[-3:] == ["annex", "get", "--batch-keys"]]
+    assert cloned and fetched
+    assert all("core.sshCommand=ssh -o BatchMode=yes" in argv for argv in cloned + fetched)
 
 
 def test_an_analysis_that_cannot_be_read_does_not_keep_the_commit_offline(
@@ -679,8 +763,8 @@ def test_someone_publishing_in_between_only_costs_a_second_push(
 def test_a_push_github_refuses_is_said_in_its_words_with_what_publishing_takes(
     published: Path, github: GitHub
 ) -> None:
-    """As for a contributor with no write access: what was sent to the
-    store stays, and nothing of the branch moves."""
+    """As for someone with no write access: what was sent to the store
+    stays, and nothing of the branch moves."""
     hook = github.at("alice/analysis") / "hooks" / "pre-receive"
     hook.write_text(
         "#!/bin/sh\necho 'Permission to alice/analysis.git denied to bob.' >&2\nexit 1\n"
@@ -693,7 +777,7 @@ def test_a_push_github_refuses_is_said_in_its_words_with_what_publishing_takes(
         publish.publish(published)
 
     assert "Permission to alice/analysis.git denied to bob." in str(refused.value)
-    assert "write access" in str(refused.value) and "forks" in str(refused.value)
+    assert "Publishing takes write access to it" in str(refused.value)
     assert _heads(github) == before
     hook.unlink()
     assert publish.publish(published).sent == {}  # the bytes were already in the store
@@ -705,12 +789,13 @@ def test_a_push_github_refuses_is_said_in_its_words_with_what_publishing_takes(
 
 
 def _recorded(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Record what `_declare` runs, in place of running it."""
+    """Record what lc would run, in place of running it."""
     calls: list[list[str]] = []
 
     def run(argv: list[str], **kwargs: object) -> MagicMock:
         calls.append(argv)
-        return MagicMock(returncode=0, stdout="Test <t@example.com> 0 +0000", stderr="")
+        said = "Test <t@example.com> 0 +0000" if argv[1:2] == ["var"] else ""
+        return MagicMock(returncode=0, stdout=said, stderr="")
 
     monkeypatch.setattr(project, "_run", run)
     return calls
@@ -723,33 +808,44 @@ def test_git_lfs_is_declared_once_at_the_repositorys_two_addresses(
     credentials it has; enabled by git-annex in every clone."""
     calls = _recorded(monkeypatch)
     target = engine_github.Repository("alice", "analysis")
+    wanted = publish._wanted("github-lfs", target)
 
-    publish._declare(tmp_path, publish._wanted("github-lfs", target), [])
+    publish._make_store(tmp_path, wanted)  # GitHub keeps it: nothing to make
+    publish._declare(tmp_path, wanted, target)
 
-    assert calls == [
-        ["git", "annex", "initremote", "origin-storage", "type=git-lfs",
+    assert [argv[argv.index("annex") :] for argv in calls if "initremote" in argv] == [
+        ["annex", "initremote", "origin-storage", "type=git-lfs",
          "url=https://github.com/alice/analysis", "encryption=none", "autoenable=true"],
-        ["git", "annex", "initremote", "origin-storage-ssh", "--sameas=origin-storage",
+        ["annex", "initremote", "origin-storage-ssh", "--sameas=origin-storage",
          "type=git-lfs", "url=git@github.com:alice/analysis.git", "autoenable=true"],
     ]  # fmt: skip
+    assert not [argv for argv in calls if argv[0] != "git"]
 
 
 def test_a_directory_reached_by_ssh_gets_its_store_made_there(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """With the ssh the user reaches remotes with, in batch mode."""
     calls = _recorded(monkeypatch)
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /keys/cluster")
     target = engine_github.Repository("alice", "analysis")
     where = "ssh://alice@dtn.example.org:2222/global/cfs/lcr/store"
+    wanted = publish._wanted(where, target)
 
-    publish._declare(tmp_path, publish._wanted(where, target), [])
+    publish._make_store(tmp_path, wanted)
+    publish._declare(tmp_path, wanted, target)
 
-    ssh = calls[1]
-    assert ssh[:6] == ["ssh", "-o", "BatchMode=yes", "-p", "2222", "alice@dtn.example.org"]
-    assert ssh[6].endswith("sh /global/cfs/lcr/store Test t@example.com")
-    assert "git init -q --bare --shared=group" in ssh[6]
-    assert calls[2] == [
-        "git", "annex", "initremote", "origin-storage", "type=git",
-        f"location={where}", "autoenable=true",
+    (ssh,) = [argv for argv in calls if argv[0] == "ssh"]
+    assert ssh[:-1] == [
+        "ssh", "-i", "/keys/cluster", "-o", "BatchMode=yes", "-p", "2222",
+        "alice@dtn.example.org",
+    ]  # fmt: skip
+    assert ssh[-1].endswith("sh /global/cfs/lcr/store Test t@example.com")
+    assert "git init -q --bare --shared=group" in ssh[-1]
+    (declared,) = [argv for argv in calls if "initremote" in argv]
+    assert declared[declared.index("annex") :] == [
+        "annex", "initremote", "origin-storage", "type=git", f"location={where}",
+        "autoenable=true",
     ]  # fmt: skip
 
 

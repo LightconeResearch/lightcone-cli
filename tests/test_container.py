@@ -70,7 +70,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
     loaded: set[str] = set()
 
-    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+    def run(argv: list[str], *, cwd: Path, stdin: str | None = None) -> MagicMock:
         calls.append(list(argv))
         if argv[0] in ("podman", "docker", "podman-hpc"):
             if argv[1] == "image":  # the loaded probe, both spellings
@@ -92,8 +92,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(
                 returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
             )
-        if argv[:3] == ["git", "annex", "get"]:
-            _write_archive(cwd / argv[-1])  # the fetch's observable effect
+        if argv[-4:-2] == ["annex", "get"]:
+            _write_archive(cwd / (stdin or "").strip())  # the fetch's observable effect
             return MagicMock(returncode=0, stdout="", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -236,16 +236,18 @@ def test_unfetched_archive_content_is_fetched_by_lc_itself(
     runtime = container.runtime_for_run(root, build=False)
 
     assert runtime.image_id
-    (got,) = [c for c in fake if c[:3] == ["git", "annex", "get"]]
-    assert got[-1] == f".datalad/environments/{image.tag(root)}/image"
+    assert archive.read_bytes() != b"/annex/objects/SHA256E-s323--abc\n"
+    # Fetched as everything else is: ssh in batch mode, and no prompt.
+    (got,) = [c for c in fake if c[-4:-2] == ["annex", "get"]]
+    assert "core.sshCommand=ssh -o BatchMode=yes" in got
 
     archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # unfetched again
     inner = project._run
 
-    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
-        if argv[:3] == ["git", "annex", "get"]:
+    def failing(argv: list[str], *, cwd: Path, stdin: str | None = None) -> MagicMock:
+        if argv[-4:-2] == ["annex", "get"]:
             return MagicMock(returncode=1, stdout="", stderr="no reachable copy")
-        return inner(argv, cwd=cwd)
+        return inner(argv, cwd=cwd, stdin=stdin)
 
     monkeypatch.setattr(project, "_run", failing)
     with pytest.raises(ProjectError, match="fetching it failed"):

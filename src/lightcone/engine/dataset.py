@@ -581,8 +581,7 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
         cwd=directory,
         stdin="".join(f"{path}\n" for path in paths),
     )
-    # Read after asking: git-annex learns which repository a store in a
-    # directory is the first time it looks there, which is then (measured).
+    # Read after asking, which is what merges in a declaration a pull brought.
     remotes = _remotes(directory)
     held = {}
     # One line per file asked, and an empty one for a file git-annex keeps
@@ -621,8 +620,13 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
     if not paths:
         return {}
     reach = reaching(directory)
-    got = project._run(["git", *reach, "annex", "get", "--json", "--", *paths], cwd=directory)
+    got = project._run(
+        ["git", *reach, "annex", "get", "--json", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{path}\n" for path in paths),
+    )
     failed = {}
+    # One line per file asked, empty for one whose bytes were already here.
     for line in got.stdout.splitlines():
         if line.strip() and not (answer := json.loads(line)).get("success"):
             failed[answer["file"]] = answer.get("note") or "; ".join(answer["error-messages"])
@@ -631,11 +635,15 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
         return dict.fromkeys(paths, got.stderr.strip())
     named = holders(directory, list(failed))
     for remote in sorted({name for names in named.values() for name in names}):
-        project._run(
-            ["git", *reach, "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
-             *(path for path in failed if remote in named.get(path, ()))],
-            cwd=directory,
-        )  # fmt: skip
+        there = [path for path in failed if remote in named.get(path, ())]
+        # `fsck` takes its files as arguments only, and a command line
+        # holds only so many.
+        for start in range(0, len(there), _MANY):
+            project._run(
+                ["git", *reach, "annex", "fsck", "--fast", "--quiet", "--from", remote, "--",
+                 *there[start : start + _MANY]],
+                cwd=directory,
+            )  # fmt: skip
     now = holders(directory, list(failed))
     return {path: NO_REMOTE if now.get(path) == () else why for path, why in failed.items()}
 
@@ -712,6 +720,29 @@ def store(directory: Path) -> Store | None:
     )
 
 
+def store_uuid(directory: Path) -> str:
+    """Read which repository the project's store is, from its declaration.
+
+    git-annex's log places bytes in repositories by id. For a store in a
+    directory, git-annex notes that id in a clone's configuration only
+    once it has looked there (measured): a clone that has yet to reach its
+    store would take what the log places in it for bytes no remote of its
+    own holds. The declaration in git-annex's branch gives the id from
+    the start, one line per special remote, its id first.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        The id, or empty where the project declares no store.
+    """
+    declared = _ask(["show", "git-annex:remote.log"], cwd=directory) or ""
+    return next(
+        (line.split()[0] for line in declared.splitlines() if f"name={STORE}" in line.split()),
+        "",
+    )
+
+
 def unsettled(directory: Path) -> dict[str, str]:
     """Name what this clone has yet to note of where the project is published.
 
@@ -730,14 +761,14 @@ def unsettled(directory: Path) -> dict[str, str]:
         Each setting this clone lacks → the value it takes; empty where
         ``origin`` is not on GitHub.
     """
-    target = github.parse(remote_url(directory, "origin"))
-    if target is None:
+    published_to = target(directory)
+    if published_to is None:
         return {}
     wanted = {"remote.origin.annex-ignore": "true"}
     declared = store(directory)
     if declared is not None:
         wanted["remote.origin.datalad-publish-depends"] = (
-            STORE_SSH if target.ssh and STORE_SSH in declared.remotes else STORE
+            STORE_SSH if published_to.ssh and STORE_SSH in declared.remotes else STORE
         )
     return {
         key: value
@@ -880,6 +911,10 @@ def send(directory: Path, remote: str, wanted: Sequence[str]) -> dict[str, str]:
     ``--fast`` takes the log's word that the store lacks them, where
     git-annex would otherwise ask the store about each before sending it.
 
+    Only a key git-annex answers for as sent was sent. For one whose
+    bytes its log places in this clone and its annex does not hold, it
+    answers with an empty line and exits 0 (measured).
+
     Args:
         directory: The repository root.
         remote: The store's remote.
@@ -896,16 +931,21 @@ def send(directory: Path, remote: str, wanted: Sequence[str]) -> dict[str, str]:
         cwd=directory,
         stdin="".join(f"{key}\n" for key in wanted),
     )  # fmt: skip
-    answers = [json.loads(line) for line in sent.stdout.splitlines() if line.strip()]
-    failed = {
-        answer["key"]: "; ".join(answer.get("error-messages") or []) or "git-annex gave no reason"
-        for answer in answers
-        if not answer.get("success")
+    answers = {
+        answer["key"]: answer
+        for answer in map(json.loads, filter(str.strip, sent.stdout.splitlines()))
     }
-    if sent.returncode != 0 and not failed:
+    unanswered = (
         # git-annex refused before it reached any of them.
-        return dict.fromkeys(wanted, sent.stderr.strip())
-    return failed
+        (sent.stderr or "").strip()
+        if sent.returncode != 0 and not answers
+        else "git-annex sent nothing for it: its bytes are not in this clone's annex"
+    )
+    return {
+        key: "; ".join(answers.get(key, {}).get("error-messages") or []) or unanswered
+        for key in wanted
+        if not answers.get(key, {}).get("success")
+    }
 
 
 def record_copies(directory: Path) -> None:
@@ -955,17 +995,48 @@ def remote_url(directory: Path, name: str) -> str:
     return (_ask(["config", "--get", f"remote.{name}.url"], cwd=directory) or "").strip()
 
 
+def target(directory: Path) -> github.Repository | None:
+    """Name the repository on GitHub this clone publishes to.
+
+    Its ``origin``, where that is one: a project with none is not online.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        The repository, or None.
+    """
+    return github.parse(remote_url(directory, "origin"))
+
+
+def ssh(directory: Path) -> str:
+    """Give the ssh command to reach a remote with, which never waits on anyone.
+
+    The user's own, ``GIT_SSH_COMMAND`` or else the repository's
+    ``core.sshCommand``, in batch mode: a missing key or an unknown host
+    is a refusal, never a hang.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        The command, as a shell would take it.
+    """
+    own = os.environ.get("GIT_SSH_COMMAND") or (
+        _ask(["config", "--get", "core.sshCommand"], cwd=directory) or ""
+    )
+    return f"{own.strip() or 'ssh'} -o BatchMode=yes"
+
+
 def reaching(directory: Path) -> list[str]:
     """Give git's options for a command that reaches a remote.
 
     Nothing lc runs waits on anyone: git never prompts
     (:func:`~lightcone.engine.project.child_env`), and ssh runs in batch
-    mode, so a missing key or an unknown host is a refusal, never a hang.
-    git takes its ssh command from ``core.sshCommand`` and git-annex its
-    ssh options from ``annex.ssh-options``, each ignoring the other's
-    (measured), so both are given, each as the repository has it with
-    that one option added. A ``GIT_SSH_COMMAND`` in the environment is
-    the user's, and both tools take it as it is.
+    mode (:func:`ssh`). git takes its ssh command from ``core.sshCommand``
+    and git-annex its ssh options from ``annex.ssh-options``, each
+    ignoring the other's (measured), so both are given. git itself takes
+    a ``GIT_SSH_COMMAND`` from the environment as it is, over either.
 
     A GitHub token in the environment is offered to git for github.com
     alone, after the helpers git already has, and so is ``gh``'s where it
@@ -978,10 +1049,9 @@ def reaching(directory: Path) -> list[str]:
     Returns:
         Options to put between ``git`` and its command.
     """
-    ssh = (_ask(["config", "--get", "core.sshCommand"], cwd=directory) or "").strip() or "ssh"
     more = (_ask(["config", "--get", "annex.ssh-options"], cwd=directory) or "").strip()
     options = [
-        "-c", f"core.sshCommand={ssh} -o BatchMode=yes",
+        "-c", f"core.sshCommand={ssh(directory)}",
         "-c", "annex.ssh-options=" + " ".join(filter(None, (more, "-o BatchMode=yes"))),
     ]  # fmt: skip
     if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
@@ -994,16 +1064,24 @@ def reaching(directory: Path) -> list[str]:
 def _remotes(directory: Path) -> dict[str, str]:
     """Each repository this clone can fetch from, by git-annex's id for it
     → the remote's name. A store reached at two addresses is named by the
-    first."""
+    first, and one this clone has yet to reach by its declaration
+    (:func:`store_uuid`)."""
     listed = _ask(["config", "--get-regexp", r"^remote\..+\.annex-uuid$"], cwd=directory)
     named = sorted(
         (key.removeprefix("remote.").removesuffix(".annex-uuid"), uuid)
         for key, _, uuid in (line.partition(" ") for line in (listed or "").splitlines())
     )
+    if remote_url(directory, STORE) and (declared := store_uuid(directory)):
+        named.append((STORE, declared))
     remotes: dict[str, str] = {}
     for name, uuid in named:
         remotes.setdefault(uuid, name)
     return remotes
+
+
+#: How many paths lc puts on one command line, far under what any system
+#: takes. Whatever git or git-annex reads from standard input goes there.
+_MANY = 1000
 
 
 # =============================================================================

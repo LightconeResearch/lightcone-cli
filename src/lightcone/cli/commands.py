@@ -123,7 +123,7 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
         click.echo(json.dumps(report.as_dict(), indent=2))
     else:
         _render_init_output(report, directory, dry_run=check_only)
-        if write and not report.blocked and not _online(directory):
+        if write and not report.blocked and not report.online:
             click.echo(
                 "\n  Not online yet. To back it up and share it, choose who can read it:\n"
                 f"    lc publish github.com/OWNER/{directory.name} --private\n"
@@ -132,13 +132,6 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
     if check_only and not report.converged:
         sys.exit(1)
-
-
-def _online(root: Path) -> bool:
-    """Whether the project is online at all: its `origin` is a repository on GitHub."""
-    from lightcone.engine import dataset, github
-
-    return github.parse(dataset.remote_url(root, "origin")) is not None
 
 
 def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
@@ -670,10 +663,11 @@ def publish(
 
     Every publication then sends, in this order, the bytes of what the
     commit names and the store lacks, git-annex's log of where they are,
-    and the current branch. Run it again whenever there is something new:
-    with nothing to send it says so. A plain `git push` sends the commits
-    without their bytes, and every clone then sees those results as
-    missing.
+    and the current branch. Where some bytes could not be sent, no commit
+    is, and it exits 1: run it again to send the rest. Run it again
+    whenever there is something new: with nothing to send it says so. A
+    plain `git push` sends the commits without their bytes, and every
+    clone then sees those results as missing.
 
     A clone that did not choose the store confirms it once before it
     publishes, with --confirm-data: lc shows where the data goes and
@@ -822,8 +816,8 @@ def _render_publish_output(report: PublishReport, *, dry_run: bool) -> None:
 
     if report.failed:
         verdict = (
-            f"{bad} {len(report.failed)} file(s) could not be sent — publishing again "
-            "continues from here"
+            f"{bad} {len(report.failed)} file(s) could not be sent, so no commit was — "
+            "publishing again continues from here"
         )
     elif dry_run:
         at = f"{report.branch} at {report.commit[:7]}"

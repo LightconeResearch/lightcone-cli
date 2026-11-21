@@ -921,6 +921,64 @@ def test_a_command_that_reaches_a_remote_never_waits_on_anyone(
     ]  # fmt: skip
 
 
+def test_lcs_own_ssh_is_the_users_in_batch_mode(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What makes a store over ssh runs the ssh git would: the one in the
+    environment before the repository's, and never one that prompts."""
+    assert dataset.ssh(repo) == "ssh -o BatchMode=yes"
+    dataset._git(["config", "core.sshCommand", "ssh -i ~/.ssh/cluster"], cwd=repo)
+    assert dataset.ssh(repo) == "ssh -i ~/.ssh/cluster -o BatchMode=yes"
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -F /etc/ssh/site")
+    assert dataset.ssh(repo) == "ssh -F /etc/ssh/site -o BatchMode=yes"
+
+
+def test_the_store_is_known_by_its_declaration_before_it_is_ever_reached(
+    repo: Path, tmp_path: Path
+) -> None:
+    """git-annex's branch says which repository the store is. A clone's
+    configuration says so only once git-annex has looked there, and until
+    then what the store holds must not read as held by nobody."""
+    assert dataset.store_uuid(repo) == ""
+    store = tmp_path / "store"
+    dataset._git(["init", "-q", "--bare", str(store)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=store)
+    dataset._git(["annex", "init", "-q"], cwd=store)
+    its_id = dataset._git(["config", "annex.uuid"], cwd=store).strip()
+    dataset._git(
+        ["annex", "initremote", dataset.STORE, "type=git", f"location={store}",
+         "autoenable=true"],
+        cwd=repo,
+    )  # fmt: skip
+
+    assert dataset.store_uuid(repo) == its_id
+    # git-annex has yet to look in the store, and has noted nothing of it.
+    assert not dataset._git_ok(["config", f"remote.{dataset.STORE}.annex-uuid"], cwd=repo)
+    assert dataset._remotes(repo)[its_id] == dataset.STORE
+
+
+def test_only_what_git_annex_says_it_sent_was_sent(repo: Path, tmp_path: Path) -> None:
+    """For a key its log places here and its annex does not hold, git-annex
+    answers with an empty line and exits 0 (measured): that is no transfer."""
+    backup = tmp_path / "backup"
+    dataset._git(["clone", "-q", "--bare", str(repo), str(backup)], cwd=tmp_path)
+    dataset._git(["remote", "add", "backup", str(backup)], cwd=repo)
+    for name in ("kept", "lost"):
+        (repo / "results" / f"{name}.txt").write_text(f"{name}\n")
+    dataset.save(repo, [repo / "results"], "two results")
+    keys = dataset.annexed(repo, dataset.head(repo))
+    kept, lost = keys["results/kept.txt"], keys["results/lost.txt"]
+    held = repo / dataset._git(["annex", "contentlocation", lost], cwd=repo).strip()
+    held.parent.chmod(0o700)
+    held.unlink()
+
+    unsent = dataset.send(repo, "backup", [kept, lost])
+
+    assert list(unsent) == [lost] and "not in this clone's annex" in unsent[lost]
+    assert dataset.copies(repo, [kept])[kept][1]  # the other one went
+
+
 def test_a_token_in_the_environment_is_offered_to_github_alone_and_never_written(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

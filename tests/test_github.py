@@ -52,6 +52,35 @@ def test_anything_else_is_no_repository_on_github(url: str) -> None:
     assert github.parse(url) is None
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://alice@github.com/lcr/analysis.git",
+        "https://x-access-token:s3cret@github.com/lcr/analysis",
+    ],
+)
+def test_an_https_address_may_carry_who_it_is_fetched_as(url: str) -> None:
+    """As a clone made with a user or a token in its URL has for `origin`.
+    What it carries is never part of what lc declares or shows."""
+    found = github.parse(url)
+
+    assert found == github.Repository("lcr", "analysis")
+    assert found.https == "https://github.com/lcr/analysis"
+    assert github.without_credentials(url) in (found.https, found.https + ".git")
+
+
+def test_an_owner_may_be_a_managed_account() -> None:
+    found = github.parse("git@github.com:jdoe_acme/analysis.git")
+
+    assert found is not None and found.owner == "jdoe_acme"
+
+
+def test_an_address_is_shown_without_what_it_carries() -> None:
+    assert github.without_credentials("https://u:s3cret@gitlab.com/o/n") == "https://gitlab.com/o/n"
+    assert github.without_credentials("git@github.com:o/n.git") == "git@github.com:o/n.git"
+    assert github.without_credentials("/a/colleague/analysis") == "/a/colleague/analysis"
+
+
 def test_a_dot_in_a_name_is_kept_and_only_a_trailing_dot_git_dropped() -> None:
     found = github.parse("https://github.com/lcr/my.analysis.git")
 

@@ -47,7 +47,6 @@ from lightcone.engine import (
     container,
     content,
     dataset,
-    github,
     identity,
     plan,
     project,
@@ -376,7 +375,7 @@ def status(root: Path) -> StatusReport:
         answer.image = {"tag": tag, "state": state, "archive": archive}
     graph, environment = _graph(root, [], report)
     answer.environment = environment
-    answer.online = github.parse(dataset.remote_url(root, "origin")) is not None
+    answer.online = dataset.target(root) is not None
     checked = graph.checked.to_json()["statuses"]
     for found in _classify(root, graph, environment, refresh=False):
         held = found.found.bytes
@@ -502,11 +501,20 @@ def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
         else:
             for path in found.task.paths:
                 wanted[plan.declared_path(root, path)] = key
+    if wanted and not dataset.is_annexed(root):
+        # Asked to fetch, git-annex would set itself up, without the rest
+        # of what `lc init` converges.
+        raise ProjectError(
+            "git-annex is not set up in this clone, so nothing can be fetched into it — "
+            "`lc init` sets it up."
+        )
     for place, why in dataset.get(root, list(wanted)).items():
-        report.failed[wanted[place]] = (
-            f"{why}, and it is missing now — `lc materialize` makes it again"
-            if why == dataset.NO_REMOTE
-            else why
+        name = wanted[place]
+        # A result no remote holds any more is one a run makes; nothing
+        # makes an input.
+        lost = why == dataset.NO_REMOTE and name not in report.inputs
+        report.failed[name] = (
+            f"{why}, and it is missing now — `lc materialize` makes it again" if lost else why
         )
     report.fetched = [key for key in dict.fromkeys(wanted.values()) if key not in report.failed]
     return report
@@ -934,16 +942,15 @@ def _to_fetch(
             )
             path = task.inputs[source.entry]
             at = plan.at_commit(root, path)
-            if held is not None and held.state == "absent" and held.kept_by not in (
-                None,
-                "git-annex",
-            ):
-                command = _FETCHED_BY.get(held.kept_by) if at is None else None
+            # The tool whose stand-in is there, for bytes this clone lacks.
+            keeper = held.kept_by if held is not None and held.state == "absent" else None
+            if keeper and keeper != "git-annex":
+                command = _FETCHED_BY.get(keeper) if at is None else None
                 how = f"; `{command}` fetches it" if command else ""
-                elsewhere.add(f"{plan.declared_path(root, path)} — kept by {held.kept_by}{how}")
+                elsewhere.add(f"{plan.declared_path(root, path)} — kept by {keeper}{how}")
             elif at is not None:
                 trees.setdefault(at[0], set()).add(at[1])
-            elif held is not None and held.state == "absent" and held.kept_by == "git-annex":
+            elif keeper:
                 wanted.add(plan.declared_path(root, path))
     if elsewhere:
         raise ProjectError(
@@ -1042,18 +1049,22 @@ def _require_storable(root: Path, graph: Graph) -> None:
         for task in graph.tasks.values()
         for record in task.record_paths
     ]
-    # NUL-separated both ways, as `check-attr` is below: git otherwise
-    # quotes a path holding an accent, and a space would end one. For
-    # `check-ignore` that means paths on stdin, the only way it takes `-z`.
+    # NUL-separated both ways, and on stdin: git otherwise quotes a path
+    # holding an accent, a space would end one, and a command line holds
+    # only so many. `check-ignore` takes `-z` no other way.
+    paths = "".join(f"{path}\0" for path in (*files, *records))
     asked = project._run(
-        ["git", "check-ignore", "-z", "--no-index", "--stdin"],
-        cwd=root,
-        stdin="".join(f"{path}\0" for path in (*files, *records)),
+        ["git", "check-ignore", "-z", "--no-index", "--stdin"], cwd=root, stdin=paths
     )
     ignored = [path for path in asked.stdout.split("\0") if path]
-    listed = dataset._git(
-        ["check-attr", "-z", "annex.largefiles", "filter", "--", *files, *records], cwd=root
-    ).split("\0")
+    attributed = project._run(
+        ["git", "check-attr", "-z", "--stdin", "annex.largefiles", "filter"],
+        cwd=root,
+        stdin=paths,
+    )
+    if attributed.returncode != 0:
+        raise ProjectError(f"`git check-attr` failed:\n{attributed.stderr.strip()}")
+    listed = attributed.stdout.split("\0")
     attributes = {
         (path, name): value
         for path, name, value in zip(listed[::3], listed[1::3], listed[2::3], strict=False)

@@ -21,11 +21,13 @@ has not confirmed, and lc confirms one only where the user names it
 
 One publication sends, in this order, the bytes, git-annex's log of where
 they are, then the commits, so a commit never reaches a clone before the
-bytes it names can be fetched. It sends what the commit names, the
-current versions, with the results the analysis reads at commits it
-declares in this repository. It sends no tag and no other branch, deletes
-nothing anywhere, and merges nothing: where GitHub's branch has commits
-this clone lacks, it refuses.
+bytes it names can be fetched: where some bytes could not be sent,
+neither the log nor the commits go, and publishing again picks up from
+what the store already took. It sends what the commit names, the current
+versions, with the results the analysis reads at commits it declares in
+this repository. It sends no tag and no other branch, deletes nothing
+anywhere, and merges nothing: where GitHub's branch has commits this
+clone lacks, it refuses.
 """
 
 from __future__ import annotations
@@ -141,7 +143,8 @@ def publish(
 ) -> PublishReport:
     """Put the project online, or send what GitHub and its store still lack.
 
-    Every refusal comes before anything is created or sent.
+    Whatever lc can tell beforehand is refused before anything is created
+    or sent.
 
     Args:
         root: The project root.
@@ -185,11 +188,10 @@ def publish(
     report.target, report.branch, report.commit = target.slug, branch, dataset.head(root)
     dataset.populate(root)
     dataset.enable_store(root)
-    reach = dataset.reaching(root)
     token = github.token(root)
 
     # --- What stands, before anything is done ------------------------------
-    heads, said = _heads(root, origin or target.url, reach)
+    heads, said = _heads(root, origin or target.url)
     creating = heads is None
     if creating:
         if check:
@@ -235,35 +237,23 @@ def publish(
             )
     else:
         _require_same_store(declared, wanted, confirm, target, check=check)
-    theirs = (heads or {}).get(branch, "")
-    if theirs and not dataset._git_ok(
-        ["merge-base", "--is-ancestor", theirs, report.commit], cwd=root
-    ):
-        if not origin:
-            raise ProjectError(
-                f"{target.slug} is not empty, and its `{branch}` is not this project's "
-                "history: publish to an empty repository."
-            )
-        raise ProjectError(
-            f"`{branch}` on {target.slug} has commits this clone lacks: `git pull`, then "
-            "`lc publish`."
-        )
-    if not origin and heads and not theirs:
-        raise ProjectError(
-            f"{target.slug} is not empty, and holds no `{branch}`: publish to an empty "
-            "repository."
-        )
+    theirs = _require_history(root, target, heads or {}, branch, report.commit, first=not origin)
     report.uncommitted = len(dataset.status(root))
-
+    files, kinds = _files(root, report)
+    unsent, report.nowhere = _lacking(root, declared, files, kinds)
+    home = declared or wanted
+    if home is not None and home.kind == "github-lfs":
+        _require_lfs_takes(unsent, files)
     if check:
-        report.unpushed = _commits(root, theirs, report.commit)
-        if declared is not None:
-            report.store = _described(declared, target)
-        files, kinds = _files(root, report)
-        report.unsent, report.nowhere = _lacking(root, declared, target, files, kinds)
+        report.unsent, report.unpushed = unsent, _commits(root, theirs, report.commit)
+        report.store = _described(declared, target) if declared is not None else ""
         return report
 
     # --- Doing it ---------------------------------------------------------
+    if declared is None and wanted is not None:
+        # Before the repository, so that a directory which cannot hold a
+        # store is refused with nothing created online.
+        _make_store(root, wanted)
     if creating:
         assert token is not None  # `_require_creatable` refuses without one
         github.create(target, token, private=visibility == "private")
@@ -271,48 +261,39 @@ def publish(
     if not origin:
         dataset._git(["remote", "add", "origin", target.url], cwd=root)
     dataset.settle(root)
-    if declared is None:
-        assert wanted is not None
-        _declare(root, wanted, reach)
-        declared = dataset.store(root)
-        if declared is None:
-            raise ProjectError(
-                f"git-annex took the declaration of {wanted.location} and this clone does "
-                "not have it as a store: nothing was sent."
-            )
-        report.declared = True
+    if declared is None and wanted is not None:
+        _declare(root, wanted, target)
+        declared, report.declared = dataset.store(root), True
         dataset.settle(root)
-    elif any(not sure for _, sure in declared.remotes.values()):
-        for remote, (address, sure) in declared.remotes.items():
-            if not sure:
-                dataset.confirm(root, remote, _settings(declared, address))
-        report.confirmed = True
+    if declared is None:
+        raise ProjectError(
+            "git-annex took the store's declaration, and this clone does not have it as a "
+            "store: nothing was sent."
+        )
+    for remote, (address, sure) in declared.remotes.items():
+        if not sure:
+            dataset.confirm(root, remote, _settings(declared, address))
+            report.confirmed = True
     report.store = _described(declared, target)
     if heads:
         # GitHub's copy of git-annex's log says what others already sent.
-        dataset._git([*reach, "fetch", "-q", "origin"], cwd=root)
+        dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
+        unsent, report.nowhere = _lacking(root, declared, files, kinds)
 
-    files, kinds = _files(root, report)
-    unsent, report.nowhere = _lacking(root, declared, target, files, kinds)
-    if declared.kind == "github-lfs":
-        for name in [name for name in unsent if _size(files[name]) > _LFS_LIMIT]:
-            del unsent[name]
-            report.failed[name] = (
-                f"{_size(files[name]) / 1024**3:.1f} GB, and GitHub's Git LFS takes no "
-                "file above 5 GB"
-            )
     refused = dataset.send(
         root, _remote(declared, target), list(dict.fromkeys(files[name] for name in unsent))
     )
     for name, kind in unsent.items():
-        if files[name] in refused:
-            report.failed[name] = refused[files[name]]
-        else:
+        if (why := refused.get(files[name])) is None:
             report.sent[name] = kind
-
+        else:
+            report.failed[name] = why
+    if report.failed:
+        # Neither the log nor the commits: a commit whose bytes are not in
+        # the store would reach clones as results to make again.
+        return report
     report.commits = _commits(root, theirs, report.commit)
-    _push(root, reach, branch, target)
-
+    _push(root, branch, target)
     if going_public and not creating:
         assert token is not None
         github.make_public(target, token)
@@ -346,7 +327,8 @@ def _target(origin: str, url: str) -> github.Repository | None:
     current = github.parse(origin)
     if current is None:
         raise ProjectError(
-            f"`origin` is {origin}, which is not a repository on GitHub, so there is "
+            f"`origin` is {github.without_credentials(origin)}, which is not a repository "
+            "on GitHub, so there is "
             "nowhere to publish to. Keep it under another name, then name the repository:\n"
             "  git remote rename origin <name>\n  lc publish github.com/OWNER/NAME"
         )
@@ -358,10 +340,12 @@ def _target(origin: str, url: str) -> github.Repository | None:
     return current
 
 
-def _heads(root: Path, address: str, reach: list[str]) -> tuple[dict[str, str] | None, str]:
+def _heads(root: Path, address: str) -> tuple[dict[str, str] | None, str]:
     """The branches the repository at *address* holds, each with its commit;
     or None, with git's own words, where git cannot reach it."""
-    asked = project._run(["git", *reach, "ls-remote", "--heads", address], cwd=root)
+    asked = project._run(
+        ["git", *dataset.reaching(root), "ls-remote", "--heads", address], cwd=root
+    )
     if asked.returncode != 0:
         return None, (asked.stderr or "").strip()
     heads = {}
@@ -425,13 +409,54 @@ def _license(root: Path) -> str:
     return declared.strip()
 
 
+def _require_history(
+    root: Path,
+    target: github.Repository,
+    heads: dict[str, str],
+    branch: str,
+    commit: str,
+    *,
+    first: bool,
+) -> str:
+    """Refuse to publish where GitHub holds commits this clone lacks.
+
+    lc merges nothing: commits others published are pulled first, and a
+    repository published to for the first time is empty, or already holds
+    this project's history.
+
+    Returns:
+        The commit GitHub's *branch* is at, or empty where it has none.
+
+    Raises:
+        ProjectError: If that commit is not one *commit* descends from,
+            or a first publication finds other branches and not this one.
+    """
+    theirs = heads.get(branch, "")
+    if theirs and not dataset._git_ok(["merge-base", "--is-ancestor", theirs, commit], cwd=root):
+        if first:
+            raise ProjectError(
+                f"{target.slug} is not empty, and its `{branch}` is not this project's "
+                "history: publish to an empty repository."
+            )
+        raise ProjectError(
+            f"`{branch}` on {target.slug} has commits this clone lacks: `git pull`, then "
+            "`lc publish`."
+        )
+    if first and heads and not theirs:
+        raise ProjectError(
+            f"{target.slug} is not empty, and holds no `{branch}`: publish to an empty "
+            "repository."
+        )
+    return theirs
+
+
 def _commits(root: Path, theirs: str, commit: str) -> int:
     """How many commits of the branch GitHub lacks."""
     span = f"{theirs}..{commit}" if theirs else commit
     return int(dataset._git(["rev-list", "--count", span], cwd=root).strip())
 
 
-def _push(root: Path, reach: list[str], branch: str, target: github.Repository) -> None:
+def _push(root: Path, branch: str, target: github.Repository) -> None:
     """Send git-annex's log, then the branch, to GitHub.
 
     The log first has to hold what this clone noted and what GitHub's copy
@@ -439,11 +464,18 @@ def _push(root: Path, reach: list[str], branch: str, target: github.Repository) 
     GitHub refuses, someone published in between: their log is taken in
     and the push tried once more, unless the branch itself moved, which is
     theirs to pull.
+
+    Raises:
+        ProjectError: If the branch moved, or GitHub refuses again, in
+            git's own words.
     """
-    refs = [f"refs/heads/{branch}:refs/heads/{branch}", "refs/heads/git-annex:refs/heads/git-annex"]
+    push = [
+        "git", *dataset.reaching(root), "push", "-q", "--atomic", "origin",
+        f"refs/heads/{branch}:refs/heads/{branch}", "refs/heads/git-annex:refs/heads/git-annex",
+    ]  # fmt: skip
     dataset.record_copies(root)
-    if not dataset._git_ok([*reach, "push", "-q", "--atomic", "origin", *refs], cwd=root):
-        dataset._git([*reach, "fetch", "-q", "origin"], cwd=root)
+    if project._run(push, cwd=root).returncode != 0:
+        dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
         moved = dataset._ask(
             ["rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}"], cwd=root
         )
@@ -455,15 +487,13 @@ def _push(root: Path, reach: list[str], branch: str, target: github.Repository) 
                 "`lc publish`. The bytes are in the store already."
             )
         dataset.record_copies(root)
-        pushed = project._run(
-            ["git", *reach, "push", "-q", "--atomic", "origin", *refs], cwd=root
-        )
-        if pushed.returncode != 0:
+        again = project._run(push, cwd=root)
+        if again.returncode != 0:
             raise ProjectError(
-                f"git could not push to {target.slug}:\n{(pushed.stderr or '').strip()}\n"
+                f"git could not push to {target.slug}:\n{(again.stderr or '').strip()}\n"
                 "Publishing takes write access to it, with credentials git can use: `gh "
-                "auth login`, an ssh key, or GH_TOKEN in the environment. Contributions "
-                "from forks are not supported yet. What was sent to the store stays there."
+                "auth login`, an ssh key, or GH_TOKEN in the environment. What was sent to "
+                "the store stays there."
             )
     # So that `git pull`, with nothing more, takes in what others publish.
     if not (dataset._ask(["config", "--get", f"branch.{branch}.remote"], cwd=root) or "").strip():
@@ -598,57 +628,69 @@ git -C "$1" -c user.name="$2" -c user.email="$3" annex init -q
 """
 
 
-def _declare(root: Path, wanted: _Wanted, reach: list[str]) -> None:
+def _make_store(root: Path, wanted: _Wanted) -> None:
+    """Make the store a directory holds, where it is not there yet.
+
+    A bare git-annex repository, the one kind of store in a directory
+    whose address a clone can enable by itself (measured), made where the
+    directory is: here, or over ssh. Git LFS has nothing to make: GitHub
+    keeps it with the repository.
+
+    Raises:
+        ProjectError: If the directory cannot hold a store, in the words
+            of whatever refused.
+    """
+    if wanted.kind != "directory":
+        return
+    ident = re.match(r"(.*) <(.*)>", dataset._git(["var", "GIT_COMMITTER_IDENT"], cwd=root))
+    name, address = (ident[1], ident[2]) if ident else ("", "")
+    far = urlsplit(wanted.location) if wanted.location.startswith("ssh://") else None
+    make = ["sh", "-c", _MAKE_STORE, "sh", far.path if far else wanted.location, name, address]
+    if far:
+        make = [
+            *shlex.split(dataset.ssh(root)),
+            *(["-p", str(far.port)] if far.port else []),
+            f"{far.username}@{far.hostname}" if far.username else str(far.hostname),
+            shlex.join(make),
+        ]
+    made = project._run(make, cwd=root)
+    if made.returncode != 0:
+        raise ProjectError(
+            f"no store could be made in {wanted.location}:\n{(made.stderr or '').strip()}"
+        )
+
+
+def _declare(root: Path, wanted: _Wanted, target: github.Repository) -> None:
     """Declare the project's store, once and for every clone.
 
     A special remote git-annex enables by itself, recorded in its branch.
     Git LFS is declared at the repository's https address and again at its
     ssh address, as one store, so each clone reaches it with the
     credentials it has. A directory is declared as the git-annex
-    repository it holds, which lc makes there: the one kind of store in a
-    directory whose address a clone can enable by itself (measured).
+    repository :func:`_make_store` made in it.
 
     Raises:
-        ProjectError: If the directory cannot hold a store, or git-annex
-            refuses the declaration, in its own words.
+        ProjectError: If git-annex refuses the declaration, in its own
+            words.
     """
+    declare = [*dataset.reaching(root), "annex", "initremote"]
     if wanted.kind == "github-lfs":
-        target = github.parse(wanted.location)
-        assert target is not None
         dataset._git(
-            [*reach, "annex", "initremote", dataset.STORE, "type=git-lfs",
-             f"url={target.https}", "encryption=none", "autoenable=true"],
+            [*declare, dataset.STORE, "type=git-lfs", f"url={target.https}", "encryption=none",
+             "autoenable=true"],
             cwd=root,
         )  # fmt: skip
         dataset._git(
-            [*reach, "annex", "initremote", dataset.STORE_SSH, f"--sameas={dataset.STORE}",
-             "type=git-lfs", f"url={target.over_ssh}", "autoenable=true"],
+            [*declare, dataset.STORE_SSH, f"--sameas={dataset.STORE}", "type=git-lfs",
+             f"url={target.over_ssh}", "autoenable=true"],
             cwd=root,
         )  # fmt: skip
-        return
-    ident = re.match(r"(.*) <(.*)>", dataset._git(["var", "GIT_COMMITTER_IDENT"], cwd=root))
-    name, address = (ident[1], ident[2]) if ident else ("", "")
-    if wanted.location.startswith("ssh://"):
-        parts = urlsplit(wanted.location)
-        host = f"{parts.username}@{parts.hostname}" if parts.username else str(parts.hostname)
-        script = " ".join(
-            ["sh", "-c", shlex.quote(_MAKE_STORE), "sh",
-             *(shlex.quote(value) for value in (parts.path, name, address))]
-        )  # fmt: skip
-        argv = ["ssh", "-o", "BatchMode=yes", *(["-p", str(parts.port)] if parts.port else []),
-                host, script]  # fmt: skip
     else:
-        argv = ["sh", "-c", _MAKE_STORE, "sh", wanted.location, name, address]
-    made = project._run(argv, cwd=root)
-    if made.returncode != 0:
-        raise ProjectError(
-            f"no store could be made in {wanted.location}:\n{(made.stderr or '').strip()}"
-        )
-    dataset._git(
-        [*reach, "annex", "initremote", dataset.STORE, "type=git",
-         f"location={wanted.location}", "autoenable=true"],
-        cwd=root,
-    )  # fmt: skip
+        dataset._git(
+            [*declare, dataset.STORE, "type=git", f"location={wanted.location}",
+             "autoenable=true"],
+            cwd=root,
+        )  # fmt: skip
 
 
 # =============================================================================
@@ -711,11 +753,7 @@ def _files(root: Path, report: PublishReport) -> tuple[dict[str, str], dict[str,
 
 
 def _lacking(
-    root: Path,
-    store: dataset.Store | None,
-    target: github.Repository,
-    files: dict[str, str],
-    kinds: dict[str, str],
+    root: Path, store: dataset.Store | None, files: dict[str, str], kinds: dict[str, str]
 ) -> tuple[dict[str, str], list[str]]:
     """Sort the files the store lacks by whether this clone can send them.
 
@@ -725,37 +763,35 @@ def _lacking(
     Returns:
         Each file whose bytes are here and not in the store → what it is,
         and the files whose bytes are in neither.
-
-    Raises:
-        ProjectError: If this clone cannot tell which repository the
-            store is, which it learns by reaching it.
     """
     held = dataset.copies(root, dict.fromkeys(files.values()))
-    there = ""
-    if store is not None and files:
-        # Asked after the log was read: git-annex learns which repository a
-        # store in a directory is the first time it looks there.
-        there = (
-            dataset._ask(
-                ["config", "--get", f"remote.{_remote(store, target)}.annex-uuid"], cwd=root
-            )
-            or ""
-        ).strip()
-        if not there:
-            raise ProjectError(
-                f"this project's data store, {_described(store, target)}, cannot be reached "
-                "from this clone, so nothing can be sent to it from here."
-            )
+    there = dataset.store_uuid(root) if store is not None else ""
     unsent, nowhere = {}, []
     for name, key in files.items():
         here, others = held.get(key, (False, frozenset()))
-        if there and there in others:
+        if there in others:
             continue
         if here:
             unsent[name] = kinds[name]
         else:
             nowhere.append(name)
     return unsent, nowhere
+
+
+def _require_lfs_takes(unsent: dict[str, str], files: dict[str, str]) -> None:
+    """Refuse a publication to Git LFS that holds a file it takes on no plan.
+
+    Raises:
+        ProjectError: Naming each file above :data:`_LFS_LIMIT`.
+    """
+    over = {name: _size(files[name]) for name in unsent if _size(files[name]) > _LFS_LIMIT}
+    if over:
+        raise ProjectError(
+            "GitHub's Git LFS takes no file above 5 GB, on any plan, and this commit "
+            "names:\n  "
+            + "\n  ".join(f"{name} ({size / 1024**3:.1f} GB)" for name, size in over.items())
+            + "\nNothing was sent."
+        )
 
 
 def _size(key: str) -> int:

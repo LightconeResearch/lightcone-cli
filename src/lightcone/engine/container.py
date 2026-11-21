@@ -184,11 +184,10 @@ def _fetch(root: Path, archive: Path) -> None:
         return
     except content.ContentNotFetchedError:
         pass
-    got = project._run(["git", "annex", "get", "--", relative], cwd=root)
-    if got.returncode != 0:
+    if failed := dataset.get(root, [relative]):
         raise ProjectError(
             f"the image archive `{relative}` is not in this clone, and fetching it "
-            f"failed:\n{got.stderr.strip()}\n"
+            f"failed:\n{failed[relative]}\n"
             "It needs a reachable remote that holds the content — or rebuild a new "
             "image with `lc build`."
         )

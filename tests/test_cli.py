@@ -1035,3 +1035,18 @@ def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_ther
         "    lc publish github.com/OWNER/analysis --public",
     ]
     assert "lc publish" not in runner.invoke(main, ["init", "--check", str(tmp_path / "b")]).output
+
+
+def test_init_says_nothing_of_publishing_for_a_project_that_is_online(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether it is online is the engine's to say, in its report."""
+    from lightcone.engine import project
+    from lightcone.engine.project import ConvergenceReport
+
+    online = ConvergenceReport(online=True)
+    monkeypatch.setattr(project, "converge", lambda directory, write: online)
+
+    result = runner.invoke(main, ["init", str(tmp_path / "analysis")])
+
+    assert result.exit_code == 0 and "lc publish" not in result.output

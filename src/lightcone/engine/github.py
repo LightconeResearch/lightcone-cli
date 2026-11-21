@@ -30,10 +30,12 @@ from lightcone.engine import project
 _API = "https://api.github.com"
 
 #: A repository on github.com, as git reaches it over https or ssh, or bare
-#: as people write it (``github.com/owner/name``).
+#: as people write it (``github.com/owner/name``). An https address may
+#: carry who it is fetched as; an owner may hold the underscore of a
+#: managed account.
 _URL = re.compile(
-    r"^(?:(?:https://)?github\.com/|(?P<ssh>ssh://git@github\.com/|git@github\.com:))"
-    r"(?P<owner>[A-Za-z0-9][A-Za-z0-9-]*)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?$"
+    r"^(?:(?:https://(?:[^/@\s]+@)?)?github\.com/|(?P<ssh>ssh://git@github\.com/|git@github\.com:))"
+    r"(?P<owner>[A-Za-z0-9][A-Za-z0-9_-]*)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?$"
 )
 
 #: Where someone without a token creates the repository themselves.
@@ -91,6 +93,18 @@ def parse(url: str) -> Repository | None:
     if found is None:
         return None
     return Repository(found["owner"], found["name"], ssh=found["ssh"] is not None)
+
+
+def without_credentials(url: str) -> str:
+    """Give *url* as it can be shown: without the user or token it carries.
+
+    Args:
+        url: A remote's address.
+
+    Returns:
+        The address, with nothing before the host.
+    """
+    return re.sub(r"(?<=://)[^/@\s]+@", "", url)
 
 
 def token(root: Path) -> str | None:

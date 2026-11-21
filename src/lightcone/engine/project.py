@@ -14,7 +14,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import dataset, github, templates
+from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
 
@@ -44,6 +44,9 @@ class ConvergenceReport:
     unchanged: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Whether the project is online at all: its ``origin`` is a repository
+    #: on GitHub. No part of ``converged``: a project is whole without it.
+    online: bool = False
 
     @property
     def converged(self) -> bool:
@@ -448,7 +451,8 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     # What a clone keeps of where the project is published, which no clone
     # gets from another. After git-annex is set up, which is what enables
     # the store the project declares.
-    if _can_ask_git(directory) and github.parse(dataset.remote_url(directory, "origin")):
+    if _can_ask_git(directory) and dataset.target(directory) is not None:
+        c.report.online = True
         c.item(
             "publication settings",
             settled and not dataset.unsettled(directory),
