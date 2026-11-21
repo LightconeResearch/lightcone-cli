@@ -32,6 +32,7 @@ task — that is what puts git back in the workers.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import shlex
 from collections import Counter
@@ -550,17 +551,19 @@ def materialize(
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
     dataset.require_free_index(root)
-    # The dirty check comes before anything that writes: the image
-    # converge below *commits*, and `dataset.save` stages scoped but
-    # commits the whole index — on a dirty tree the user's staged edits
-    # would be swept into the image commit.
-    if changes := dataset.status(root):
-        raise ProjectError(_dirty(root, changes))
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
+    # The dirty check comes before anything that writes: the image
+    # converge below *commits*, and `dataset.save` stages scoped but
+    # commits the whole index — on a dirty tree the user's staged edits
+    # would be swept into the image commit. And after the graph, which
+    # says where a run writes: an analysis in a folder of the project
+    # keeps its results and their records there.
+    if changes := dataset.status(root):
+        raise ProjectError(_dirty(root, changes, _written(graph)))
     worker.require_in_commit(root, graph.specs)
     classified = _classify(root, graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
@@ -701,13 +704,14 @@ def materialize(
         # which no longer describes that code. A warning: the driver does
         # not rewrite records the worker wrote.
         changed = sorted(path for _, path in dataset.status(root))
-        if left := [path for path in changed if path.startswith(_WRITTEN)]:
+        written = _written(graph)
+        if left := [path for path in changed if path.startswith(written)]:
             report.warnings.append(
                 f"left uncommitted where results go: {', '.join(left)} — no output "
                 "declares them, so no record names them. Remove them: the next run "
                 "refuses a tree that holds them."
             )
-        if edited := [path for path in changed if not path.startswith(_WRITTEN)]:
+        if edited := [path for path in changed if not path.startswith(written)]:
             report.warnings.append(
                 f"edited while the run was in flight: {', '.join(edited)} — the records "
                 "name the starting commit, which no longer describes this code"
@@ -1304,26 +1308,40 @@ def _owned(root: Path, task: Task) -> list[str]:
     ]
 
 
-#: The folders a run writes in: results' bytes, and their records. A
-#: change there is what a run left, not the researcher's work.
-_WRITTEN = ("results/", ".astra/")
+def _written(graph: Graph) -> tuple[str, ...]:
+    """The folders a run writes in, from the project root: the results of
+    each analysis read from the working tree, and their records.
+
+    A change there is what a run left, not the researcher's work. Each
+    analysis has its own: one in a folder of the project keeps its results
+    in ``<folder>/results/``, not in the project's.
+    """
+    return tuple(
+        posixpath.join(posixpath.dirname(spec), folder, "")
+        for spec in graph.specs
+        for folder in ("results", ".astra")
+    )
 
 
-def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
+def _dirty(root: Path, changes: Sequence[tuple[str, str]], written: tuple[str, ...]) -> str:
     """The refusal, split by what the right remedy actually is.
 
     Two path classes, because they call for opposite actions: work the
-    researcher owns has to be committed, and anything under ``results/``
-    or ``.astra/`` is lc's to write, so a change there is wreckage to
-    discard rather than a contribution to keep — an interrupted run
-    leaves part of a result, and the record it removed before its recipe
-    ran.
+    researcher owns has to be committed, and anything under the
+    ``results/`` or ``.astra/`` of an analysis (*written*) is lc's to
+    write, so a change there is wreckage to discard rather than a
+    contribution to keep — an interrupted run leaves part of a result,
+    and the record it removed before its recipe ran.
 
     The discard command names a folder to ``git restore`` only where git
     knows a file of it, which refuses one it knows none of.
     """
-    theirs = [c for c in changes if not c[1].startswith(_WRITTEN)]
-    ours = [c for c in changes if c[1].startswith(_WRITTEN)]
+    theirs = [c for c in changes if not c[1].startswith(written)]
+    ours = [
+        (code, path, next(folder for folder in written if path.startswith(folder)))
+        for code, path in changes
+        if path.startswith(written)
+    ]
 
     lines = [
         f"uncommitted changes in {root} — every materialization is committed "
@@ -1337,8 +1355,8 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
             *(f"      {code.strip() or '??'} {path}" for code, path in theirs),
         ]
     if ours:
-        known = sorted({f"{path.split('/')[0]}/" for code, path in ours if code != "??"})
-        new = sorted({f"{path.split('/')[0]}/" for code, path in ours if code == "??"})
+        known = sorted({shlex.quote(folder) for code, _, folder in ours if code != "??"})
+        new = sorted({shlex.quote(folder) for code, _, folder in ours if code == "??"})
         discard = [
             *([f"git restore --staged --worktree {' '.join(known)}"] if known else []),
             *([f"git clean -fd {' '.join(new)}"] if new else []),
@@ -1350,6 +1368,6 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
             "  confirm its recipes have stopped, then discard these "
             "(lc writes results/ and .astra/):",
             f"      {' && '.join(discard)}",
-            *(f"      {code.strip() or '??'} {path}" for code, path in ours),
+            *(f"      {code.strip() or '??'} {path}" for code, path, _ in ours),
         ]
     return "\n".join(lines)

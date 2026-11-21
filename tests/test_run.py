@@ -142,6 +142,42 @@ def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
 
 
+def test_the_inputs_of_a_declared_analysis_become_read_paths_too(project: Path) -> None:
+    """A recipe of `stage` reads `stage`'s input, so a probe is granted it:
+    denied there, it would say nothing of what the recipe gets."""
+    (project / "stage" / "data").mkdir(parents=True)
+    (project / "stage" / "data" / "catalog.csv").write_text("a,b\n")
+    (project / "stage" / "astra.yaml").write_text(
+        'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.csv}\n'
+    )
+    (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage: {path: stage}\n")
+    _tracked(project)
+
+    assert engine_run.input_paths(project) == [
+        (project / "data" / "local.csv").resolve(),
+        (project / "stage" / "data" / "catalog.csv").resolve(),
+    ]
+
+
+def test_an_input_declared_at_another_commit_is_no_read_path(project: Path) -> None:
+    """What an analysis declared at a commit reads is in that commit's
+    tree, which a run gives: the file that now sits at the same path of
+    the working tree is not it."""
+    subprocess.run(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "first"],
+        cwd=project, check=True, capture_output=True,
+    )
+    at = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (project / "astra.yaml").write_text(
+        f'spec_version: "0.1.0"\nanalyses:\n  previous: {{path: ., commit: "{at}"}}\n'
+    )
+    _tracked(project)
+
+    assert engine_run.input_paths(project) == []
+
+
 def test_a_spec_with_no_inputs_is_fine(tmp_path: Path) -> None:
     root = tmp_path / "bare"
     root.mkdir()
