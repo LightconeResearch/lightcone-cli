@@ -1155,3 +1155,41 @@ def test_ghs_own_credentials_are_offered_where_it_is_installed(
     monkeypatch.setattr(github, "has_gh", lambda: True)
 
     assert "credential.https://github.com.helper=!gh auth git-credential" in dataset.reaching(repo)
+
+
+# ---- asking git-annex, and waiting for it ----------------------------------
+
+
+def test_git_annex_failing_to_answer_is_not_a_clone_that_holds_nothing(
+    tmp_path: Path, real_tools: None
+) -> None:
+    """A batch command that failed has answered for none of what it was
+    asked. Read as it stands, every key would be one this clone lacks,
+    and each task would be told its input is a stand-in."""
+    with pytest.raises(project.ProjectError, match="contentlocation"):
+        dataset.located(tmp_path, ["SHA256E-s1--" + "0" * 64])
+    assert dataset.located(tmp_path, []) == {}
+
+
+def test_a_fetch_waits_for_another_process_fetching_the_same_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Several runs of one project fetch into one annex, and git-annex
+    refuses a transfer another of its processes holds (*measured*). Asked
+    again once that one is over, it finds the content there."""
+    refused = subprocess.CompletedProcess(
+        [], 1, '{"success":false,"error-messages":["transfer already in progress, '
+        'or unable to take transfer lock"]}\n', "get: 1 failed\n",
+    )  # fmt: skip
+    answers = iter([refused, refused, subprocess.CompletedProcess([], 0, "\n", "")])
+    waited: list[float] = []
+    monkeypatch.setattr(project, "_run", lambda argv, **kwargs: next(answers))
+    monkeypatch.setattr(dataset.time, "sleep", waited.append)
+
+    assert dataset.transfer(["git", "annex", "get", "--batch"], cwd=tmp_path).returncode == 0
+    assert len(waited) == 2
+
+    failed = subprocess.CompletedProcess([], 1, "", "no such remote\n")
+    monkeypatch.setattr(project, "_run", lambda argv, **kwargs: failed)
+    assert dataset.transfer(["git", "annex", "get", "--batch"], cwd=tmp_path) is failed
+    assert len(waited) == 2

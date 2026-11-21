@@ -260,7 +260,7 @@ def build(root: Path) -> Graph:
         ProjectError: If there is no analysis, ASTRA finds it invalid, an
             analysis read from the working tree is outside the project's
             folder or in a repository of its own, a recipe would run on a
-            commit's files, or the repository moved between ASTRA's two
+            commit's files, or the analysis changed between ASTRA's two
             answers.
     """
     from astra import api
@@ -268,11 +268,21 @@ def build(root: Path) -> Graph:
     with asking_astra(root):
         analysis = api.resolve(root, commits=COMMITS)
         report = api.status(root)
-    if report.head != analysis.head:
-        # The statuses are of another commit's results than the ones resolved.
+    specs = tuple(
+        posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
+        for each in analysis.analyses
+        if each.commit is None
+    )
+    if report.head != analysis.head and not dataset.same(
+        root, analysis.head, report.head, specs
+    ):
+        # The statuses are of another analysis's results than the ones
+        # resolved. A commit that leaves the analysis as it was is no
+        # such thing: another run of the project commits a result at any
+        # moment, and the statuses are then of the later commit.
         raise ProjectError(
-            f"The repository moved from {analysis.head} to {report.head} while lc was "
-            "reading the analysis. Run again."
+            f"The analysis moved from {analysis.head} to {report.head} while lc was "
+            "reading it. Run again."
         )
     if outside := sorted(
         each.folder
@@ -348,11 +358,7 @@ def build(root: Path) -> Graph:
         tasks=tasks,
         checked=report,
         commits=commits,
-        specs=tuple(
-            posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
-            for each in analysis.analyses
-            if each.commit is None
-        ),
+        specs=specs,
         inputs={
             # A ref is its analysis's key, its collection and its id.
             ".".join(filter(None, (each.key, ref.rpartition(".")[2]))): (ref, path)

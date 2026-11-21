@@ -435,7 +435,7 @@ def materialize(
             _interrupted(
                 cluster_id,
                 "recipes may still be running, in the run's checkout, which stays until the "
-                "allocation has ended; the project holds what was committed",
+                "allocation has ended, and what they make is not committed",
             )
             raise
 

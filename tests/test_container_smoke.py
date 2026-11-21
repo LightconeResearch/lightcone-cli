@@ -231,6 +231,35 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     assert json.loads(body)["extra_inputs"] == [archive.relative_to(cproject).as_posix()]
 
 
+_CHAIN = _SPEC + """
+  twice:
+    type: metric
+    format: txt
+    inputs: [sums]
+    recipe:
+      command: cat {inputs.sums} {inputs.sums} > {output}
+"""
+
+
+def test_a_result_of_the_run_is_read_in_the_image(
+    runtime: str, analysis: Callable[..., Path], cluster_id: str
+) -> None:
+    """A result made in a run is moved to its place in the project, and
+    the task that reads it finds a link to it in the run's checkout. In a
+    container the mount table is all there is: the link has to lead to a
+    file that is mounted, or the recipe reads nothing."""
+    root = analysis(_CHAIN)
+    text = (root / "pyproject.toml").read_text()
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
+    dataset.save(root, [root], "containerize")
+
+    report = engine.materialize(root, [], cluster_id=cluster_id)
+
+    assert report.made == ["sums", "twice"], (report.failed, report.warnings)
+    assert (root / "results/twice.txt").read_text() == "4\n4\n"
+    assert not dataset.status(root)
+
+
 def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     runtime: str,
     cproject: Path,

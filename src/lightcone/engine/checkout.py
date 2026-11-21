@@ -7,25 +7,28 @@ take: it is where the researcher works, and where another run would write.
 So a run takes a tree of its own, a linked git worktree of the commit
 under the project's ignored ``.lightcone/runs/``. That is on the
 filesystem the project and its annex are on: the one compute nodes share,
-and the one on which bytes take one more name instead of a copy. Recipes
-run there. The project's tree is touched once per result, when the result
-is landed in it and committed, and what the researcher edits, stages or
-commits meanwhile is no part of the run.
+and the one on which a file changes place without its bytes being
+written again. Recipes run there, and what the researcher edits, stages
+or commits meanwhile is no part of the run.
 
 **git-annex never runs in a checkout.** Run in a linked worktree, it fills
 every annexed file it holds the bytes of, by copy, and replaces the
-worktree's ``.git`` (measured). So every git command here, and every git a
-recipe runs, carries :data:`dataset.PLAIN`: annexed files check out as the
-stand-ins git stores, and :func:`fill` gives the ones a run reads their
-bytes itself, as one more name for the object the annex already holds.
+worktree's ``.git`` (measured). So every git command here, and whatever
+lc starts in a checkout, carries :data:`dataset.PLAIN`. Annexed files then
+check out as the stand-ins git stores, and :func:`fill` gives the ones a
+run reads their bytes itself, as one more name for the object the annex
+already holds. The others it removes: a recipe that read one would take a
+line of text for its data.
 
-**Landing.** A result a run made is given a second name at its place in
-the project's tree and committed there, by the partial commit every save
-uses: git-annex runs where it always has. It stores a file that has two
-names by copy (measured), so the project's file is then made a name of
-that copy, which leaves one copy once the checkout is gone, as a result
-made in place has. A result lands only while the project's history holds
-the run's commit, which is where its record is true.
+**A result is written once.** Its recipe writes it in the checkout, where
+no other run and no commit sees it half made. The worker then moves it to
+its place in the project's tree (:func:`hand_over`), which costs a rename
+whatever its size, and leaves a link in its stead for the tasks that read
+it. The driver commits it there (:func:`land`) as it would one made in
+place: git-annex takes a file that has one name as its own object, without
+a copy, and git takes the file for unchanged because it was added where
+it is. A result lands only while the project's history holds the run's
+commit, which is where its record is true.
 
 **Whose it is.** Each run takes a checkout of its own, so several runs of
 one project share nothing but the repository, where git serializes their
@@ -39,6 +42,7 @@ one fact that says none is.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -51,6 +55,17 @@ from lightcone.engine.project import ProjectError
 
 #: Where a project's checkouts are, from the project root.
 RUNS = ".lightcone/runs"
+
+#: The git a run needs: ``worktree add --lock --reason`` is 2.33's, and
+#: configuration given in the environment 2.31's.
+_GIT = (2, 33)
+
+#: How long a landing waits for the project's index, in seconds. Another
+#: run of the project holds it for as long as git-annex takes to hash the
+#: result it lands (measured: 7 s per GiB), and a result made is at
+#: stake. A lock a killed git left is found before a run starts
+#: (``dataset.require_free_index``).
+LANDING = 3600.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,49 @@ class Checkout:
     root: Path
     #: The commit checked out, which every record of the run names.
     commit: str
+
+
+def require_git(root: Path) -> None:
+    """Refuse a git too old to make a checkout, before anything is prepared.
+
+    Args:
+        root: The project root.
+
+    Raises:
+        ProjectError: Naming the version a run needs, and the one found.
+    """
+    found = dataset._git(["version"], cwd=root).strip()
+    if tuple(int(part) for part in re.findall(r"\d+", found)[:2]) < _GIT:
+        raise ProjectError(
+            f"a run takes a checkout of its commit, which needs git "
+            f"{'.'.join(map(str, _GIT))} or later, and this is {found}."
+        )
+
+
+def reap(root: Path) -> list[Path]:
+    """Remove the checkouts no run can be using any more.
+
+    One whose allocation has ended, and one whose folder someone removed.
+    Unknown is never ended: a checkout whose allocation cannot be asked
+    about stays, and is named, since nothing else ever will.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The checkouts kept for not knowing whether their runs are over.
+    """
+    from lightcone.engine import compute
+
+    held = _held(root)
+    phases = {holder: compute.phase(holder) for holder in set(held.values())}
+    unknown = []
+    for left, holder in held.items():
+        if phases[holder] == "ended" or not left.exists():
+            _remove(root, left)
+        elif phases[holder] == "unknown":
+            unknown.append(left)
+    return unknown
 
 
 def take(root: Path, commit: str, allocation: str) -> Checkout:
@@ -82,20 +140,12 @@ def take(root: Path, commit: str, allocation: str) -> Checkout:
     Raises:
         ProjectError: If git cannot make the worktree.
     """
-    from lightcone.engine import compute
-
     base = root / RUNS
     base.mkdir(parents=True, exist_ok=True)
     # uv reads the settings of the first project above one that has none of
     # its own, which from a checkout is the researcher's, mid-edit or not
     # (measured). An empty file of its own stands between the two.
     (base / "uv.toml").touch()
-    held = _held(root)
-    over = {holder for holder in set(held.values()) if compute.ended(holder)}
-    for left, holder in held.items():
-        # One whose folder someone removed is held for nothing.
-        if holder in over or not left.exists():
-            _remove(root, left)
     top = base / uuid4().hex[:12]
     # Locked as it is made, so that no other run finds it unheld.
     dataset._git(
@@ -116,78 +166,140 @@ def take(root: Path, commit: str, allocation: str) -> Checkout:
 
 
 def fill(tree: Checkout, paths: Sequence[str]) -> None:
-    """Give the checkout the bytes of the annexed files among *paths*.
+    """Give the checkout the bytes of what a run reads, and of nothing else.
 
-    Each becomes one more name for the object this clone's annex keeps
-    its bytes in: which object is asked of the checkout's own commit, not
-    of whatever the project's tree holds by now. git is then told to take
-    the file for the commit's, which it is: left to compare, it finds
-    bytes where it stored a stand-in.
+    An annexed file among *paths* becomes one more name for the object
+    this clone's annex keeps its bytes in: which object is asked of the
+    checkout's own commit, not of whatever the project's tree holds by
+    now. One whose bytes this clone lacks stays the stand-in it is, and
+    the task that reads it refuses it by name.
 
-    A file whose bytes this clone lacks stays the stand-in it is, and the
-    task that reads it refuses it.
+    Every other annexed file is removed. No output declares it as an
+    input, and left as a stand-in it would be read all the same: a line of
+    text, for data, by a recipe that then exits 0.
+
+    A file among *paths* that the commit holds no file of is one git
+    ignores, as it does what DVC keeps beside a ``.dvc`` file: it is given
+    from the project's tree, the one place it is.
+
+    git is then told to take each for the commit's: left to compare, it
+    finds bytes, or nothing, where it stored a stand-in.
 
     Args:
         tree: The run's checkout.
         paths: Files a task of the run reads, from the project root.
 
     Raises:
-        ProjectError: If git cannot be told.
+        ProjectError: If git-annex cannot be asked, or git cannot be told.
     """
-    stored = dataset.objects(tree.project, [f"{tree.commit}:./{path}" for path in paths])
-    filled = [path for path in paths if f"{tree.commit}:./{path}" in stored]
-    for path in filled:
-        _name(stored[f"{tree.commit}:./{path}"], tree.root / path)
-    if filled:
+    wanted = set(paths)
+    # Listed from the top of the repository, which the project may sit below.
+    below = tree.root.relative_to(tree.top).as_posix()
+    inside = "" if below == "." else f"{below}/"
+    annexed = {
+        path.removeprefix(inside): key
+        for path, key in dataset.annexed(tree.project, tree.commit).items()
+        if path.startswith(inside)
+    }
+    stored = dataset.located(tree.project, [annexed[path] for path in wanted & annexed.keys()])
+    for path, key in annexed.items():
+        if path not in wanted:
+            (tree.root / path).unlink(missing_ok=True)
+        elif key in stored:
+            _name(stored[key], tree.root / path)
+    for path in wanted:
+        if not os.path.lexists(tree.root / path) and (tree.project / path).is_file():
+            _name(tree.project / path, tree.root / path)
+    if annexed:
         marked = project._run(
             ["git", *dataset.PLAIN, "update-index", "--assume-unchanged", "-z", "--stdin"],
             cwd=tree.root,
-            stdin="".join(f"{path}\0" for path in filled),
+            stdin="".join(f"{path}\0" for path in annexed),
         )
         if marked.returncode != 0:
             raise ProjectError(f"`git update-index` failed:\n{marked.stderr.strip()}")
 
 
-def land(tree: Checkout, task: Task, message: str) -> None:
-    """Bring one result a run made into the project's tree, and commit it.
+def hand_over(task: Task, root: Path) -> None:
+    """Move the file a recipe made in a checkout to its place in the project.
+
+    It is given its name there, then loses the one it had: on the one
+    filesystem the two are on, the bytes are written once, by the recipe.
+    The file is then at its place under one name, which is what lets
+    git-annex take it as its own object when the driver commits it there.
+    A link is left at each place it had in the checkout, for the tasks of
+    the run that read it.
+
+    For the worker, which starts no git: called once its recipe has ended
+    and its record is written, and before anything is told the result
+    exists.
 
     Args:
-        tree: The run's checkout, holding what the task made.
+        task: The result, as the run made it: in the checkout.
+        root: The project root, in the researcher's tree.
+
+    Raises:
+        OSError: If a file cannot be moved there.
+    """
+    for made, place in zip(task.paths, task.at(root).paths, strict=True):
+        _name(made, place)
+        made.unlink()
+        os.symlink(place, made)
+
+
+def land(tree: Checkout, task: Task, message: str) -> None:
+    """Commit a result a run made, where its worker left it in the project.
+
+    Its record is given its place beside it only now, with the commit: a
+    record no commit holds is one no later run can tell from a result
+    made and committed.
+
+    Args:
+        tree: The run's checkout.
         task: The result, as the run made it: in the checkout.
         message: The commit message.
 
     Raises:
         ProjectError: If the project's history no longer holds the run's
             commit, or git does not store the result as lc stores one,
-            with the project's tree as it was.
+            with the project's tree as its last commit has it.
     """
-    if not dataset.is_ancestor(tree.project, tree.commit):
-        raise ProjectError(
-            f"the project's history no longer holds {tree.commit[:7]}, the commit this run "
-            "builds, so its record would be true of nothing there. Check out a branch "
-            "that holds it and run again"
-        )
     kept = task.at(tree.project)
-    # Taken to the letter, and never the folder: siblings share it.
-    owned = [
-        f":(literal){path.relative_to(tree.project).as_posix()}"
-        for path in (*kept.paths, *kept.record_paths)
-    ]
+    owned = owns(kept)
     try:
-        for here, there in zip(
-            (*task.paths, *task.record_paths), (*kept.paths, *kept.record_paths), strict=True
-        ):
-            _name(here, there)
-        dataset.save(tree.project, owned, message, annexed=kept.paths, in_git=kept.record_paths)
+        if not dataset.is_ancestor(tree.project, tree.commit):
+            raise ProjectError(
+                f"the project's history no longer holds {tree.commit[:7]}, the commit this "
+                "run builds, so its record would be true of nothing there. Check out a "
+                "branch that holds it and run again"
+            )
+        for made, place in zip(task.record_paths, kept.record_paths, strict=True):
+            _name(made, place)
+        dataset.save(
+            tree.project,
+            owned,
+            message,
+            annexed=kept.paths,
+            in_git=kept.record_paths,
+            patience=LANDING,
+        )
     except BaseException:
-        # An interrupt too: what lc put in the project's tree and did not
-        # commit is not left for anyone to take for their own change.
-        dataset.restore(tree.project, owned)
+        # An interrupt too: what the run put in the project's tree and did
+        # not commit is not left there for the next run to find.
+        dataset.restore(tree.project, owned, patience=LANDING)
         raise
-    files = {f"HEAD:./{path.relative_to(tree.project).as_posix()}": path for path in kept.paths}
-    for name, stored in dataset.objects(tree.project, list(files)).items():
-        if not os.path.samefile(stored, files[name]):
-            _name(stored, files[name])
+
+
+def owns(task: Task) -> list[str]:
+    """Every path one result owns, as git pathspecs taken to the letter:
+    its file and its records, from the project root.
+
+    Never the parent directory: siblings share it.
+    """
+    return [
+        f":(literal){path.relative_to(task.root).as_posix()}"
+        for path in (*task.paths, *task.record_paths)
+    ]
 
 
 def leave(tree: Checkout) -> None:

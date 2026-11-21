@@ -197,7 +197,7 @@ def status(
         ``.``, which is git's own summary of it and what the caller would
         tell the user to add.
     """
-    prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
+    prefix = _git([*config, "rev-parse", "--show-prefix"], cwd=directory).strip()
     listed = _git(
         [
             *config,
@@ -281,6 +281,40 @@ def is_ancestor(directory: Path, commit: str) -> bool:
         True where *commit* is ``HEAD`` or one of its ancestors.
     """
     return _git_ok(["merge-base", "--is-ancestor", commit, "HEAD"], cwd=directory)
+
+
+def same(directory: Path, one: str | None, other: str | None, paths: Sequence[str]) -> bool:
+    """Whether two commits hold the same *paths*.
+
+    Args:
+        directory: The repository to read.
+        one: A commit, or None where there was none.
+        other: Another.
+        paths: Files, from *directory*.
+
+    Returns:
+        True only where git finds no difference; False where it cannot say.
+    """
+    if one is None or other is None:
+        return False
+    return _git_ok(["diff", "--quiet", one, other, "--", *paths], cwd=directory)
+
+
+def submodules(directory: Path, config: Sequence[str] = ()) -> list[str]:
+    """List the submodules the tree at *directory* holds.
+
+    Args:
+        directory: A folder of a working tree.
+        config: Options to put between ``git`` and its command.
+
+    Returns:
+        The path of each, from *directory*.
+    """
+    listed = _git([*config, "ls-files", "-s", "-z", "--", "."], cwd=directory)
+    # `<mode> <object> <stage>\t<path>`: a submodule's mode is 160000.
+    return [
+        entry.partition("\t")[2] for entry in listed.split("\0") if entry.startswith("160000 ")
+    ]
 
 
 def dataset_id(directory: Path) -> str:
@@ -370,6 +404,7 @@ def save(
     *,
     annexed: Iterable[Path] = (),
     in_git: Iterable[Path] = (),
+    patience: float | None = None,
 ) -> bool:
     """Commit *paths*.
 
@@ -431,6 +466,8 @@ def save(
         message: The commit message.
         annexed: Files among *paths* whose bytes have to go to the annex.
         in_git: Files among *paths* that have to stay in git.
+        patience: How long to wait for another git command's hold on the
+            index, in seconds; :data:`_PATIENCE` unless given.
 
     Returns:
         False if there was nothing to commit.
@@ -441,7 +478,7 @@ def save(
     """
     relative = [_rel(directory, p) for p in paths]
     annex = ["-c", "annex.thin=true", "-c", "annex.dotfiles=true"]
-    _git([*annex, "add", "-A", "--", *relative], cwd=directory)
+    _git([*annex, "add", "-A", "--", *relative], cwd=directory, patience=patience)
     # Scoped like the commit: foreign staged content must neither count
     # as "something to commit" here nor be committed below.
     if _git_ok(["diff", "--cached", "--quiet", "--", *relative], cwd=directory):
@@ -465,7 +502,7 @@ def save(
         wrong += [f"{path} was staged in the annex, where a clone with no content cannot read it"
                   for path in to_git if key.get(path)]
         if wrong:
-            _git(["reset", "-q", "--", *relative], cwd=directory)
+            _git(["reset", "-q", "--", *relative], cwd=directory, patience=patience)
             raise project.ProjectError(
                 "git would not store these as lc stores them, so nothing was "
                 "committed:\n  " + "\n  ".join(wrong) + "\nThe last .gitattributes line "
@@ -475,7 +512,11 @@ def save(
     # The annex config rides on the commit too: a partial commit takes
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
-    _git([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
+    _git(
+        [*annex, "commit", "-q", "-m", message, "--", *relative],
+        cwd=directory,
+        patience=patience,
+    )
     _git(
         ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
          "--no-commit"],
@@ -484,7 +525,9 @@ def save(
     return True
 
 
-def restore(directory: Path, paths: Iterable[Path | str]) -> None:
+def restore(
+    directory: Path, paths: Iterable[Path | str], patience: float | None = None
+) -> None:
     """Put *paths* back the way the last commit had them.
 
     ``clean`` first for what a run wrote, then ``checkout`` for what it
@@ -504,11 +547,13 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
         paths: What to restore, as paths or git pathspecs. Scoped to these
             and never the whole tree: a result that could not be committed
             must not discard edits made while its run was in flight.
+        patience: How long to wait for another git command's hold on the
+            index, in seconds; :data:`_PATIENCE` unless given.
     """
     for path in paths:
         rel = _rel(directory, path)
-        _git(["clean", "-qfdx", "--", rel], cwd=directory)
-        _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
+        _git(["clean", "-qfdx", "--", rel], cwd=directory, patience=patience)
+        _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory, patience=patience)
 
 
 # =============================================================================
@@ -652,7 +697,7 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
     if not paths:
         return {}
     reach = reaching(directory)
-    got = project._run(
+    got = transfer(
         ["git", *reach, "annex", "get", "--json", "--batch"],
         cwd=directory,
         stdin="".join(f"{path}\n" for path in paths),
@@ -683,6 +728,43 @@ def get(directory: Path, paths: Sequence[str]) -> dict[str, str]:
 # =============================================================================
 # Where the bytes go
 # =============================================================================
+
+#: What git-annex says of content another of its processes is fetching:
+#: it refuses the second transfer, and the content is there once the first
+#: is over (measured).
+_IN_PROGRESS = "transfer already in progress"
+
+#: How long a fetch waits for another's of the same content. Another run
+#: of the project fetches what its own recipes read, and bytes take as
+#: long as they take.
+_TRANSFER_PATIENCE = 3600.0
+
+
+def transfer(
+    argv: list[str], *, cwd: Path, stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a git-annex fetch, waiting out another process's fetch of the same content.
+
+    Several runs of one project fetch into one annex. Asked again once
+    the other transfer is over, git-annex finds the content there, and
+    what it had already fetched costs nothing to ask for again.
+
+    Args:
+        argv: The whole command.
+        cwd: Where to run it.
+        stdin: What to give it on standard input.
+
+    Returns:
+        The command as it last ran.
+    """
+    deadline = time.monotonic() + _TRANSFER_PATIENCE
+    while True:
+        proc = project._run(argv, cwd=cwd, stdin=stdin)
+        said = f"{proc.stdout or ''}{proc.stderr or ''}"
+        if proc.returncode == 0 or _IN_PROGRESS not in said or time.monotonic() > deadline:
+            return proc
+        time.sleep(2.0)
+
 
 #: The name lc declares a project's data store under. A store is declared
 #: once, in git-annex's branch, as a special remote git-annex enables by
@@ -895,59 +977,82 @@ def keys(directory: Path, files: Sequence[str]) -> dict[str, str]:
 
     Args:
         directory: The repository root.
-        files: Each as ``<commit>:<path from the top of the repository>``.
+        files: Each as ``<commit>:<path from the top of the repository>``;
+            ``<commit>:./<path>`` measures the path from *directory*.
 
     Returns:
         Each file git-annex keeps → its key. One git keeps itself, or
         that the commit does not hold, is left out.
+
+    Raises:
+        ProjectError: If git-annex cannot be asked.
     """
-    if not files:
-        return {}
-    looked = project._run(
-        ["git", "annex", "lookupkey", "--ref", "--batch"],
-        cwd=directory,
-        stdin="".join(f"{name}\n" for name in files),
-    )
     # One line out per file in: its key, or empty.
-    return {
-        name: key
-        for name, key in zip(files, looked.stdout.split("\n"), strict=False)
-        if key.strip()
-    }
+    looked = _batch(directory, ["lookupkey", "--ref", "--batch"], files)
+    return {name: key for name, key in zip(files, looked, strict=True) if key}
 
 
-def objects(directory: Path, files: Sequence[str]) -> dict[str, Path]:
-    """Find the file this clone's annex keeps the bytes of each file in.
+def located(directory: Path, wanted: Iterable[str]) -> dict[str, Path]:
+    """Find the file this clone's annex keeps the bytes under each key in.
 
     An object of the annex is one file per content, whatever the working
     tree holds: what a tree of another commit is given by one more name.
 
     Args:
         directory: The repository root.
-        files: Each as ``<commit>:<path>``, as :func:`keys` takes them;
-            ``<commit>:./<path>`` measures the path from *directory*.
+        wanted: Keys.
+
+    Returns:
+        Each key whose bytes this clone's annex holds → the object that
+        holds them.
+
+    Raises:
+        ProjectError: If git-annex cannot be asked.
+    """
+    asked = list(dict.fromkeys(wanted))
+    # One line out per key in: its object, from *directory*, or empty.
+    found = _batch(directory, ["contentlocation", "--batch"], asked)
+    return {key: directory / place for key, place in zip(asked, found, strict=True) if place}
+
+
+def objects(directory: Path, files: Sequence[str]) -> dict[str, Path]:
+    """Find the object this clone's annex keeps the bytes of each file in.
+
+    Args:
+        directory: The repository root.
+        files: Each as ``<commit>:<path>``, as :func:`keys` takes them.
 
     Returns:
         Each file whose bytes this clone's annex holds → the object that
         holds them. One git keeps itself, and one whose bytes are
         elsewhere, are left out.
+
+    Raises:
+        ProjectError: If git-annex cannot be asked.
     """
     held = keys(directory, files)
-    wanted = list(dict.fromkeys(held.values()))
-    if not wanted:
-        return {}
-    located = project._run(
-        ["git", "annex", "contentlocation", "--batch"],
-        cwd=directory,
-        stdin="".join(f"{key}\n" for key in wanted),
-    )
-    # One line out per key in: its object, from *directory*, or empty.
-    stored = {
-        key: directory / place
-        for key, place in zip(wanted, located.stdout.split("\n"), strict=False)
-        if place.strip()
-    }
+    stored = located(directory, held.values())
     return {name: stored[key] for name, key in held.items() if key in stored}
+
+
+def _batch(directory: Path, command: list[str], asked: Sequence[str]) -> list[str]:
+    """Ask git-annex one question of each of *asked*, a line each way.
+
+    A command that failed, or answered for fewer than it was asked, has
+    answered for none: read as it stands, it would say that this clone
+    holds nothing.
+    """
+    if not asked:
+        return []
+    proc = project._run(
+        ["git", "annex", *command], cwd=directory, stdin="".join(f"{each}\n" for each in asked)
+    )
+    answers = proc.stdout.split("\n")[:-1]
+    if proc.returncode != 0 or len(answers) != len(asked):
+        raise project.ProjectError(
+            f"`git annex {' '.join(command)}` failed:\n{proc.stderr.strip()}"
+        )
+    return [answer.strip() for answer in answers]
 
 
 def copies(directory: Path, wanted: Iterable[str]) -> dict[str, tuple[bool, frozenset[str]]]:
@@ -1257,15 +1362,17 @@ _MANY = 1000
 _PATIENCE = 60.0
 
 
-def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], *, cwd: Path, patience: float | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run git, waiting out another git command's hold on the index.
 
     git refuses a second writer of the index at once, and the project's
-    tree is one the researcher, their editor and a run all use. Past
-    :data:`_PATIENCE` seconds, git's own refusal is the answer: it names
-    the lock and how to remove it.
+    tree is one the researcher, their editor and every run of the project
+    use. Past *patience* seconds, :data:`_PATIENCE` unless given, git's own
+    refusal is the answer: it names the lock and how to remove it.
     """
-    deadline = time.monotonic() + _PATIENCE
+    deadline = time.monotonic() + (_PATIENCE if patience is None else patience)
     while True:
         proc = project._run(["git", *argv], cwd=cwd)
         if (
@@ -1296,17 +1403,17 @@ def _ask(argv: list[str], *, cwd: Path) -> str | None:
     return str(proc.stdout or "")
 
 
-def _git(argv: list[str], *, cwd: Path) -> str:
+def _git(argv: list[str], *, cwd: Path, patience: float | None = None) -> str:
     """Run git in *cwd*, returning its stdout; a nonzero exit raises."""
-    proc = _run(argv, cwd=cwd)
+    proc = _run(argv, cwd=cwd, patience=patience)
     if proc.returncode != 0:
         raise project.ProjectError(f"`git {' '.join(argv)}` failed:\n{proc.stderr.strip()}")
     return str(proc.stdout or "")
 
 
-def _git_ok(argv: list[str], *, cwd: Path) -> bool:
+def _git_ok(argv: list[str], *, cwd: Path, patience: float | None = None) -> bool:
     """Run git as a yes/no probe: exit status is the answer, not a failure."""
-    return bool(_run(argv, cwd=cwd).returncode == 0)
+    return bool(_run(argv, cwd=cwd, patience=patience).returncode == 0)
 
 
 def _rel(directory: Path, path: Path | str) -> str:

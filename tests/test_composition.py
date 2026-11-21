@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from conftest import CLUSTER_ID, FIRST, clone_of, ran_in, since
 
-from lightcone.engine import dataset, plan, templates, worker
+from lightcone.engine import commits, dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
@@ -398,6 +398,23 @@ def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
         for w in report.warnings
     ), report.warnings
     assert not (root / plan.COMMITS / pinned).exists()
+
+
+def test_a_tree_that_cannot_be_given_leaves_no_clone_behind(
+    analysis: Callable[..., Path], tmp_path: Path
+) -> None:
+    """A clone is made beside the tree it becomes. Where the repository
+    it is declared in does not hold the commit, the clone is of no use to
+    anyone, and every run would otherwise leave one more."""
+    root = analysis(FIRST)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    dataset._git(["init", "-q"], cwd=elsewhere)
+
+    with pytest.raises(ProjectError):
+        commits.give(root, "0" * 40, str(elsewhere), ["results/fit.txt"])
+
+    assert list((root / plan.COMMITS).iterdir()) == []
 
 
 #: An analysis with nothing but an input, for another to read at a commit.

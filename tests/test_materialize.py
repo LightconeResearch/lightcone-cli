@@ -858,14 +858,16 @@ def test_a_rebuild_that_fails_puts_the_previous_result_back(
     assert not dataset.status(root)
 
 
-def test_an_interrupted_run_leaves_the_project_as_its_commits_have_it(
+def test_an_interrupted_run_commits_nothing_it_did_not_finish(
     root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A sibling that already landed keeps its commit. The result still in
-    flight may still have a writer: what it wrote is in the run's checkout,
-    which stays, and the project's tree holds nothing of it. The checkout
-    goes once its allocation has ended, which is when nothing can be
-    writing there."""
+    flight was moved to its place by its worker and never committed: it is
+    there under the record of the one before it, which ASTRA's checker
+    reads as it is, and the next run makes it again. The run's checkout
+    stays, since a recipe may still be writing there, until its allocation
+    has ended; while nothing can say whether it has, the next run names
+    it."""
     from lightcone.engine import compute
 
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -882,22 +884,62 @@ def test_an_interrupted_run_leaves_the_project_as_its_commits_have_it(
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert not dataset.status(root)
     assert (root / "results/baseline/first.txt").read_text() == "changed\n"
-    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
+    assert dataset.status(root) == [(" M", "results/baseline/second.txt")]
     [left] = _checkouts(root)
-    assert (left / "results/baseline/second.txt").read_text() == "changed\n"
+    assert (left / "results/baseline/second.txt").is_symlink()
 
-    # Its allocation still runs: the next run takes a checkout of its own.
+    # Its allocation is none lc can ask about: the next run takes a
+    # checkout of its own, and says which one it left.
     _cluster(monkeypatch, _Inline())
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).made == ["second#baseline"]
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.made == ["second#baseline"], (report.failed, report.warnings)
+    assert any("cannot tell" in w and left.name in w for w in report.warnings)
     assert _checkouts(root) == [left]
+    assert not dataset.status(root)
 
-    monkeypatch.setattr(compute, "ended", lambda allocation: allocation == CLUSTER_ID)
+    monkeypatch.setattr(compute, "phase", lambda allocation: "ended")
     (root / "astra.yaml").write_text(_SPEC)
     dataset.save(root, [root], "edit both recipes back")
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     assert _checkouts(root) == []
+
+
+def test_a_result_made_and_never_committed_is_committed_by_the_next_run(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result is at its place in the project a moment before it is
+    committed, and a driver killed in that moment leaves it there with a
+    true record, as the rerun entry point does. Left so, ASTRA's checker
+    finds it unchanged: no run would make or commit it, and a checkout,
+    which holds what a commit does, would give what reads it other bytes
+    than the ones its record names. The next run commits it first."""
+    from lightcone.engine import worker
+
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
+    dataset.save(root, [root], "edit the first recipe")
+    monkeypatch.chdir(root)
+    assert worker.main(["first#baseline"]) == 0
+    assert {path for _, path in dataset.status(root)} == {
+        "results/baseline/first.txt",
+        _FIRST_RECORD,
+    }
+    before = _commits(root)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["second#baseline"], (report.failed, report.warnings)
+    assert any("first#baseline" in w and "never committed" in w for w in report.warnings)
+    assert _commits(root) == before + 2
+    assert not dataset.status(root)
+    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
+    record = json.loads((root / ".astra/records/baseline/second.json").read_text())
+    [read] = record["generated_by"]["inputs"]
+    assert (read["content_hash"], read["size"]) == content.digest_file(
+        root / "results/baseline/first.txt"
+    )
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
 
 
 def _checkouts(root: Path) -> list[Path]:

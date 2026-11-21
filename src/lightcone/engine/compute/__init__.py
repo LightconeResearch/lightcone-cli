@@ -280,23 +280,24 @@ def identify(cluster_id: str) -> str:
     return Compute().resolve(cluster_id)[1].encode()
 
 
-def ended(allocation: str) -> bool:
-    """Whether an allocation is known to have ended, and its processes with it.
+def phase(allocation: str) -> str:
+    """Report where an allocation stands, for whoever holds something until it has ended.
 
     Unknown is never ended: an ID that is none, an allocation of another
-    host or boot, and a query that fails all answer False.
+    host or boot, and a query that fails all answer ``unknown``.
 
     Args:
         allocation: An allocation's immutable ID.
 
     Returns:
-        True only where its native authority reports it ended.
+        The phase its native authority reports, ``ended`` once its
+        processes are gone with it, or ``unknown``.
     """
     try:
         provider, identity = Compute().resolve(allocation)
-        return provider.inspect(identity).phase == "ended"
+        return provider.inspect(identity).phase
     except ComputeError:
-        return False
+        return "unknown"
 
 
 @contextmanager

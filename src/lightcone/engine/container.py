@@ -69,19 +69,48 @@ class Runtime:
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
     #: Whether the run is in a checkout of its commit (:mod:`checkout`),
-    #: where git-annex must not run: no git a recipe runs there does.
+    #: where git-annex must not run.
     in_checkout: bool = False
 
     def at(self, root: Path) -> Runtime:
         """The same world, entered from a checkout of the project's commit.
+
+        The world was resolved, and its image built, from the project's
+        working tree, which the researcher may have edited since the run
+        read its commit: every record names the environment that commit
+        declares, so another is refused.
 
         Args:
             root: The project root in the checkout.
 
         Returns:
             The runtime, with its environment in that tree.
+
+        Raises:
+            ProjectError: If the checkout declares another world.
         """
+        mode = project.mode(root)
+        if (mode, image.tag(root) if mode == "containerized" else "") != (
+            self.mode,
+            self.image_tag,
+        ):
+            raise ProjectError(
+                "`[tool.lightcone.image]` in pyproject.toml is no longer what the commit "
+                "this run builds declares: it was edited while the run was preparing, and "
+                "every record would name an environment its recipe did not run in. Commit "
+                "the change, or undo it, and run again."
+            )
         return replace(self, root=root, env_dir=project.env_dir(root), in_checkout=True)
+
+    @property
+    def env(self) -> dict[str, str]:
+        """The environment for whatever lc starts in this world's tree.
+
+        In a checkout, with the options that keep git-annex out of it
+        (:data:`dataset.PLAIN_ENV`): a build backend that asks git for a
+        version, or a recipe that runs git, would otherwise start it there.
+        """
+        return {**project.child_env(), **(dataset.PLAIN_ENV if self.in_checkout else {})}
 
     @property
     def supports_gpus(self) -> bool:
@@ -436,7 +465,7 @@ def converge(runtime: Runtime) -> list[str]:
         Whatever uv warned about.
     """
     if runtime.mode == "direct":
-        return project.sync(runtime.root)
+        return project.sync(runtime.root, runtime.env if runtime.in_checkout else None)
     return sync(runtime.root, runtime)
 
 
@@ -465,7 +494,7 @@ def policy_for(
         from lightcone.engine.sandbox.oci import require_gpu_runtime
 
         require_gpu_runtime(runtime.runtime)
-    policy = sandbox.exec_policy(
+    return sandbox.exec_policy(
         runtime.root,
         read_paths=read_paths,
         env_dir=runtime.env_dir,
@@ -473,9 +502,6 @@ def policy_for(
         write_dir=write_dir,
         use_gpus=use_gpus,
     )
-    if not runtime.in_checkout:
-        return policy
-    return replace(policy, env={**policy.env, **dataset.PLAIN_ENV})
 
 
 def archive_identity(path: Path) -> tuple[str, str, list[str], str]:

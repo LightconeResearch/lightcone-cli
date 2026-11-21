@@ -13,18 +13,17 @@ receive upstream futures or the results left alone as arguments, so the
 ordering, parallelism, and scheduling are Dask's — there is no ready-set
 loop here to get wrong.
 
-**It owns git, alone.** Workers execute and return; the driver lands each
-result in the project's tree and commits it there, in one thread, as
-results arrive. What a task that failed left is in the checkout, and goes
-with it.
+**It owns git, alone.** Workers execute and return; the driver commits
+each result in the project's tree, in one thread, as results arrive. A
+worker has moved the file there by then, whole, and what a task that
+failed left is in the checkout, and goes with it.
 
 One consequence, checked rather than assumed: a dependent starts as soon
-as its upstream's *worker* returns, which is before the driver has landed
-that upstream. That is safe, because landing only gives the file a second
-name in the project's tree, and git-annex takes a file with two names by
-copy: the file the dependent reads is never moved, replaced or written.
-Do not "fix" this by moving the landing into the task — that is what puts
-git back in the workers.
+as its upstream's *worker* returns, which is before the driver has
+committed that upstream. That is safe, because the file is at its place
+by then, and committing it gives it one more name, in the annex, without
+moving, replacing or writing it. Do not "fix" this by moving the commit
+into the task — that is what puts git back in the workers.
 """
 
 from __future__ import annotations
@@ -545,6 +544,7 @@ def materialize(
     project.require_uv()
     project.require_git()
     project.require_git_annex()
+    checkout.require_git(root)
     dataset.require_committer(root)
     report = MaterializeReport()
     if warning := project.uv_scrub_warning():
@@ -558,14 +558,20 @@ def materialize(
     # A run builds the commit ASTRA read, in a checkout of it, so what is
     # not committed would silently be no part of it. Asked after the
     # graph, which says where runs write: a change there is no work of the
-    # researcher's but a result another run is landing, or what a landing
-    # that was cut short left, and the run that makes that result puts
-    # its own in its place.
+    # researcher's but a result a run made and has not committed, or
+    # never did.
     written = _written(graph)
-    if changes := [c for c in dataset.status(root) if not c[1].startswith(written)]:
-        raise ProjectError(_dirty(root, changes))
+    changes = dataset.status(root)
+    if theirs := [change for change in changes if not change[1].startswith(written)]:
+        raise ProjectError(_dirty(root, theirs))
     worker.require_in_commit(root, graph.specs)
     classified = _classify(root, graph, environment, refresh=refresh)
+    dsid = dataset.dataset_id(root)
+    # Whatever changed is where results go, or the run was refused.
+    if changes and _adopt(root, classified, dsid, report):
+        # The commit is another now, and the checkout has to be of it.
+        graph, environment = _graph(root, targets, MaterializeReport())
+        classified = _classify(root, graph, environment, refresh=refresh)
     running = [found.task for found in classified if found.may_run(refresh=refresh)]
     if not running:
         # Nothing is submitted, so no allocation is needed, and no checkout.
@@ -583,7 +589,6 @@ def materialize(
         running,
         {found.task.id for found in classified if found.certain(refresh=refresh)},
     )
-    dsid = dataset.dataset_id(root)
     with cluster_for_run(cluster_id) as scheduler:
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
@@ -603,6 +608,14 @@ def materialize(
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
+        if unknown := checkout.reap(root):
+            report.warnings.append(
+                "lc cannot tell whether the runs that left these checkouts are over, so "
+                "they stay: "
+                + ", ".join(plan.declared_path(root.resolve(), left) for left in unknown)
+                + " — once a run is over, `git worktree remove --force --force <path>` "
+                "removes its checkout"
+            )
         # From here the run is in a checkout of the commit ASTRA read the
         # analysis at, which every record it writes names: the project's
         # tree is the researcher's again, bar the landing of each result.
@@ -612,6 +625,25 @@ def materialize(
         handles: list[Any] = []
         reported = 0
         try:
+            # The plan was read from the project's tree, where another run
+            # may have committed a result since, and the checkout is of
+            # one commit. A result the run may leave alone is read as its
+            # record in the plan gives it, so it has to be the same result
+            # in the checkout: else a record would name bytes no recipe
+            # read.
+            for found in classified:
+                kept = found.found.record
+                if (
+                    kept is not None
+                    and not found.certain(refresh=refresh)
+                    and _recorded(tasks[found.task.id]) != (kept.content_hash, kept.size)
+                ):
+                    raise ProjectError(
+                        f"`{found.task.id}` is not the result in {tree.commit[:7]}, the "
+                        "commit this run builds, that it was in the project's tree when "
+                        "lc read the analysis: another run committed it meanwhile. Run "
+                        "again."
+                    )
             # Every file of the working tree a task that may run reads.
             checkout.fill(
                 tree,
@@ -624,6 +656,11 @@ def materialize(
                     }
                 ),
             )
+            if empty := dataset.submodules(tree.root, dataset.PLAIN):
+                report.warnings.append(
+                    f"a run's checkout holds no file of a submodule: {', '.join(empty)} — a "
+                    "recipe that reads or runs anything there finds an empty folder"
+                )
             runtime = runtime.at(tree.root)
             # Converge the environment, in the checkout: workers pass
             # `--no-sync`, so this is the only place on a run's path where it
@@ -654,6 +691,7 @@ def materialize(
                 commit=tree.commit,
                 runtime=runtime,
                 hashed=hashed,
+                project=root,
             )
             pending: dict[ResultId, Any] = {}
             # Results left alone are values, not Dask tasks: they need no
@@ -709,10 +747,11 @@ def materialize(
             from lightcone.engine.compute import UNSTOPPED
 
             unlanded: set[ResultId] = set()
+            archive = runtime.archive if runtime.mode == "containerized" else ""
             for outcome in scheduler.completed(handles):
                 reported += 1
                 try:
-                    _consume(tree, tasks[outcome.id], outcome, dsid, runtime, unlanded, report)
+                    _consume(tree, tasks[outcome.id], outcome, dsid, archive, unlanded, report)
                 except Exception as exc:
                     if reported == len(handles):
                         raise
@@ -750,6 +789,70 @@ def materialize(
         return report
 
 
+def _adopt(
+    root: Path, classified: Sequence[_Classified], dsid: str, report: MaterializeReport
+) -> bool:
+    """Commit each result the project's tree holds that no commit does.
+
+    A result is at its place in the project a moment before it is
+    committed, and a run that ended in that moment leaves it there with
+    its record, as the rerun entry point does when someone runs it by
+    hand. The record is a true one of those bytes, so the result is
+    committed as its run would have: left as it is, ASTRA's checker would
+    find it unchanged, no run would ever make or commit it, and no
+    checkout, which holds what a commit does, would give it to what
+    reads it.
+
+    Whatever else is where results go is no true record of its bytes, and
+    is left: the checker says so, and the run makes that result again.
+
+    Args:
+        root: The project root.
+        classified: Where each result stands, as the tree has it.
+        dsid: The dataset's UUID, for the run record.
+        report: The run's report, which says what was committed.
+
+    Returns:
+        Whether anything was committed: the tree is then of another commit.
+
+    Raises:
+        ProjectError: If git does not store a result as lc stores one.
+    """
+    changed = {path for _, path in dataset.status(root, untracked_files=True)}
+    archive = container.image_state(root)[2]
+    adopted = False
+    for found in classified:
+        task = found.task
+        mine = {plan.declared_path(root, path) for path in (*task.paths, *task.record_paths)}
+        true = found.verdict.state in ("ok", "behind") or found.verdict.through_reads
+        if true and mine & changed:
+            # Nothing to commit where the run that made it has, since:
+            # the commit is another all the same.
+            if dataset.save(
+                root,
+                checkout.owns(task),
+                run_record(root, task, dsid, archive),
+                annexed=task.paths,
+                in_git=task.record_paths,
+                patience=checkout.LANDING,
+            ):
+                report.warnings.append(
+                    f"{task.id}: a run made it and never committed it — committed now"
+                )
+            adopted = True
+    return adopted
+
+
+def _recorded(task: Task) -> content.Digest | None:
+    """The bytes the record at a result's place names, or None where there
+    is none to read."""
+    try:
+        record = json.loads(task.record_paths[0].read_text())
+        return str(record["content_hash"]), int(record["size"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _left_alone(found: _Classified, task: Task, report: MaterializeReport) -> worker.TaskOutcome:
     """Report a result no run has to make, as the value its dependents read.
 
@@ -776,11 +879,11 @@ def _consume(
     task: Task,
     outcome: worker.TaskOutcome,
     dsid: str,
-    runtime: container.Runtime,
+    archive: str,
     unlanded: set[ResultId],
     report: MaterializeReport,
 ) -> None:
-    """Record one finished task, and land what it made in the project.
+    """Record one finished task, and commit what it made in the project.
 
     What a task that did not finish left is in the run's checkout, and
     goes with it: the project's tree holds nothing of it.
@@ -790,7 +893,7 @@ def _consume(
         task: The result, in the checkout.
         outcome: What its task reported.
         dsid: The dataset's UUID, for the run record.
-        runtime: The run's execution world.
+        archive: The run's image archive, for the run record.
         unlanded: The results the run made and did not commit, which this
             adds to: what read one of them is not committed either.
         report: The run's report.
@@ -806,10 +909,11 @@ def _consume(
         report.notes.extend([f"{name}:", *outcome.notes])
 
     if outcome.status == "made":
-        # What lands has to be the bytes the worker hashed for the record,
-        # and so has each result its recipe read. The file's stamp says so
-        # at no cost; where it does not, the bytes do: a shared filesystem
-        # may give two nodes two accounts of one file's times.
+        # What is committed has to be the bytes the worker hashed for the
+        # record, at the place it moved them to, and so has each result
+        # its recipe read. The file's stamp says so at no cost; where it
+        # does not, the bytes do: a shared filesystem may give two nodes
+        # two accounts of one file's times.
         try:
             same = content.stamp(task.path) == outcome.stamp or (
                 content.digest_file(task.path) == outcome.digest
@@ -821,7 +925,7 @@ def _consume(
         elif not same:
             why = "its file is no longer the bytes its record names"
         else:
-            checkout.land(tree, task, run_record(tree.root, task, dsid, runtime))
+            checkout.land(tree, task, run_record(tree.root, task, dsid, archive))
             report.made.append(name)
             return
         unlanded.add(name)
@@ -1204,7 +1308,7 @@ def _require_storable(root: Path, graph: Graph) -> None:
 # =============================================================================
 
 
-def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) -> str:
+def run_record(root: Path, task: Task, dsid: str, archive: str) -> str:
     """Build the commit message for one result a run made.
 
     A ``[DATALAD RUNCMD]`` record — datalad's format, not ours, so all of
@@ -1225,13 +1329,14 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         root: The project root.
         task: The result that was made.
         dsid: The dataset's UUID, which ``rerun`` reads.
-        runtime: The run's execution world. A containerized run lists its
-            committed image archive under ``extra_inputs``, which
-            ``datalad rerun`` fetches before executing — so the worker
-            enters the exact bytes that made the result, on whatever
-            runtime the rerun host has. The ``cmd`` itself stays
-            runtime-neutral for the same reason: the worker is the
-            executor that resolves the container at rerun time.
+        archive: The committed image archive of a containerized project,
+            from the project root; empty in direct mode. Listed under
+            ``extra_inputs``, which ``datalad rerun`` fetches before
+            executing — so the worker enters the exact bytes that made
+            the result, on whatever runtime the rerun host has. The
+            ``cmd`` itself stays runtime-neutral for the same reason: the
+            worker is the executor that resolves the container at rerun
+            time.
 
     Returns:
         The full commit message, subject and record.
@@ -1258,8 +1363,8 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         ],
         "pwd": ".",
     }
-    if runtime.mode == "containerized":
-        info["extra_inputs"] = [runtime.archive]
+    if archive:
+        info["extra_inputs"] = [archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
     return (
         f"[DATALAD RUNCMD] {task.id}\n\n"

@@ -455,6 +455,46 @@ def test_statuses_read_at_another_commit_than_the_analysis_are_refused(
         _build(_project(tmp_path))
 
 
+def _commit(root: Path, message: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+         "-a", "-m", message],
+        cwd=root, check=True, capture_output=True,
+    )  # fmt: skip
+
+
+def test_a_commit_that_leaves_the_analysis_alone_between_the_two_is_no_refusal(
+    tmp_path: Path, real_tools: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another run of the project commits a result at any moment. The
+    statuses are then of a later commit than the analysis was resolved
+    at, and of the same analysis: the graph is read, at the later one. A
+    commit that changes the analysis in between is still refused."""
+    root = _project(tmp_path)
+    _commit(root, "an analysis")
+    status = api.status
+
+    def landed_meanwhile(path: Path) -> api.StatusReport:
+        _commit(root, "a result another run made")
+        return status(path)
+
+    monkeypatch.setattr(api, "status", landed_meanwhile)
+    graph = _build(root)
+    assert graph.tasks
+    assert graph.checked.head == subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    def edited_meanwhile(path: Path) -> api.StatusReport:
+        (root / "astra.yaml").write_text((root / "astra.yaml").read_text() + "\n")
+        _commit(root, "an edit to the analysis")
+        return status(path)
+
+    monkeypatch.setattr(api, "status", edited_meanwhile)
+    with pytest.raises(ProjectError, match="moved from .* while lc was reading"):
+        _build(root)
+
+
 def test_narrowing_keeps_the_checkers_report(tmp_path: Path) -> None:
     graph = _build(_project(tmp_path))
     closure = graph.closure(["summary"])

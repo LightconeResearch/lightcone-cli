@@ -190,12 +190,12 @@ def test_an_allocation_has_ended_only_where_its_authority_says_so(
     is never ended: an ID that is none, and a query that fails."""
     assert compute.identify(IDENTITY.name) == compute.identify(IDENTITY.encode())
     assert compute.identify(IDENTITY.name) == IDENTITY.encode()
-    assert not compute.ended(IDENTITY.encode())
+    assert compute.phase(IDENTITY.encode()) == "active"
     provider.inspect.return_value = Snapshot(identity=IDENTITY, phase="ended", num_nodes=1)
-    assert compute.ended(IDENTITY.encode())
+    assert compute.phase(IDENTITY.encode()) == "ended"
     provider.inspect.side_effect = ComputeError("accounting is unavailable")
-    assert not compute.ended(IDENTITY.encode())
-    assert not compute.ended("no allocation's ID")
+    assert compute.phase(IDENTITY.encode()) == "unknown"
+    assert compute.phase("no allocation's ID") == "unknown"
 
 
 def test_named_cluster_errors_retain_the_immutable_id(

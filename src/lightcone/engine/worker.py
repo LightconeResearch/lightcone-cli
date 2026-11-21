@@ -36,15 +36,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import commits, container, content, dataset, identity, plan, sandbox
+from lightcone.engine import (
+    checkout,
+    commits,
+    container,
+    content,
+    dataset,
+    identity,
+    plan,
+    sandbox,
+)
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
-from lightcone.engine.project import (
-    ProjectError,
-    child_env,
-    declared_project,
-    uv_prefix,
-)
+from lightcone.engine.project import ProjectError, declared_project, uv_prefix
 
 if TYPE_CHECKING:
     from astra.api import Status
@@ -120,6 +124,10 @@ class RunContext:
     hashed: Mapping[Path, tuple[tuple[int, int, int], content.Digest]] = field(
         default_factory=dict
     )
+    #: For a run in a checkout of its commit (:mod:`checkout`), the project
+    #: root in the researcher's tree, where a result is moved once its
+    #: recipe has made it. None where the recipe runs in the project's own.
+    project: Path | None = None
 
 
 def require_in_commit(root: Path, specs: Sequence[str]) -> None:
@@ -351,7 +359,7 @@ def execute(
             [_SHELL, "-c", task.command],
             cwd=task.workdir,
             prefix=uv_prefix(root),
-            env=child_env(),
+            env=context.runtime.env,
             output=output,
         )
     finished = datetime.now(UTC)
@@ -442,6 +450,12 @@ def execute(
                 finished=_instant(finished),
             ),
         )
+        # Made in a checkout, the file goes to its place in the project
+        # now, last, and before anything is told it exists: what reads it
+        # starts after this returns, and finds it through the link left
+        # here.
+        if context.project is not None:
+            checkout.hand_over(task, context.project)
     except (OSError, ValueError, ProjectError) as e:
         return TaskOutcome(
             task.id,
