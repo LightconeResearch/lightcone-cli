@@ -572,7 +572,7 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
 
     Returns:
         For each file git-annex answers for, the remotes that hold its
-        bytes, by name; empty where none does.
+        bytes, by name and in name order; empty where none does.
     """
     if not paths:
         return {}
@@ -592,8 +592,9 @@ def holders(directory: Path, paths: Sequence[str]) -> dict[str, tuple[str, ...]]
             continue
         answer = json.loads(line)
         found = [*answer.get("whereis", []), *answer.get("untrusted", [])]
+        # By name: git-annex lists copies by repository id, which says nothing.
         held[answer["file"]] = tuple(
-            dict.fromkeys(remotes[copy["uuid"]] for copy in found if copy["uuid"] in remotes)
+            sorted({remotes[copy["uuid"]] for copy in found if copy["uuid"] in remotes})
         )
     return held
 
