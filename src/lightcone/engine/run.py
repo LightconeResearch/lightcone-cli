@@ -100,6 +100,11 @@ def _probe(
 def input_paths(project: Path) -> list[Path]:
     """Collect the files the analysis declares as inputs, best-effort.
 
+    Those of every analysis read from the working tree, as its recipes
+    get them: an analysis the project declares or drives has inputs of
+    its own, and a probe denied one is a denial the researcher cannot act
+    on. An input of an analysis at another commit is no file of this tree.
+
     An analysis ASTRA cannot resolve declares nothing a probe could be
     granted, and a probe is how someone debugs one, so that is no refusal
     here.
@@ -121,7 +126,9 @@ def input_paths(project: Path) -> list[Path]:
         return []
     found = [
         path.resolve()
-        for declared in analysis.analyses[0].inputs
+        for each in analysis.analyses
+        if each.commit is None
+        for declared in each.inputs
         if (path := project / declared.path).exists()
     ]
     return list(dict.fromkeys(found))

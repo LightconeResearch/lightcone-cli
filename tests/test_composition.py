@@ -100,6 +100,69 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     assert engine.check(root, []).up_to_date
 
 
+def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_committed(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`stage` keeps the results of its own universe, and their records, in
+    its own folder. What an interrupted run leaves there is lc's to
+    discard like what it leaves in the project's `results/`, and the
+    command given undoes it; a note beside `stage`'s analysis is still the
+    researcher's to commit."""
+    root = analysis(
+        _DRIVES,
+        {
+            "stage/astra.yaml": _STAGE,
+            ".gitattributes": templates.read("gitattributes.tmpl")
+            + "stage/results/** annex.largefiles=anything\n",
+        },
+    )
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / "stage/.astra/records/v1/out.json").unlink()
+    (root / "stage/results/v1/out.txt").unlink()
+    (root / "stage/results/v1/out.txt").write_text("hal")
+    (root / "stage/results/v1/out.tmp").write_text("partial\n")
+    (root / "stage/notes.md").write_text("in progress\n")
+
+    with pytest.raises(ProjectError) as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    message = str(raised.value)
+    theirs, _, ours = message.partition("discard these")
+    assert "commit these" in theirs and "stage/notes.md" in theirs
+    assert "stage/" not in theirs.replace("stage/notes.md", "")
+    for left in ("stage/.astra/records/v1/out.json", "stage/results/v1/out.txt"):
+        assert left in ours
+    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
+    assert "git clean -fd stage/results/" in command
+    (root / "stage/notes.md").unlink()
+    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    assert not dataset.status(root)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
+
+
+def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A recipe of `stage` writes a file beside its result, in `stage`'s
+    `results/`: the run says it was left where results go, and does not
+    report it as code edited while the run was in flight."""
+    root = analysis(
+        _DRIVES,
+        {
+            "stage/astra.yaml": _STAGE.replace("&& pwd >>", "&& pwd > {output}.idx && pwd >>"),
+            ".gitattributes": templates.read("gitattributes.tmpl")
+            + "stage/results/** annex.largefiles=anything\n",
+        },
+    )
+
+    report = engine.materialize(root, ["stage:out#v1"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["stage:out#v1"], (report.failed, report.warnings)
+    [left] = [w for w in report.warnings if "stage/results/v1/out.txt.idx" in w]
+    assert "left uncommitted where results go" in left
+    assert not any("edited while the run was in flight" in w for w in report.warnings)
+
+
 def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(
     analysis: Callable[..., Path],
 ) -> None:

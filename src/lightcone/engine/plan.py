@@ -114,8 +114,8 @@ class Task:
 
     @property
     def command(self) -> str:
-        """Its recipe's command as it runs: a shell command, run in the
-        project root."""
+        """Its recipe's command as it runs: a shell command, run in
+        :attr:`workdir`, which its paths are measured from."""
         assert self.result.command is not None  # `build` refuses a result with none
         return self.result.command
 
