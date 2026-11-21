@@ -150,7 +150,9 @@ def annex_filter_required(directory: Path) -> bool:
 # =============================================================================
 
 
-def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str, str]]:
+def status(
+    directory: Path, *, untracked_files: bool = False, config: Sequence[str] = ()
+) -> list[tuple[str, str]]:
     """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
@@ -185,6 +187,8 @@ def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str,
         untracked_files: List each untracked file, where git otherwise
             names only the outermost untracked folder — for a caller that
             sorts changes by whose files they are.
+        config: Options to put between ``git`` and its command:
+            :data:`PLAIN`, for a tree git-annex must not run in.
 
     Returns:
         ``(status code, path)`` for each change, paths relative to
@@ -196,6 +200,7 @@ def status(directory: Path, *, untracked_files: bool = False) -> list[tuple[str,
     prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
     listed = _git(
         [
+            *config,
             "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
             "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
             "--", ".",
@@ -263,6 +268,19 @@ def head(directory: Path) -> str:
         The commit's sha.
     """
     return _git(["rev-parse", "HEAD"], cwd=directory).strip()
+
+
+def is_ancestor(directory: Path, commit: str) -> bool:
+    """Whether the history ``HEAD`` is at holds *commit*.
+
+    Args:
+        directory: The repository to read.
+        commit: A commit's sha.
+
+    Returns:
+        True where *commit* is ``HEAD`` or one of its ancestors.
+    """
+    return _git_ok(["merge-base", "--is-ancestor", commit, "HEAD"], cwd=directory)
 
 
 def dataset_id(directory: Path) -> str:
@@ -484,8 +502,8 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     Args:
         directory: The repository root.
         paths: What to restore, as paths or git pathspecs. Scoped to these
-            and never the whole tree: a failed run must not discard edits
-            made while it ran.
+            and never the whole tree: a result that could not be committed
+            must not discard edits made while its run was in flight.
     """
     for path in paths:
         rel = _rel(directory, path)
@@ -898,6 +916,40 @@ def keys(directory: Path, files: Sequence[str]) -> dict[str, str]:
     }
 
 
+def objects(directory: Path, files: Sequence[str]) -> dict[str, Path]:
+    """Find the file this clone's annex keeps the bytes of each file in.
+
+    An object of the annex is one file per content, whatever the working
+    tree holds: what a tree of another commit is given by one more name.
+
+    Args:
+        directory: The repository root.
+        files: Each as ``<commit>:<path>``, as :func:`keys` takes them;
+            ``<commit>:./<path>`` measures the path from *directory*.
+
+    Returns:
+        Each file whose bytes this clone's annex holds → the object that
+        holds them. One git keeps itself, and one whose bytes are
+        elsewhere, are left out.
+    """
+    held = keys(directory, files)
+    wanted = list(dict.fromkeys(held.values()))
+    if not wanted:
+        return {}
+    located = project._run(
+        ["git", "annex", "contentlocation", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{key}\n" for key in wanted),
+    )
+    # One line out per key in: its object, from *directory*, or empty.
+    stored = {
+        key: directory / place
+        for key, place in zip(wanted, located.stdout.split("\n"), strict=False)
+        if place.strip()
+    }
+    return {name: stored[key] for name, key in held.items() if key in stored}
+
+
 def copies(directory: Path, wanted: Iterable[str]) -> dict[str, tuple[bool, frozenset[str]]]:
     """Say where git-annex's log puts the bytes kept under each key.
 
@@ -1165,6 +1217,29 @@ def _annex_log(directory: Path, log: str) -> dict[str, list[str]]:
                 newest[uuid] = (when, [field for field in fields if field not in stamps])
     return {uuid: fields for uuid, (_, fields) in newest.items()}
 
+
+#: git's options for a tree git-annex must not run in: a linked worktree,
+#: where it would fill every annexed file it holds the bytes of, by copy
+#: (measured). No hooks, and no annex filter: annexed files are then the
+#: stand-ins git stores. ``required`` is cleared with the commands, or git
+#: reads a filter with none as one that failed.
+PLAIN = [
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "filter.annex.smudge=",
+    "-c", "filter.annex.clean=",
+    "-c", "filter.annex.process=",
+    "-c", "filter.annex.required=false",
+]  # fmt: skip
+
+#: :data:`PLAIN` as environment, for every git a command runs by itself.
+PLAIN_ENV = {
+    "GIT_CONFIG_COUNT": str(len(PLAIN) // 2),
+    **{
+        f"GIT_CONFIG_{part}_{n}": text
+        for n, option in enumerate(PLAIN[1::2])
+        for part, text in zip(("KEY", "VALUE"), option.split("=", 1), strict=True)
+    },
+}
 
 #: How many paths lc puts on one command line, far under what any system
 #: takes. Whatever git or git-annex reads from standard input goes there.

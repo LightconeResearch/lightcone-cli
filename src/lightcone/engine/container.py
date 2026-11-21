@@ -29,7 +29,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -68,6 +68,20 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
+    #: Whether the run is in a checkout of its commit (:mod:`checkout`),
+    #: where git-annex must not run: no git a recipe runs there does.
+    in_checkout: bool = False
+
+    def at(self, root: Path) -> Runtime:
+        """The same world, entered from a checkout of the project's commit.
+
+        Args:
+            root: The project root in the checkout.
+
+        Returns:
+            The runtime, with its environment in that tree.
+        """
+        return replace(self, root=root, env_dir=project.env_dir(root), in_checkout=True)
 
     @property
     def supports_gpus(self) -> bool:
@@ -451,7 +465,7 @@ def policy_for(
         from lightcone.engine.sandbox.oci import require_gpu_runtime
 
         require_gpu_runtime(runtime.runtime)
-    return sandbox.exec_policy(
+    policy = sandbox.exec_policy(
         runtime.root,
         read_paths=read_paths,
         env_dir=runtime.env_dir,
@@ -459,6 +473,9 @@ def policy_for(
         write_dir=write_dir,
         use_gpus=use_gpus,
     )
+    if not runtime.in_checkout:
+        return policy
+    return replace(policy, env={**policy.env, **dataset.PLAIN_ENV})
 
 
 def archive_identity(path: Path) -> tuple[str, str, list[str], str]:

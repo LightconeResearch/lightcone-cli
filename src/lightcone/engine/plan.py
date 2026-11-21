@@ -129,6 +129,27 @@ class Task:
         """The tasks that must be made first, deduplicated, in order."""
         return tuple(dict.fromkeys(self.produced_by.values()))
 
+    def at(self, root: Path) -> Task:
+        """The same result in another tree of the same commit.
+
+        A run makes a result in a checkout of its commit and commits it
+        in the project's tree (:mod:`checkout`): one task, two roots.
+
+        Args:
+            root: The project root in that tree.
+
+        Returns:
+            The task, with every path it names measured from *root*.
+        """
+        return replace(
+            self,
+            root=root,
+            workdir=root / self.workdir.relative_to(self.root),
+            inputs={
+                entry: root / path.relative_to(self.root) for entry, path in self.inputs.items()
+            },
+        )
+
     def owns(self, path: Path) -> bool:
         """Whether *path* is one of this result's own files: its file, or
         its record, at a place it has.

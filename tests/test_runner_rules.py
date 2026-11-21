@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import CLUSTER_ID, FIRST, since
+from conftest import CLUSTER_ID, FIRST, _Inline, ran_in, since
 
 from lightcone.engine import dataset, identity, plan, worker
 from lightcone.engine import materialize as engine
@@ -265,6 +266,54 @@ universes:
 """
 
 
+_READS_ITS_CODE = """
+spec_version: "0.1.0"
+
+outputs:
+  fit:
+    type: metric
+    format: txt
+    recipe:
+      command: cat code.txt > {output}
+"""
+
+
+def test_uncommitted_changes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each recipe runs in a checkout of the run's commit, changed by
+    nothing but the run's records and results. A tree that holds work no
+    commit does is refused; work done in it while the run is in flight is
+    not what a recipe reads; and what the recipe did read is what the
+    commit its record names holds."""
+    root = analysis(_READS_ITS_CODE, {"code.txt": "committed\n"})
+    (root / "code.txt").write_text("not committed\n")
+    with pytest.raises(ProjectError, match="UNCOMMITTED_CHANGES"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    dataset._git(["checkout", "-q", "--", "code.txt"], cwd=root)
+
+    class Editing(_Inline):
+        def submit(
+            self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+        ) -> object:
+            (root / "code.txt").write_text("edited while the run was in flight\n")
+            return fn(*args)
+
+    @contextmanager
+    def cluster(cluster_id: str) -> Iterator[_Inline]:
+        yield Editing()
+
+    monkeypatch.setattr(engine, "cluster_for_run", cluster)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["fit"] and report.warnings == [], (report.failed, report.warnings)
+    made = json.loads((root / ".astra/records/fit.json").read_text())["generated_by"]["commit"]
+    assert dataset._git(["show", f"{made}:code.txt"], cwd=root) == "committed\n"
+    assert (root / "results/fit.txt").read_text() == "committed\n"
+    assert (root / "code.txt").read_text() == "edited while the run was in flight\n"
+
+
 def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) -> None:
     """Each recipe runs in its own analysis's folder, even when driven: the
     project's universe selects `stage`'s option, and `stage`'s recipe runs
@@ -274,8 +323,9 @@ def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) ->
 
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
-    assert tasks["stage.where#u1"].path.read_text().splitlines() == ["a", str(root / "stage")]
-    assert tasks["copy#u1"].path.read_text().splitlines()[-1] == str(root)
+    option, where = tasks["stage.where#u1"].path.read_text().splitlines()
+    assert (option, ran_in(root, where)) == ("a", "stage")
+    assert ran_in(root, tasks["copy#u1"].path.read_text().splitlines()[-1]) == "."
 
 
 def test_not_at_commit(analysis: Callable[..., Path], inline: None) -> None:

@@ -28,7 +28,7 @@ from .model import (
 #: remote subprocess has stopped.
 UNSTOPPED = (
     "lc did not stop the allocation; tasks that did not report may still be "
-    "running, and any files they wrote remain"
+    "running, and any files they wrote remain where they ran"
 )
 
 
@@ -271,6 +271,32 @@ class Compute:
         provider, identity = self.resolve(cluster_id)
         provider.terminate(identity)
         return identity
+
+
+def identify(cluster_id: str) -> str:
+    """Name the allocation a cluster name or ID addresses, by its immutable ID."""
+    if cluster_id.startswith("clu_"):
+        return Identity.decode(cluster_id).encode()
+    return Compute().resolve(cluster_id)[1].encode()
+
+
+def ended(allocation: str) -> bool:
+    """Whether an allocation is known to have ended, and its processes with it.
+
+    Unknown is never ended: an ID that is none, an allocation of another
+    host or boot, and a query that fails all answer False.
+
+    Args:
+        allocation: An allocation's immutable ID.
+
+    Returns:
+        True only where its native authority reports it ended.
+    """
+    try:
+        provider, identity = Compute().resolve(allocation)
+        return provider.inspect(identity).phase == "ended"
+    except ComputeError:
+        return False
 
 
 @contextmanager

@@ -21,6 +21,7 @@ import re
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
+from uuid import uuid4
 
 from lightcone.engine import dataset, project
 from lightcone.engine.plan import COMMITS
@@ -90,6 +91,8 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
 
     Made beside *tree* and moved into place once whole, so a clone an
     interrupted run left half made is never taken for the commit's tree.
+    Under a name of its own, since two runs may give one commit's tree at
+    once: the first to finish gives it, and the other's is discarded.
     """
     if repository is None and not dataset._git_ok(
         ["cat-file", "-e", f"{commit}^{{commit}}"], cwd=root
@@ -102,8 +105,7 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
             "that holds it: a submodule's commit, which only its checkout holds"
         )
     source = repository if repository is not None else str(dataset.toplevel(root))
-    making = tree.with_name(f"{commit}.making")
-    shutil.rmtree(making, ignore_errors=True)
+    making = tree.with_name(f"{commit}.{uuid4().hex[:8]}.making")
     making.parent.mkdir(parents=True, exist_ok=True)
     dataset._git([*reach, "clone", "-q", "--no-checkout", "--", source, str(making)], cwd=root)
     # A clone holds what its source's branches reach; a commit no branch
@@ -116,4 +118,9 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
     if found := re.match(r"(.*) <(.*)>", ident):
         dataset._git(["config", "user.name", found[1]], cwd=making)
         dataset._git(["config", "user.email", found[2]], cwd=making)
-    making.rename(tree)
+    try:
+        making.rename(tree)
+    except OSError:
+        if not (tree / ".git").exists():
+            raise
+        shutil.rmtree(making, ignore_errors=True)

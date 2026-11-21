@@ -8,8 +8,8 @@ which is what the ``[DATALAD RUNCMD]`` record in every materialization
 commit names, behind an engine-pinning ``uv run --no-project --with …`` —
 by version for a released engine, by source commit for a dev build. That
 is why it is a module rather than an ``lc`` verb: it makes the result
-unconditionally, commits nothing, and leaves the tree dirty by design —
-precisely the state ``lc materialize`` refuses to start from — so
+unconditionally, in the project's own tree, and commits nothing, where a
+run makes it in a checkout of its commit and commits it — so
 advertising it in ``lc --help`` would hand people a footgun.
 :func:`main` converges the project environment from the rerun commit's
 own lock before anything executes, so the record holds on a clone that
@@ -365,9 +365,9 @@ def execute(
         )
     if moved := _gate(root, context.environment):
         return TaskOutcome(task.id, "failed", reason=moved, notes=outcome.notes)
-    # A declared input is a file in the project's tree, which only a
-    # sandbox makes read-only: written in place, the record would name
-    # bytes that no longer exist anywhere.
+    # A declared input is a file of the tree the recipe runs in, which
+    # only a sandbox makes read-only: written in place, the record would
+    # name bytes that no longer exist anywhere.
     if rewritten := [
         entry
         for entry, (path, stamp) in watched.items()

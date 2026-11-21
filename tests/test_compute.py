@@ -183,6 +183,21 @@ def test_names_resolve_freshly_to_native_identities_for_every_operation(
     provider.terminate.assert_called_once_with(IDENTITY)
 
 
+def test_an_allocation_has_ended_only_where_its_authority_says_so(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    """What holds a run's checkout is released on this answer, so unknown
+    is never ended: an ID that is none, and a query that fails."""
+    assert compute.identify(IDENTITY.name) == compute.identify(IDENTITY.encode())
+    assert compute.identify(IDENTITY.name) == IDENTITY.encode()
+    assert not compute.ended(IDENTITY.encode())
+    provider.inspect.return_value = Snapshot(identity=IDENTITY, phase="ended", num_nodes=1)
+    assert compute.ended(IDENTITY.encode())
+    provider.inspect.side_effect = ComputeError("accounting is unavailable")
+    assert not compute.ended(IDENTITY.encode())
+    assert not compute.ended("no allocation's ID")
+
+
 def test_named_cluster_errors_retain_the_immutable_id(
     catalog: Path, provider: MagicMock,
 ) -> None:

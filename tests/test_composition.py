@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CLUSTER_ID, FIRST, clone_of, since
+from conftest import CLUSTER_ID, FIRST, clone_of, ran_in, since
 
 from lightcone.engine import dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
@@ -65,6 +65,7 @@ def _lines(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
 
+
 # ---- analyses declared by path ------------------------------------------------
 
 
@@ -92,22 +93,24 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     driven, own = tasks["stage.out#u1"], tasks["stage:out#v1"]
     assert driven.path.is_relative_to(root / "results")
     assert own.path.is_relative_to(root / "stage" / "results")
-    assert _lines(driven.path) == ["a", str(root / "stage")]
-    assert _lines(own.path) == ["b", str(root / "stage")]
-    assert _lines(tasks["both#u1"].path) == ["a", str(root / "stage"), "b", str(root / "stage")]
+    option, where = _lines(driven.path)
+    assert (option, ran_in(root, where)) == ("a", "stage")
+    option, where = _lines(own.path)
+    assert (option, ran_in(root, where)) == ("b", "stage")
+    assert _lines(tasks["both#u1"].path)[::2] == ["a", "b"]
     assert all(record.is_file() for task in tasks.values() for record in task.record_paths)
     assert not dataset.status(root)
     assert engine.check(root, []).up_to_date
 
 
-def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_committed(
+def test_what_is_where_a_declared_analysis_keeps_its_results_refuses_no_run(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """`stage` keeps the results of its own universe, and their records, in
-    its own folder. What an interrupted run leaves there is lc's to
-    discard like what it leaves in the project's `results/`, and the
-    command given undoes it; a note beside `stage`'s analysis is still the
-    researcher's to commit."""
+    its own folder, and lc alone writes there as it does in the project's
+    `results/`: what a landing cut short left there refuses nothing, and
+    the run that makes the result puts its own in its place. A note beside
+    `stage`'s analysis is still the researcher's to commit."""
     root = analysis(
         _DRIVES,
         {
@@ -120,22 +123,17 @@ def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_co
     (root / "stage/.astra/records/v1/out.json").unlink()
     (root / "stage/results/v1/out.txt").unlink()
     (root / "stage/results/v1/out.txt").write_text("hal")
-    (root / "stage/results/v1/out.tmp").write_text("partial\n")
     (root / "stage/notes.md").write_text("in progress\n")
 
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
-    theirs, _, ours = message.partition("discard these")
-    assert "commit these" in theirs and "stage/notes.md" in theirs
-    assert "stage/" not in theirs.replace("stage/notes.md", "")
-    for left in ("stage/.astra/records/v1/out.json", "stage/results/v1/out.txt"):
-        assert left in ours
-    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
-    assert "git clean -fd stage/results/" in command
+    assert "commit these" in message and "stage/notes.md" in message
+    assert "stage/" not in message.replace("stage/notes.md", "")
     (root / "stage/notes.md").unlink()
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert "stage:out#v1" in report.made, (report.failed, report.warnings)
     assert not dataset.status(root)
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
 
@@ -144,8 +142,8 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """A recipe of `stage` writes a file beside its result, in `stage`'s
-    `results/`: the run says it was left where results go, and does not
-    report it as code edited while the run was in flight."""
+    `results/`: the run says it was written where results go and not
+    kept, and does not report it as a change to the commit's own files."""
     root = analysis(
         _DRIVES,
         {
@@ -159,8 +157,8 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
 
     assert report.made == ["stage:out#v1"], (report.failed, report.warnings)
     [left] = [w for w in report.warnings if "stage/results/v1/out.txt.idx" in w]
-    assert "left uncommitted where results go" in left
-    assert not any("edited while the run was in flight" in w for w in report.warnings)
+    assert "written where results go" in left and "not kept" in left
+    assert not any("UNCOMMITTED_CHANGES" in w for w in report.warnings)
 
 
 def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(

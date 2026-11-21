@@ -25,7 +25,7 @@ import pytest
 from astra.api import Bytes
 from conftest import CLUSTER_ID, _Inline, clone_of, locked_version, with_idna
 
-from lightcone.engine import content, dataset, identity, plan
+from lightcone.engine import checkout, content, dataset, identity, plan
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskOutcome
@@ -473,46 +473,40 @@ def test_check_does_not_refuse_a_dirty_tree(root: Path) -> None:
 # ---- the refusals ----------------------------------------------------------
 
 
-def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
-    root: Path, inline: None
-) -> None:
-    """Two path classes, two opposite remedies: work the researcher owns is
-    committed, and anything under `results/` is lc's to write."""
+def test_a_tree_that_holds_uncommitted_work_is_refused(root: Path, inline: None) -> None:
+    """A run builds the commit, in a checkout of it, so work no commit
+    holds would be no part of what it makes. A file where results go is no
+    work of the researcher's, since lc alone writes there: it refuses
+    nothing."""
     engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
-    (root / "notes.md").write_text("in progress\n")
     (root / "results/baseline/stray.txt").write_text("by hand\n")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
+    (root / "notes.md").write_text("in progress\n")
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
-    assert "discard these" in message and "results/baseline/stray.txt" in message
-    assert message.index("lc compute down") < message.index("git clean -fd results/")
-    # Nothing git knows of changed there, and `git restore` refuses a
-    # folder it knows no file of.
-    assert "git restore" not in message
+    assert "stray.txt" not in message
 
 
-def test_the_discard_command_undoes_what_an_interrupted_run_left(
+def test_what_a_landing_cut_short_left_is_replaced_by_the_run_that_makes_it(
     root: Path, inline: None
 ) -> None:
-    """A task removes its record before its recipe runs, so an interrupted
-    one leaves that deletion beside part of its result — all of it lc's
-    to discard, none of it the researcher's to commit."""
+    """A result is given its place in the project's tree, then committed.
+    Cut short in between, that leaves bytes and a record no commit holds:
+    ASTRA's checker reads them as they are, the next run makes the result
+    again, and what it lands takes their place."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / ".astra/records/baseline/second.json").unlink()
     (root / "results/baseline/second.txt").unlink()
     (root / "results/baseline/second.txt").write_text("hal")
-    (root / "results/baseline/second.tmp").write_text("partial\n")
 
-    with pytest.raises(ProjectError) as raised:
-        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    message = str(raised.value)
-    assert "commit these" not in message
-    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    assert report.made == ["second#baseline"], (report.failed, report.warnings)
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
     assert not dataset.status(root)
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
 
@@ -627,14 +621,16 @@ def test_an_input_more_than_one_task_reads_is_hashed_once(
     _cluster(monkeypatch, _Copied())
     first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(first.made) == 2
-    assert hashed.count(root / "data/catalog.fits") == 1
+    # In the run's checkout, where its recipes read it.
+    [read] = [path for path in hashed if path.name == "catalog.fits"]
+    assert read.is_relative_to(root / checkout.RUNS)
     for name in ("first", "second"):
         made = json.loads((root / f".astra/records/baseline/{name}.json").read_text())
         [catalog] = [i for i in made["generated_by"]["inputs"] if i["entry"] == "catalog"]
         assert (catalog["content_hash"], catalog["size"]) == real(root / "data/catalog.fits")
     second = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(second.unchanged) == 2
-    assert hashed.count(root / "data/catalog.fits") == 1
+    assert len([path for path in hashed if path.name == "catalog.fits"]) == 1
 
 
 def _consuming(path: str) -> str:
@@ -701,25 +697,45 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-def test_an_edit_while_the_graph_runs_is_reported(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+_READS_CODE = """
+spec_version: "0.1.0"
+
+outputs:
+  fit:
+    type: metric
+    format: txt
+    recipe:
+      command: cat params.txt > {output} && pwd >> {output}
+"""
+
+
+def test_an_edit_while_the_graph_runs_is_no_part_of_the_run(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The dirty check runs at start of run and records are written
-    per-output later, so an edit in between leaves records whose commit
-    no longer describes the code that ran. The run ends with one status
-    call and says so."""
+    """A record names the commit its recipe ran on, and the run takes
+    hours the researcher goes on working through. Every recipe runs in a
+    checkout of the run's commit: an edit made to the project's tree in
+    the meantime is not what it reads, and is still there when the result
+    is committed beside it."""
+    root = analysis(_READS_CODE, {"params.txt": "committed\n"})
 
     class Editing(_Inline):
-        def completed(self, handles: list[object]) -> Iterator[object]:
-            (root / "notes.md").write_text("scribbled while the graph ran\n")
-            yield from handles
+        def submit(
+            self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+        ) -> object:
+            (root / "params.txt").write_text("edited while the run was in flight\n")
+            return fn(*args)
 
     _cluster(monkeypatch, Editing())
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
-    assert any("notes.md" in w and "in flight" in w for w in report.warnings)
+    assert report.made == ["fit"], (report.failed, report.warnings)
+    read, ran_in = (root / "results/fit.txt").read_text().splitlines()
+    assert read == "committed"
+    assert Path(ran_in).is_relative_to(root / checkout.RUNS)
+    assert dataset.status(root) == [(" M", "params.txt")]
+    assert report.warnings == []
 
 
 def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
@@ -727,8 +743,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
 ) -> None:
     """`dataset.save` stages scoped and commits scoped — a partial
     commit — so work the user staged while the graph ran ends the run
-    exactly where they left it: staged, warned about, and in none of
-    lc's commits."""
+    exactly where they left it: staged, and in none of lc's commits."""
 
     class Staging(_Inline):
         def completed(self, handles: list[object]) -> Iterator[object]:
@@ -741,7 +756,6 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
-    assert any("notes.py" in w and "in flight" in w for w in report.warnings)
     staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
     assert staged == ["notes.py"]
     ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
@@ -844,11 +858,16 @@ def test_a_rebuild_that_fails_puts_the_previous_result_back(
     assert not dataset.status(root)
 
 
-def test_an_interrupted_run_retains_what_never_reported(
+def test_an_interrupted_run_leaves_the_project_as_its_commits_have_it(
     root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sibling that already saved keeps its commit; the output still in
-    flight may still have a writer, so its partial files are retained."""
+    """A sibling that already landed keeps its commit. The result still in
+    flight may still have a writer: what it wrote is in the run's checkout,
+    which stays, and the project's tree holds nothing of it. The checkout
+    goes once its allocation has ended, which is when nothing can be
+    writing there."""
+    from lightcone.engine import compute
+
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
     dataset.save(root, [root], "edit both recipes")
@@ -863,8 +882,27 @@ def test_an_interrupted_run_retains_what_never_reported(
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert dataset.status(root)
-    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
+    assert not dataset.status(root)
+    assert (root / "results/baseline/first.txt").read_text() == "changed\n"
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
+    [left] = _checkouts(root)
+    assert (left / "results/baseline/second.txt").read_text() == "changed\n"
+
+    # Its allocation still runs: the next run takes a checkout of its own.
+    _cluster(monkeypatch, _Inline())
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).made == ["second#baseline"]
+    assert _checkouts(root) == [left]
+
+    monkeypatch.setattr(compute, "ended", lambda allocation: allocation == CLUSTER_ID)
+    (root / "astra.yaml").write_text(_SPEC)
+    dataset.save(root, [root], "edit both recipes back")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    assert _checkouts(root) == []
+
+
+def _checkouts(root: Path) -> list[Path]:
+    """The checkouts runs hold under *root*."""
+    return sorted(path for path in (root / checkout.RUNS).iterdir() if path.is_dir())
 
 
 # ---- where git stores what a run commits ----------------------------------
@@ -1056,8 +1094,8 @@ def test_a_file_a_recipe_writes_beside_its_result_is_not_the_results(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """A result is the one file at its place. What else its recipe writes
-    there no output declares and no record names, so it is neither
-    committed as the result's nor removed as it: the run says it was left."""
+    there no output declares and no record names: it stays in the run's
+    checkout and goes with it, and the run says it was not kept."""
     root = analysis(_BESIDE)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -1065,10 +1103,11 @@ def test_a_file_a_recipe_writes_beside_its_result_is_not_the_results(
     assert report.made == ["fit"], (report.failed, report.warnings)
     committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=root).split()
     assert sorted(committed) == [".astra/records/fit.json", "results/fit.txt"]
-    assert (root / "results/fit.txt.idx").read_text() == "index\n"
+    assert not (root / "results/fit.txt.idx").exists()
     assert any(
-        "results/fit.txt.idx" in w and "left uncommitted" in w for w in report.warnings
+        "results/fit.txt.idx" in w and "not kept" in w for w in report.warnings
     ), report.warnings
+    assert not dataset.status(root)
 
 
 # ---- the commit message ----------------------------------------------------
@@ -1738,29 +1777,31 @@ def test_status_on_a_clone_where_git_annex_was_never_set_up_says_to_set_it_up(
     assert not dataset.is_annexed(clone)
 
 
-def test_a_drifted_environment_is_made_to_match_before_anything_runs(
-    root: Path, inline: None
+def test_a_run_makes_its_environment_from_the_lock_of_its_commit(
+    analysis: Callable[..., Path], inline: None
 ) -> None:
     """Workers pass `--no-sync`, so this is the only place on a run's path
-    where the environment is made to match the lock (a rerun's worker
-    entry point syncs for itself). Reported and refused, a lock edited
-    without a sync would leave recipes importing packages the lock does
-    not describe while every record named the new lock's environment;
-    doing it instead is shorter and impossible to ignore."""
+    where an environment is made to match the lock (a rerun's worker entry
+    point syncs for itself): in the run's checkout, from the lock its
+    commit holds. The recipe imports what that lock pins, which the
+    project's own `.venv`, never synced to it, does not hold — and that
+    one is the researcher's, left as it was."""
+    from lightcone.engine import project as project_mod
+
+    root = analysis(_IMPORTS)
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
     )
-    from lightcone.engine import project as project_mod
-
     project_mod._run(["uv", "lock", "-q", "--project", str(root)], cwd=root)
     dataset.save(root, [root], "add a dependency without syncing")
     assert not project_mod._env_is_current(root)
 
-    report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert report.ok
-    assert project_mod._env_is_current(root)
+    assert report.made == ["version"], (report.failed, report.warnings)
+    assert (root / "results/version.txt").read_text().strip() == locked_version(root, "idna")
+    assert not project_mod._env_is_current(root)
 
 
 def test_the_recorded_command_reproduces_the_result(
