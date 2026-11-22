@@ -451,6 +451,58 @@ def test_a_commits_tree_git_cannot_read_is_made_again(
     assert (root / "results" / "copy.txt").read_text() == "stars\n"
 
 
+def test_a_commits_tree_another_run_is_fetching_into_is_still_its_commits(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`git status` calls an annexed file modified from the moment
+    git-annex gives it its bytes until the fetch ends. Two runs give one
+    commit's tree at once, and the second must not take the first's,
+    mid-fetch, for one that changed: it would make it again under it."""
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    tree = root / plan.COMMITS / at
+    # As a fetch that has not ended leaves a file: its bytes in place, and
+    # git not yet told.
+    dataset._git(["annex", "drop", "--force", "data/catalog.txt"], cwd=tree)
+    (tree / "data/catalog.txt").write_text("stars\n")
+    assert dataset._git(["status", "--porcelain"], cwd=tree).startswith(" M")
+
+    assert commits._intact(tree, at)
+
+    (tree / "data/catalog.txt").write_text("other bytes than the commit's\n")
+    assert not commits._intact(tree, at)
+
+
+def test_a_run_reaps_before_it_gives_the_trees_of_other_commits(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout a run left says a run may be reading a commit's tree,
+    which is then not made again. One whose allocation has ended says
+    nothing of the sort, so it goes first."""
+    from lightcone.engine import compute
+
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
+    spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
+    dataset.save(root, [spec], "copy it again")
+    left = checkout.take(root, dataset.head(root), CLUSTER_ID)
+    monkeypatch.setattr(compute, "phase", lambda allocation: "ended")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["copy"], (report.blocked, report.warnings)
+    assert not left.top.exists()
+
+
 def test_a_commits_tree_is_not_made_again_while_another_run_may_be_reading_it(
     analysis: Callable[..., Path], inline: None
 ) -> None:

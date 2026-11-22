@@ -85,17 +85,17 @@ def give(root: Path, commit: str, repository: str | None, paths: Sequence[str]) 
 def _intact(tree: Path, commit: str) -> bool:
     """Whether a commit's tree is there and still that commit's: checked out
     at it, and no file git tracks there changed. One git cannot even read
-    is not."""
+    is not.
+
+    Asked of ``git diff``, which compares: ``git status`` calls an annexed
+    file modified for as long as the fetch filling it in runs (measured),
+    and another run may be fetching into the tree right now.
+    """
     if not (tree / ".git").exists():
         return False
     at = project._run(["git", "rev-parse", "HEAD"], cwd=tree)
-    changed = project._run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=tree)
-    return (
-        at.returncode == 0
-        and changed.returncode == 0
-        and at.stdout.strip() == commit
-        and not changed.stdout.strip()
-    )
+    changed = project._run(["git", "diff", "--quiet", "HEAD", "--"], cwd=tree)
+    return at.returncode == 0 and changed.returncode == 0 and at.stdout.strip() == commit
 
 
 def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: list[str]) -> None:

@@ -408,6 +408,49 @@ def test_git_says_which_operation_is_under_way_in_a_tree(repo: Path, tmp_path: P
     assert dataset.under_way(repo) is None
 
 
+def test_a_file_git_annex_is_filling_in_is_no_change(repo: Path, tmp_path: Path) -> None:
+    """git takes a file for changed on its size alone where the index
+    entry was made from a stand-in, which is what an annexed file is from
+    the moment git-annex gives it its bytes until that command ends: a
+    run that started meanwhile would be told to commit the inputs another
+    is fetching. Compared, it is no change; a file that holds other bytes
+    is one."""
+    (repo / "data" / "catalog.bin").write_text("the bytes of the catalog\n")
+    dataset.save(repo, [repo / "data"], "a catalog")
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=tmp_path)
+    dataset.init_annex(clone)
+    assert content.standin(clone / "data" / "catalog.bin") == "git-annex"
+
+    (clone / "data" / "catalog.bin").write_text("the bytes of the catalog\n")
+
+    assert dataset._git(["status", "--porcelain"], cwd=clone) == " M data/catalog.bin\n"
+    assert dataset.status(clone) == []
+
+    (clone / "data" / "catalog.bin").write_text("other bytes, of another length\n")
+    assert dataset.status(clone) == [(" M", "data/catalog.bin")]
+
+
+def test_a_commit_git_refuses_leaves_nothing_staged(repo: Path) -> None:
+    """What stays staged goes into whoever commits the index next: a
+    merge the researcher concludes, or their own commit."""
+    dataset._git(["checkout", "-q", "-b", "theirs"], cwd=repo)
+    (repo / "notes.txt").write_text("theirs\n")
+    dataset.save(repo, [repo / "notes.txt"], "theirs")
+    dataset._git(["checkout", "-q", "-"], cwd=repo)
+    (repo / "notes.txt").write_text("ours\n")
+    dataset.save(repo, [repo / "notes.txt"], "ours")
+    assert not dataset._git_ok(["merge", "-q", "theirs"], cwd=repo)
+    made = repo / "results" / "fit.csv"
+    made.write_text("made meanwhile\n")
+
+    with pytest.raises(project.ProjectError, match="partial commit"):
+        dataset.save(repo, [made], "a result")
+
+    assert "results" not in dataset._git(["diff", "--cached", "--name-only"], cwd=repo)
+    assert made.read_text() == "made meanwhile\n"
+
+
 def test_restore_takes_a_glob_pathspec(repo: Path) -> None:
     """An output owns whatever its id names, so the pathspec is a glob —
     which is what rules out `cat-file -e` and `ls-tree` as guards."""

@@ -968,6 +968,35 @@ def test_a_result_made_at_a_commit_the_history_no_longer_holds_is_put_back(
     assert not dataset.status(root)
 
 
+def test_a_result_another_run_replaced_since_it_was_read_is_not_committed_as_recorded(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASTRA's checker read a result as its record's. Another run then
+    moved one of its own there, which it has yet to commit with a record
+    of its own: committed now, it would be under the record of the bytes
+    it replaced. Only bytes that are the record's when they are staged
+    are, and these are that run's to commit."""
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    before = dataset.head(root)
+    # Something is where results go, so the run looks at what is there.
+    (root / "results" / "left-by-a-run.txt").write_text("no result's\n")
+    classify = engine._classify
+
+    def then_replaced(*args: Any, **kwargs: Any) -> Any:
+        classified = classify(*args, **kwargs)
+        (root / _FIRST).unlink()
+        (root / _FIRST).write_text("another run's, not committed yet\n")
+        return classified
+
+    monkeypatch.setattr(engine, "_classify", then_replaced)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert dataset.head(root) == before
+    assert not any("committed now" in w for w in report.warnings), report.warnings
+    assert (root / _FIRST).read_text() == "another run's, not committed yet\n"
+
+
 def _checkouts(root: Path) -> list[Path]:
     """The checkouts runs hold under *root*."""
     return sorted(path for path in (root / checkout.RUNS).iterdir() if path.is_dir())

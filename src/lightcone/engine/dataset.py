@@ -182,6 +182,13 @@ def status(
     it is on disk: git otherwise quotes a name holding a space or an
     accent, and pairs a renamed file with where it came from.
 
+    A file ``git status`` calls modified is one git has compared: it
+    takes a file for changed on its size alone where the index entry was
+    made from other bytes than the file holds, which is what an annexed
+    file is while git-annex fills it in, until that command ends
+    (measured). ``git diff`` takes the file through its filter, and what
+    it finds no difference in is no change.
+
     Args:
         directory: The project to inspect.
         untracked_files: List each untracked file, where git otherwise
@@ -198,13 +205,13 @@ def status(
         tell the user to add.
     """
     prefix = _git([*config, "rev-parse", "--show-prefix"], cwd=directory).strip()
+    asked = [
+        *config,
+        "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
+    ]  # fmt: skip
     listed = _git(
-        [
-            *config,
-            "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
-            "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
-            "--", ".",
-        ],
+        [*asked, "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
+         "--", "."],
         cwd=directory,
     )  # fmt: skip
     changes = []
@@ -212,6 +219,15 @@ def status(
         path = posixpath.relpath(entry[3:], prefix or ".")
         # An untracked folder keeps the slash that says it is one.
         changes.append((entry[:2], f"{path}/" if entry.endswith("/") and path != "." else path))
+    if any(code == " M" for code, _ in changes):
+        differ = set(
+            _git(
+                [*asked, "diff", "--name-only", "-z", "--no-renames", "--relative",
+                 "--ignore-submodules=none", "--", "."],
+                cwd=directory,
+            ).split("\0")
+        )  # fmt: skip
+        changes = [(code, path) for code, path in changes if code != " M" or path in differ]
     return changes
 
 
@@ -554,8 +570,10 @@ def save(
         files are in a commit either way.
 
     Raises:
-        ProjectError: Naming each file staged where it must not go, with
-            nothing committed and nothing left staged.
+        ProjectError: Naming each file staged where it must not go, or in
+            git's own words where it refused the commit, with nothing
+            committed and nothing left staged: what stays staged goes
+            into whoever commits the index next.
     """
     relative = [_rel(directory, p) for p in paths]
     annex = ["-c", "annex.thin=true", "-c", "annex.dotfiles=true"]
@@ -612,6 +630,7 @@ def save(
         # are committed all the same.
         if _git_ok(["diff", "--quiet", "HEAD", "--", *relative], cwd=directory):
             return False
+        _git_ok(["reset", "-q", "--", *relative], cwd=directory)
         raise
     _git(
         ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",

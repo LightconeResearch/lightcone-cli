@@ -858,6 +858,16 @@ def _adopt(
         true = found.verdict.state in ("ok", "behind") or found.verdict.through_reads
         if record is None or not true or not mine & changed:
             continue
+        # The checker read it a moment ago, and another run may have moved
+        # a result of its own there since: only bytes that are the
+        # record's now are adopted, and git is asked the same of what it
+        # stages.
+        named = dict.fromkeys(task.paths, (record.content_hash, record.size))
+        try:
+            if any(content.digest_file(path) != digest for path, digest in named.items()):
+                continue
+        except OSError:
+            continue
         adopted = True
         if not dataset.is_ancestor(root, record.generated_by.commit):
             # True of a commit this history does not hold, as a landing
@@ -877,6 +887,7 @@ def _adopt(
             run_record(root, task, dsid, archive if state not in ("direct", "absent") else ""),
             annexed=task.paths,
             in_git=task.record_paths,
+            named=named,
             patience=checkout.LANDING,
         ):
             report.warnings.append(
@@ -968,13 +979,18 @@ def _consume(
         elif not same:
             why = "its file is no longer the bytes its record names"
         else:
-            checkout.land(
+            if not checkout.land(
                 tree,
                 task,
                 outcome.digest,
                 outcome.records,
                 run_record(tree.root, task, dsid, archive),
-            )
+            ):
+                report.warnings.append(
+                    f"{name}: another commit than this run's took it, with its record, "
+                    "in the instant it was staged — yours, or another run's of the same "
+                    "result — so no commit of its own says how it was made"
+                )
             report.made.append(name)
             return
         unlanded.add(name)

@@ -466,6 +466,45 @@ def test_a_run_command_exiting_a_contract_code_is_not_misdiagnosed(
     assert "musl" not in str(raised.value)
 
 
+def test_the_image_commit_takes_the_archive_and_not_what_is_beside_it(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another build's partial archive may be beside it, still being
+    written, and no line sends that to the annex: committed with the
+    folder, it would be a blob in git for good. A save cut short, by an
+    interrupt too, leaves none of its own."""
+    archive = image.archive_path(root, image.tag(root))
+    another = archive.parent / "image.0a0b0c0d.partial"
+    another.parent.mkdir(parents=True)
+    another.write_text("half an archive")
+
+    container.build(root)
+
+    (add,) = [argv for argv in fake if argv[0] == "git" and "add" in argv]
+    relative = archive.relative_to(root).as_posix()
+    assert relative in add and archive.parent.relative_to(root).as_posix() not in add
+    another.unlink()
+    archive.unlink()
+    check_call = container._check_call
+
+    saved = []
+
+    def interrupted(argv: list[str], *, cwd: Path, **kwargs: object) -> object:
+        if "save" in argv:
+            saved.append(Path(argv[argv.index("-o") + 1]))
+            saved[-1].write_text("half an archive")
+            raise KeyboardInterrupt
+        return check_call(argv, cwd=cwd, **kwargs)
+
+    monkeypatch.setattr(container, "_check_call", interrupted)
+    for _ in range(2):
+        with pytest.raises(KeyboardInterrupt):
+            container._build(root, "podman", image.tag(root), archive)
+    assert list(archive.parent.iterdir()) == []
+    # Under a name of its own each time: two runs may build one image at once.
+    assert saved[0] != saved[1]
+
+
 def test_lc_build_refuses_an_uncommitted_declaration_and_nothing_else(
     root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -479,6 +518,9 @@ def test_lc_build_refuses_an_uncommitted_declaration_and_nothing_else(
     def dirty(argv: list[str], *, cwd: Path, **kwargs: object) -> object:
         if argv[0] == "git" and "status" in argv:
             return MagicMock(returncode=0, stdout="".join(f"{c}\0" for c in changed), stderr="")
+        if argv[0] == "git" and "diff" in argv:
+            differ = "".join(f"{c[3:]}\0" for c in changed if c.startswith(" M"))
+            return MagicMock(returncode=0, stdout=differ, stderr="")
         return run(argv, cwd=cwd, **kwargs)
 
     monkeypatch.setattr(project, "_run", dirty)

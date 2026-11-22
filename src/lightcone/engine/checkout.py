@@ -271,7 +271,7 @@ def land(
     digest: tuple[str, int],
     records: Sequence[bytes],
     message: str,
-) -> None:
+) -> bool:
     """Commit a result a run made, where its worker left it in the project.
 
     Its record is given its place beside it only now, with the commit: a
@@ -293,6 +293,11 @@ def land(
         records: ASTRA's record of the result as its worker wrote it, at
             each place the result has.
         message: The commit message.
+
+    Returns:
+        False where another commit took the result and its record before
+        this one could: a commit of the whole index made in the instant
+        they were staged, or another run's of the same result.
 
     Raises:
         ProjectError: If the project's history no longer holds the run's
@@ -325,7 +330,7 @@ def land(
             except OSError as e:
                 raise ProjectError(f"its record could not be given its place: {e}") from e
             try:
-                dataset.save(
+                return dataset.save(
                     tree.project,
                     owned,
                     message,
@@ -334,7 +339,6 @@ def land(
                     named=dict.fromkeys(kept.paths, digest),
                     patience=LANDING,
                 )
-                return
             except ProjectError:
                 # One begun since it was asked: waited for like any other.
                 if not dataset.under_way(tree.project):

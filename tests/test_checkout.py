@@ -724,6 +724,82 @@ def test_a_merge_that_outlasts_a_landing_ends_the_run_and_takes_nothing_of_it(
     assert not dataset.status(root)
 
 
+def test_a_merge_begun_as_a_result_is_committed_takes_nothing_of_it(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git had staged the result before it refused the commit. Left
+    staged for the wait, it would go into the researcher's merge commit,
+    or be deleted with the merge they abandon: it is unstaged, waits
+    beside the merge, and is committed, by the run, once that is over."""
+    save = dataset.save
+    begun: list[bool] = []
+
+    def as_a_merge_begins(*args: Any, **kwargs: Any) -> bool:
+        if not begun:
+            begun.append(True)
+            _merging(root)
+            threading.Timer(
+                1.5, lambda: dataset._git(["merge", "--abort"], cwd=root)
+            ).start()
+        return save(*args, **kwargs)
+
+    monkeypatch.setattr(dataset, "save", as_a_merge_begins)
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["other"] and not report.warnings, report.warnings
+    assert (root / "results/other.txt").read_text() == "other\n"
+    assert "[DATALAD RUNCMD] other" in dataset._git(["log", "-1", "--format=%s"], cwd=root)
+    assert not dataset.status(root)
+
+
+def test_a_result_a_commit_of_the_whole_index_took_is_said_to_have_no_commit_of_its_own(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result is staged for an instant before its commit, in the index
+    the researcher commits from. A commit of theirs in that instant takes
+    it, with its record: a true pair, which the run reads as committed,
+    and says so, since no run record then tells how it was made."""
+    save = dataset.save
+
+    def taken_by_another_commit(directory: Path, paths: Any, *args: Any, **kwargs: Any) -> bool:
+        if kwargs.get("named"):
+            dataset._git(["add", "-A", "--", *paths], cwd=directory)
+            dataset._git(["commit", "-q", "-m", "my notes"], cwd=directory)
+        return save(directory, paths, *args, **kwargs)
+
+    monkeypatch.setattr(dataset, "save", taken_by_another_commit)
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["other"]
+    assert any("another commit than this run's took it" in w for w in report.warnings)
+    assert dataset._git(["log", "-1", "--format=%s"], cwd=root).strip() == "my notes"
+    assert not dataset.status(root) and engine.check(root, ["other"]).up_to_date
+
+
+def test_what_ended_a_landing_is_what_is_said_of_it(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Putting the project's tree back may fail in its turn, on the index
+    another git holds, say: the run still says why the result did not
+    land."""
+
+    class Rewriting(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            dataset._git(["commit", "-q", "--amend", "-m", "another commit"], cwd=root)
+            yield from handles
+
+    def held(*args: Any, **kwargs: Any) -> None:
+        raise ProjectError("another git command holds the index")
+
+    _cluster(monkeypatch, Rewriting())
+    monkeypatch.setattr(dataset, "restore", held)
+
+    with pytest.raises(ProjectError, match="no longer holds"):
+        engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+
 def test_a_run_does_not_start_in_a_tree_with_a_merge_under_way(root: Path, inline: None) -> None:
     """Every result it made would wait for the merge to be concluded: said
     before anything runs."""

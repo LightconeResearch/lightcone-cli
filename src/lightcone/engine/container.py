@@ -686,15 +686,15 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     # Saved beside its final name and renamed into place: a save that
     # dies midway must not leave a partial archive that the dirty-tree
     # refusal would then tell the user to commit. Under a name of its
-    # own, since two runs may build one image at once.
+    # own, since two runs may build one image at once, and gone however
+    # the save ends, an interrupt included.
     partial = archive.parent / f"image.{uuid4().hex[:8]}.partial"
     save_format = ["--format", "docker-archive"] if runtime in _PODMAN_FAMILY else []
     try:
         _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)
-    except ProjectError:
+        partial.replace(archive)
+    finally:
         partial.unlink(missing_ok=True)
-        raise
-    partial.replace(archive)
 
     for key, value in (
         ("image", relative),
@@ -712,9 +712,11 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
             ["config", "-f", ".datalad/config", f"datalad.containers.{tag}.{key}", value],
             cwd=root,
         )
+    # The archive, never its folder: another build's partial archive may
+    # be beside it, which no line sends to the annex.
     dataset.save(
         root,
-        [archive.parent, root / ".datalad" / "config"],
+        [archive, root / ".datalad" / "config"],
         f"Add the system-layer image {tag}",
     )
 
