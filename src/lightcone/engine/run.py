@@ -1,9 +1,11 @@
 """``lc run`` executes a command inside the reproducible environment.
 
-Byte-for-byte the environment recipes will get — the same lock, the same
-converged ``.venv`` — under the same sandbox. That equivalence is the
-point: if a probe works, the recipe will, and if a probe
-is denied, the recipe would have been.
+The environment the project's lock gives, under the sandbox a recipe
+runs under. A probe runs in the project's own working tree, where the
+researcher is, on what it holds now; a recipe runs in a checkout of the
+run's commit (:mod:`checkout`), on what that commit holds and its
+output declares. So a probe that is denied, the recipe would have been;
+one that works reads what is there, committed or not, declared or not.
 
 What the boundary catches is a reach *outside* the declared set — a
 tool, a library, or a data file that is on this machine and would not be

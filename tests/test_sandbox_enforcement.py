@@ -337,6 +337,27 @@ def test_a_declared_input_outside_the_project_can_be_read(
     assert "undeclared" in result.stdout
 
 
+def test_a_link_in_the_tree_leads_only_to_a_file_that_is_declared(
+    backend: sandbox.Backend, project: Path, outside: Path
+) -> None:
+    """The shape a run's checkout gives a result its run made: a link, in
+    the tree a recipe may read, to a file outside it. Declared as an
+    input, the file is granted where the link leads; not declared, the
+    link is no way to it."""
+    link = project / "result.txt"
+    link.symlink_to(outside / "secret.txt")
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
+        denied = shell(backend, policy, "cat result.txt", cwd=project)
+        # The same read with no boundary succeeds: the denial is the boundary's.
+        open_ = shell(sandbox.Unavailable(), policy, "cat result.txt", cwd=project)
+    with sandbox.scope(sandbox.exec_policy(project, read_paths=[link])) as policy:
+        granted = shell(backend, policy, "cat result.txt", cwd=project)
+
+    assert denied.returncode != 0 and "undeclared" not in denied.stdout
+    assert open_.returncode == 0 and "undeclared" in open_.stdout
+    assert granted.returncode == 0 and "undeclared" in granted.stdout, granted.stderr
+
+
 def test_the_project_tree_is_readable(backend: sandbox.Backend, project: Path) -> None:
     with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "cat data.txt", cwd=project)

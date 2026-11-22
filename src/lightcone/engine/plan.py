@@ -129,6 +129,27 @@ class Task:
         """The tasks that must be made first, deduplicated, in order."""
         return tuple(dict.fromkeys(self.produced_by.values()))
 
+    def at(self, root: Path) -> Task:
+        """The same result in another tree of the same commit.
+
+        A run makes a result in a checkout of its commit and commits it
+        in the project's tree (:mod:`checkout`): one task, two roots.
+
+        Args:
+            root: The project root in that tree.
+
+        Returns:
+            The task, with every path it names measured from *root*.
+        """
+        return replace(
+            self,
+            root=root,
+            workdir=root / self.workdir.relative_to(self.root),
+            inputs={
+                entry: root / path.relative_to(self.root) for entry, path in self.inputs.items()
+            },
+        )
+
     def owns(self, path: Path) -> bool:
         """Whether *path* is one of this result's own files: its file, or
         its record, at a place it has.
@@ -239,7 +260,7 @@ def build(root: Path) -> Graph:
         ProjectError: If there is no analysis, ASTRA finds it invalid, an
             analysis read from the working tree is outside the project's
             folder or in a repository of its own, a recipe would run on a
-            commit's files, or the repository moved between ASTRA's two
+            commit's files, or the analysis changed between ASTRA's two
             answers.
     """
     from astra import api
@@ -247,11 +268,21 @@ def build(root: Path) -> Graph:
     with asking_astra(root):
         analysis = api.resolve(root, commits=COMMITS)
         report = api.status(root)
-    if report.head != analysis.head:
-        # The statuses are of another commit's results than the ones resolved.
+    specs = tuple(
+        posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
+        for each in analysis.analyses
+        if each.commit is None
+    )
+    if report.head != analysis.head and not dataset.same(
+        root, analysis.head, report.head, specs
+    ):
+        # The statuses are of another analysis's results than the ones
+        # resolved. A commit that leaves the analysis as it was is no
+        # such thing: another run of the project commits a result at any
+        # moment, and the statuses are then of the later commit.
         raise ProjectError(
-            f"The repository moved from {analysis.head} to {report.head} while lc was "
-            "reading the analysis. Run again."
+            f"The analysis moved from {analysis.head} to {report.head} while lc was "
+            "reading it. Run again."
         )
     if outside := sorted(
         each.folder
@@ -327,11 +358,7 @@ def build(root: Path) -> Graph:
         tasks=tasks,
         checked=report,
         commits=commits,
-        specs=tuple(
-            posixpath.normpath(posixpath.join(each.folder, SPEC_FILENAME))
-            for each in analysis.analyses
-            if each.commit is None
-        ),
+        specs=specs,
         inputs={
             # A ref is its analysis's key, its collection and its id.
             ".".join(filter(None, (each.key, ref.rpartition(".")[2]))): (ref, path)

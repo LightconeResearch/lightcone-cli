@@ -11,15 +11,16 @@ all unchanged afterwards.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CLUSTER_ID, FIRST, clone_of, since
+from conftest import CLUSTER_ID, FIRST, clone_of, ran_in, since
 
-from lightcone.engine import dataset, plan, templates, worker
+from lightcone.engine import checkout, commits, dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
@@ -65,6 +66,7 @@ def _lines(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
 
+
 # ---- analyses declared by path ------------------------------------------------
 
 
@@ -92,22 +94,24 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     driven, own = tasks["stage.out#u1"], tasks["stage:out#v1"]
     assert driven.path.is_relative_to(root / "results")
     assert own.path.is_relative_to(root / "stage" / "results")
-    assert _lines(driven.path) == ["a", str(root / "stage")]
-    assert _lines(own.path) == ["b", str(root / "stage")]
-    assert _lines(tasks["both#u1"].path) == ["a", str(root / "stage"), "b", str(root / "stage")]
+    option, where = _lines(driven.path)
+    assert (option, ran_in(root, where)) == ("a", "stage")
+    option, where = _lines(own.path)
+    assert (option, ran_in(root, where)) == ("b", "stage")
+    assert _lines(tasks["both#u1"].path)[::2] == ["a", "b"]
     assert all(record.is_file() for task in tasks.values() for record in task.record_paths)
     assert not dataset.status(root)
     assert engine.check(root, []).up_to_date
 
 
-def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_committed(
+def test_what_is_where_a_declared_analysis_keeps_its_results_refuses_no_run(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """`stage` keeps the results of its own universe, and their records, in
-    its own folder. What an interrupted run leaves there is lc's to
-    discard like what it leaves in the project's `results/`, and the
-    command given undoes it; a note beside `stage`'s analysis is still the
-    researcher's to commit."""
+    its own folder, and lc alone writes there as it does in the project's
+    `results/`: what a landing cut short left there refuses nothing, and
+    the run that makes the result puts its own in its place. A note beside
+    `stage`'s analysis is still the researcher's to commit."""
     root = analysis(
         _DRIVES,
         {
@@ -120,22 +124,17 @@ def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_co
     (root / "stage/.astra/records/v1/out.json").unlink()
     (root / "stage/results/v1/out.txt").unlink()
     (root / "stage/results/v1/out.txt").write_text("hal")
-    (root / "stage/results/v1/out.tmp").write_text("partial\n")
     (root / "stage/notes.md").write_text("in progress\n")
 
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
-    theirs, _, ours = message.partition("discard these")
-    assert "commit these" in theirs and "stage/notes.md" in theirs
-    assert "stage/" not in theirs.replace("stage/notes.md", "")
-    for left in ("stage/.astra/records/v1/out.json", "stage/results/v1/out.txt"):
-        assert left in ours
-    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
-    assert "git clean -fd stage/results/" in command
+    assert "commit these" in message and "stage/notes.md" in message
+    assert "stage/" not in message.replace("stage/notes.md", "")
     (root / "stage/notes.md").unlink()
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert "stage:out#v1" in report.made, (report.failed, report.warnings)
     assert not dataset.status(root)
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
 
@@ -144,8 +143,8 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """A recipe of `stage` writes a file beside its result, in `stage`'s
-    `results/`: the run says it was left where results go, and does not
-    report it as code edited while the run was in flight."""
+    `results/`: the run says it was written where results go and not
+    kept, and does not report it as a change to the commit's own files."""
     root = analysis(
         _DRIVES,
         {
@@ -159,8 +158,8 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
 
     assert report.made == ["stage:out#v1"], (report.failed, report.warnings)
     [left] = [w for w in report.warnings if "stage/results/v1/out.txt.idx" in w]
-    assert "left uncommitted where results go" in left
-    assert not any("edited while the run was in flight" in w for w in report.warnings)
+    assert "written where results go" in left and "not kept" in left
+    assert not any("UNCOMMITTED_CHANGES" in w for w in report.warnings)
 
 
 def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(
@@ -402,6 +401,30 @@ def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
     assert not (root / plan.COMMITS / pinned).exists()
 
 
+def test_a_tree_that_cannot_be_given_leaves_no_clone_behind(
+    analysis: Callable[..., Path], tmp_path: Path
+) -> None:
+    """A clone is made beside the tree it becomes. Where the repository
+    it is declared in does not hold the commit, the clone is of no use to
+    anyone, and every run would otherwise leave one more."""
+    root = analysis(FIRST)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    dataset._git(["init", "-q"], cwd=elsewhere)
+
+    killed = root / plan.COMMITS / ("0" * 40 + ".deadbeef.making")
+    recent = root / plan.COMMITS / ("0" * 40 + ".cafecafe.making")
+    for left in (killed, recent):
+        left.mkdir(parents=True)
+    os.utime(killed, (0, 0))
+
+    with pytest.raises(ProjectError):
+        commits.give(root, "0" * 40, str(elsewhere), ["results/fit.txt"])
+
+    # Its own clone, and one a run killed long ago left; another run's stays.
+    assert list((root / plan.COMMITS).iterdir()) == [recent]
+
+
 #: An analysis with nothing but an input, for another to read at a commit.
 _AN_INPUT = 'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.txt}\n'
 
@@ -426,6 +449,84 @@ def test_a_commits_tree_git_cannot_read_is_made_again(
 
     assert report.made == ["copy"], (report.blocked, report.warnings)
     assert (root / "results" / "copy.txt").read_text() == "stars\n"
+
+
+def test_a_commits_tree_another_run_is_fetching_into_is_still_its_commits(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`git status` calls an annexed file modified from the moment
+    git-annex gives it its bytes until the fetch ends. Two runs give one
+    commit's tree at once, and the second must not take the first's,
+    mid-fetch, for one that changed: it would make it again under it."""
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    tree = root / plan.COMMITS / at
+    # As a fetch that has not ended leaves a file: its bytes in place, and
+    # git not yet told.
+    dataset._git(["annex", "drop", "--force", "data/catalog.txt"], cwd=tree)
+    (tree / "data/catalog.txt").write_text("stars\n")
+    assert dataset._git(["status", "--porcelain"], cwd=tree).startswith(" M")
+
+    assert commits._intact(tree, at)
+
+    (tree / "data/catalog.txt").write_text("other bytes than the commit's\n")
+    assert not commits._intact(tree, at)
+
+
+def test_a_run_reaps_before_it_gives_the_trees_of_other_commits(
+    analysis: Callable[..., Path], inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout a run left says a run may be reading a commit's tree,
+    which is then not made again. One whose allocation has ended says
+    nothing of the sort, so it goes first."""
+    from lightcone.engine import compute
+
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
+    spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
+    dataset.save(root, [spec], "copy it again")
+    left = checkout.take(root, dataset.head(root), CLUSTER_ID, [])
+    monkeypatch.setattr(compute, "phase", lambda allocation: "ended")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["copy"], (report.blocked, report.warnings)
+    assert not left.top.exists()
+
+
+def test_a_commits_tree_is_not_made_again_while_another_run_may_be_reading_it(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """Made again, a tree would be gone for a moment, and with it the
+    files another run fetched there for the recipes it has running. While
+    a run holds a checkout, a tree that is no longer its commit's is
+    refused instead, and made again once none does."""
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    index = root / plan.COMMITS / at / ".git" / "index"
+    index.write_bytes(b"not an index")
+    running = checkout.take(root, dataset.head(root), CLUSTER_ID, [])
+
+    with pytest.raises(ProjectError, match="another run of the project may be reading it"):
+        commits.give(root, at, None, ["data/catalog.txt"])
+    assert index.read_bytes() == b"not an index"
+
+    checkout.leave(running)
+    commits.give(root, at, None, ["data/catalog.txt"])
+    assert (root / plan.COMMITS / at / "data/catalog.txt").read_text() == "stars\n"
 
 
 _READS_UPSTREAMS_INPUT = """

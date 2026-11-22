@@ -365,8 +365,9 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     # dies midway leaves no partial archive for the dirty refusal to
     # tell the user to commit.
     archive = image.archive_path(root, runtime.image_tag)
-    assert save[save.index("-o") + 1] == str(archive.parent / "image.partial")
-    assert archive.is_file() and not (archive.parent / "image.partial").exists()
+    saved = Path(save[save.index("-o") + 1])
+    assert saved.parent == archive.parent and saved.name.endswith(".partial")
+    assert [each.name for each in archive.parent.iterdir()] == [archive.name]
     assert "--format" in save and save[save.index("--format") + 1] == "docker-archive"
     configured = {c[-2] for c in _argvs(fake, "git", "config", "-f", ".datalad/config")}
     assert f"datalad.containers.{runtime.image_tag}.image" in configured
@@ -465,20 +466,67 @@ def test_a_run_command_exiting_a_contract_code_is_not_misdiagnosed(
     assert "musl" not in str(raised.value)
 
 
-def test_lc_build_refuses_a_dirty_tree(
+def test_the_image_commit_takes_the_archive_and_not_what_is_beside_it(
     root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The archive commit takes the whole index with it, and the tag
-    derives from pyproject.toml — the declaration commits first."""
+    """Another build's partial archive may be beside it, still being
+    written, and no line sends that to the annex: committed with the
+    folder, it would be a blob in git for good. A save cut short, by an
+    interrupt too, leaves none of its own."""
+    archive = image.archive_path(root, image.tag(root))
+    another = archive.parent / "image.0a0b0c0d.partial"
+    another.parent.mkdir(parents=True)
+    another.write_text("half an archive")
 
-    def dirty(argv: list[str], *, cwd: Path) -> MagicMock:
-        if argv[:2] == ["git", "status"]:
-            return MagicMock(returncode=0, stdout=" M pyproject.toml\n", stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
+    container.build(root)
+
+    (add,) = [argv for argv in fake if argv[0] == "git" and "add" in argv]
+    relative = archive.relative_to(root).as_posix()
+    assert relative in add and archive.parent.relative_to(root).as_posix() not in add
+    another.unlink()
+    archive.unlink()
+    check_call = container._check_call
+
+    saved = []
+
+    def interrupted(argv: list[str], *, cwd: Path, **kwargs: object) -> object:
+        if "save" in argv:
+            saved.append(Path(argv[argv.index("-o") + 1]))
+            saved[-1].write_text("half an archive")
+            raise KeyboardInterrupt
+        return check_call(argv, cwd=cwd, **kwargs)
+
+    monkeypatch.setattr(container, "_check_call", interrupted)
+    for _ in range(2):
+        with pytest.raises(KeyboardInterrupt):
+            container._build(root, "podman", image.tag(root), archive)
+    assert list(archive.parent.iterdir()) == []
+    # Under a name of its own each time: two runs may build one image at once.
+    assert saved[0] != saved[1]
+
+
+def test_lc_build_refuses_an_uncommitted_declaration_and_nothing_else(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tag derives from pyproject.toml, so the declaration commits
+    before the image it defines. What else the tree holds is not the
+    build's concern: its commit takes the archive alone, and a run in
+    flight keeps results it has not committed yet where results go."""
+    changed = [" M pyproject.toml"]
+    run = project._run
+
+    def dirty(argv: list[str], *, cwd: Path, **kwargs: object) -> object:
+        if argv[0] == "git" and "status" in argv:
+            return MagicMock(returncode=0, stdout="".join(f"{c}\0" for c in changed), stderr="")
+        return run(argv, cwd=cwd, **kwargs)
 
     monkeypatch.setattr(project, "_run", dirty)
-    with pytest.raises(ProjectError, match="[Cc]ommit"):
+    with pytest.raises(ProjectError, match="uncommitted changes to pyproject.toml"):
         container.build(root)
+    assert not _argvs(fake, "podman", "build")
+
+    changed[:] = ["?? results/fit.txt", " M analysis.py"]
+    assert container.build(root)[1] == "built"
 
 
 def test_lc_build_refuses_an_index_lock_that_stays_before_building(

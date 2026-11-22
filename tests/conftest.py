@@ -281,6 +281,9 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
+    #: No allocation lc can ask about, so nothing reaps a checkout it holds.
+    allocation = CLUSTER_ID
+
     def validate(self, tasks: Iterable[Task]) -> dict[ResultId, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
         return {task.id: {} for task in tasks}
@@ -472,6 +475,13 @@ def with_idna(root: Path) -> Path:
         _must(project._run([*argv, "--project", str(root)], cwd=root), argv)
     dataset.save(root, [root], "depend on idna")
     return root
+
+
+def ran_in(root: Path, where: str) -> str:
+    """Name the folder a recipe ran in, as its `pwd` gave it: from the
+    project root of its run's checkout, which is where a recipe runs."""
+    _, *inside = Path(where).relative_to(root / ".lightcone" / "runs").parts
+    return "/".join(inside) or "."
 
 
 def locked_version(root: Path, name: str) -> str:

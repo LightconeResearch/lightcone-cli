@@ -222,6 +222,10 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     assert archive.is_file()
     made = json.loads((cproject / ".astra/records/sums.json").read_text())
     assert made["generated_by"]["environment"]["iri"] == identity.environment(cproject)
+    # The run built the image and committed its archive before it took its
+    # checkout: the commit its record names holds the image it ran in.
+    held = f"{made['generated_by']['commit']}:{archive.relative_to(cproject).as_posix()}"
+    assert dataset._git_ok(["cat-file", "-e", held], cwd=cproject)
 
     # The record lists the archive, so a rerun's `datalad get` fetches
     # the exact bytes before the worker runs. Parsed rather than matched
@@ -229,6 +233,67 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     record = dataset._git(["log", "-1", "--format=%B"], cwd=cproject)
     body = record.partition("=== Do not change lines below ===")[2].partition("^^^")[0]
     assert json.loads(body)["extra_inputs"] == [archive.relative_to(cproject).as_posix()]
+
+
+_CHAIN = _SPEC + """
+  twice:
+    type: metric
+    format: txt
+    inputs: [sums]
+    recipe:
+      command: cat {inputs.sums} {inputs.sums} > {output}
+"""
+
+
+def test_a_result_of_the_run_is_read_in_the_image(
+    runtime: str, analysis: Callable[..., Path], cluster_id: str
+) -> None:
+    """A result made in a run is moved to its place in the project, and
+    the task that reads it finds a link to it in the run's checkout. In a
+    container the mount table is all there is: the link has to lead to a
+    file that is mounted, or the recipe reads nothing."""
+    root = analysis(_CHAIN)
+    text = (root / "pyproject.toml").read_text()
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
+    dataset.save(root, [root], "containerize")
+
+    report = engine.materialize(root, [], cluster_id=cluster_id)
+
+    assert report.made == ["sums", "twice"], (report.failed, report.warnings)
+    assert (root / "results/twice.txt").read_text() == "4\n4\n"
+    assert not dataset.status(root)
+
+
+_ASKS_GIT = """
+spec_version: "0.1.0"
+
+outputs:
+  commit:
+    type: metric
+    format: txt
+    recipe:
+      command: git rev-parse HEAD > {output}
+"""
+
+
+def test_git_in_the_image_reads_the_runs_commit(
+    runtime: str, analysis: Callable[..., Path], cluster_id: str
+) -> None:
+    """A run's checkout only names the repository, which is outside it,
+    and a container sees what is mounted. The repository is mounted too,
+    read-only: a recipe that asks git, or a build backend that takes its
+    version from it, gets the commit the run builds."""
+    root = analysis(_ASKS_GIT)
+    text = (root / "pyproject.toml").read_text()
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["git"]\n')
+    dataset.save(root, [root], "containerize, with git")
+
+    report = engine.materialize(root, [], cluster_id=cluster_id)
+
+    assert report.made == ["commit"], (report.failed, report.warnings, report.notes)
+    made = json.loads((root / ".astra/records/commit.json").read_text())
+    assert (root / "results/commit.txt").read_text().strip() == made["generated_by"]["commit"]
+    assert not dataset.status(root)
 
 
 def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(

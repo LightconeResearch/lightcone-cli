@@ -248,7 +248,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     sys.exit(128 - code if code < 0 else code)
 
 
-def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
+def _interrupted(cluster_id: str, still: str) -> None:
     """Say what an interrupt leaves behind: the allocation outlives the client.
 
     A name can be reused once its allocation ends, so the remedy asks for
@@ -256,7 +256,7 @@ def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
     """
     target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
     click.echo(
-        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`{then}.",
+        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`.",
         err=True,
     )
     if target != cluster_id:
@@ -374,8 +374,9 @@ def materialize(
     for its result in every universe.
 
     Each result is committed together with its ASTRA record, in a commit
-    that records the command that produced it. The git tree needs to be
-    clean before the run can start.
+    that records the command that produced it. A run builds the commit, in
+    a checkout of it: your own uncommitted work has to be committed before
+    it can start, and what you edit while it runs is no part of it.
 
     A result is made when ASTRA's checker finds it missing or stale: never
     made, or something it is made from changed since its record's commit —
@@ -433,8 +434,9 @@ def materialize(
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
         except KeyboardInterrupt:
             _interrupted(
-                cluster_id, "remote recipes may still be writing results",
-                " and confirm they have stopped before cleaning results/",
+                cluster_id,
+                "recipes may still be running, in the run's checkout, which stays until the "
+                "allocation has ended, and what they make is not committed",
             )
             raise
 

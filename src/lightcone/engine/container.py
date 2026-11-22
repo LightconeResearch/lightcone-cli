@@ -29,11 +29,12 @@ import shutil
 import sys
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
+from uuid import uuid4
 
-from lightcone.engine import content, dataset, image, project, sandbox
+from lightcone.engine import content, dataset, identity, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
 
 #: The runtimes that are podman underneath and share its spellings —
@@ -68,6 +69,53 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
+    #: For a run in a checkout of its commit (:mod:`checkout`), the
+    #: repository's own folder, which the checkout's ``.git`` only names.
+    repository: Path | None = None
+
+    def at(self, root: Path) -> Runtime:
+        """The same world, entered from a checkout of the project's commit.
+
+        The world was resolved, and its image built, from the project's
+        working tree, which the researcher may have edited since the run
+        read its commit: every record names the environment that commit
+        declares, so another is refused.
+
+        Args:
+            root: The project root in the checkout.
+
+        Returns:
+            The runtime, with its environment in that tree.
+
+        Raises:
+            ProjectError: If the checkout declares another world.
+        """
+        mode = project.mode(root)
+        if (mode, image.tag(root) if mode == "containerized" else "") != (
+            self.mode,
+            self.image_tag,
+        ):
+            raise ProjectError(
+                "`[tool.lightcone.image]` in pyproject.toml is no longer what the commit "
+                "this run builds declares: it was edited while the run was preparing, and "
+                "every record would name an environment its recipe did not run in. Commit "
+                "the change, or undo it, and run again."
+            )
+        return replace(
+            self, root=root, env_dir=project.env_dir(root), repository=dataset.repository(root)
+        )
+
+    @property
+    def env(self) -> dict[str, str]:
+        """The environment for whatever lc starts in this world's tree.
+
+        In a checkout, with the options that keep git-annex and Git LFS
+        out of it (:func:`dataset.plain_env`): a build backend that asks
+        git for a version, or a recipe that runs git, would otherwise
+        start them there.
+        """
+        ours = project.child_env()
+        return {**ours, **(dataset.plain_env(ours) if self.repository else {})}
 
     @property
     def supports_gpus(self) -> bool:
@@ -91,8 +139,9 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
     questions second: archive committed, content fetched (through the
     annex, by lc itself), loaded into the local store. Only the first
     check's miss differs by caller — *build* is true for ``lc build`` and
-    the materialize preflight, which may build and commit on a tree their
-    own dirty check just proved clean; everything else (the probe, the
+    the materialize preflight, which may build and commit in a tree their
+    own check found free of the researcher's uncommitted work; everything
+    else (the probe, the
     rerun entry point) refuses naming the exact ``lc build``, because
     ``lc run`` never builds and the worker never commits.
 
@@ -281,11 +330,12 @@ def backend(runtime: Runtime, *, workdir: Path) -> sandbox.Backend:
 def build(root: Path) -> tuple[Runtime, str]:
     """Converge the system-layer image, the whole of ``lc build``.
 
-    Refuses a dirty tree before anything else: the archive is committed,
-    ``dataset.save`` stages scoped but commits the whole index, and the
-    tag derives from ``pyproject.toml`` — so the declaration must be
-    committed before the image it defines, and nothing of the user's may
-    be swept into the image commit.
+    Refuses, before anything else, a tree in which a file the image is
+    derived from is not committed: the archive is committed, and its tag
+    derives from ``pyproject.toml`` — so the declaration must be committed
+    before the image it defines. Nothing else in the tree is its concern:
+    the commit takes the archive and ``.datalad/config`` alone, and what a
+    run in flight has put where results go is that run's to commit.
 
     Args:
         root: The project root.
@@ -296,8 +346,8 @@ def build(root: Path) -> tuple[Runtime, str]:
         was already there.
 
     Raises:
-        ProjectError: On a direct-mode project, a dirty tree, a missing
-            committer identity, or a failed build.
+        ProjectError: On a direct-mode project, an uncommitted
+            declaration, a missing committer identity, or a failed build.
     """
     if project.mode(root) == "direct":
         raise ProjectError(
@@ -307,11 +357,13 @@ def build(root: Path) -> tuple[Runtime, str]:
     project.require_git()
     project.require_git_annex()
     dataset.require_committer(root)
-    if dataset.status(root):
+    # What the image is derived from, and what its commit carries beside it.
+    derived = {*identity.files(root), ".datalad/config"}
+    if uncommitted := sorted(derived.intersection(path for _, path in dataset.status(root))):
         raise ProjectError(
-            "uncommitted changes — the image is derived from pyproject.toml and "
-            "committed into the repository, so `lc build` needs the tree to say "
-            "what it is building from. Commit first, then re-run `lc build`."
+            f"uncommitted changes to {', '.join(uncommitted)} — the image is derived from "
+            "the project's environment files and committed into the repository, so "
+            "`lc build` needs them committed to say what it is building from."
         )
     dataset.require_free_index(root)
     existed = image_state(root)[0] != "absent"
@@ -397,6 +449,7 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         *uid_flags(runtime.runtime),
         "-v", f"{root}:{root}:rw",
         "-v", f"{cache}:{cache}:rw",
+        *_repository_flags(runtime),
         "--env", f"UV_CACHE_DIR={cache}",
         "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
         "-w", str(root),
@@ -405,6 +458,22 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         "uv", *project._SYNC_ARGS, "--project", str(root),
     ]  # fmt: skip
     return _check_call(argv, cwd=root)
+
+
+def _repository_flags(runtime: Runtime) -> list[str]:
+    """What a container needs for git to work in a run's checkout.
+
+    A checkout's ``.git`` names the repository, which is outside it: the
+    repository is mounted where it is, read-only, and git is given the
+    options that keep git-annex and Git LFS out of a checkout. A build
+    backend that asks git for a version then finds one.
+    """
+    if runtime.repository is None:
+        return []
+    return [
+        "-v", f"{runtime.repository}:{runtime.repository}:ro",
+        *(f"--env={name}={value}" for name, value in dataset.plain_env({}).items()),
+    ]  # fmt: skip
 
 
 def converge(runtime: Runtime) -> list[str]:
@@ -422,7 +491,7 @@ def converge(runtime: Runtime) -> list[str]:
         Whatever uv warned about.
     """
     if runtime.mode == "direct":
-        return project.sync(runtime.root)
+        return project.sync(runtime.root, runtime.env if runtime.repository else None)
     return sync(runtime.root, runtime)
 
 
@@ -451,14 +520,20 @@ def policy_for(
         from lightcone.engine.sandbox.oci import require_gpu_runtime
 
         require_gpu_runtime(runtime.runtime)
-    return sandbox.exec_policy(
+    # A container sees what is mounted, and a checkout's `.git` names a
+    # repository outside it: mounted too, so git in the image answers for
+    # the run's commit, with the options that keep git-annex and Git LFS
+    # out. A host mechanism grants no git to run.
+    repository = runtime.repository if runtime.mode == "containerized" else None
+    policy = sandbox.exec_policy(
         runtime.root,
-        read_paths=read_paths,
+        read_paths=[*read_paths, *([repository] if repository else [])],
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,
         use_gpus=use_gpus,
     )
+    return replace(policy, env={**policy.env, **dataset.plain_env({})}) if repository else policy
 
 
 def archive_identity(path: Path) -> tuple[str, str, list[str], str]:
@@ -578,9 +653,9 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     The build context is an empty scratch directory holding only the
     rendered Containerfile — no project file ever enters it, which is
     what makes "code edits never trigger a build" structural rather than
-    observed. The archive commit is scoped to the environment directory
-    plus ``.datalad/config`` (the ``datalad containers-run`` interop
-    keys), and the caller has already proven the tree clean.
+    observed. The archive commit is scoped to the archive and
+    ``.datalad/config`` (the ``datalad containers-run`` interop keys), so
+    nothing else the tree holds is committed with it.
     """
     relative = archive.relative_to(root).as_posix()
     # The archive is committed, so its routing must be checked *before*
@@ -610,15 +685,16 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     # Saved beside its final name and renamed into place: a save that
     # dies midway must not leave a partial archive that the dirty-tree
-    # refusal would then tell the user to commit.
-    partial = archive.parent / "image.partial"
+    # refusal would then tell the user to commit. Under a name of its
+    # own, since two runs may build one image at once, and gone however
+    # the save ends, an interrupt included.
+    partial = archive.parent / f"image.{uuid4().hex[:8]}.partial"
     save_format = ["--format", "docker-archive"] if runtime in _PODMAN_FAMILY else []
     try:
         _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)
-    except ProjectError:
+        partial.replace(archive)
+    finally:
         partial.unlink(missing_ok=True)
-        raise
-    partial.replace(archive)
 
     for key, value in (
         ("image", relative),
@@ -636,9 +712,11 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
             ["config", "-f", ".datalad/config", f"datalad.containers.{tag}.{key}", value],
             cwd=root,
         )
+    # The archive, never its folder: another build's partial archive may
+    # be beside it, which no line sends to the annex.
     dataset.save(
         root,
-        [archive.parent, root / ".datalad" / "config"],
+        [archive, root / ".datalad" / "config"],
         f"Add the system-layer image {tag}",
     )
 

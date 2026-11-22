@@ -8,8 +8,8 @@ which is what the ``[DATALAD RUNCMD]`` record in every materialization
 commit names, behind an engine-pinning ``uv run --no-project --with …`` —
 by version for a released engine, by source commit for a dev build. That
 is why it is a module rather than an ``lc`` verb: it makes the result
-unconditionally, commits nothing, and leaves the tree dirty by design —
-precisely the state ``lc materialize`` refuses to start from — so
+unconditionally, in the project's own tree, and commits nothing, where a
+run makes it in a checkout of its commit and commits it — so
 advertising it in ``lc --help`` would hand people a footgun.
 :func:`main` converges the project environment from the rerun commit's
 own lock before anything executes, so the record holds on a clone that
@@ -36,15 +36,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import commits, container, content, dataset, identity, plan, sandbox
+from lightcone.engine import (
+    checkout,
+    commits,
+    container,
+    content,
+    dataset,
+    identity,
+    plan,
+    sandbox,
+)
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
-from lightcone.engine.project import (
-    ProjectError,
-    child_env,
-    declared_project,
-    uv_prefix,
-)
+from lightcone.engine.project import ProjectError, declared_project, uv_prefix
 
 if TYPE_CHECKING:
     from astra.api import Status
@@ -73,6 +77,10 @@ class TaskOutcome:
     #: where there was none to look at. What reads the result takes the
     #: digest for that very file only, and hashes any other it finds.
     stamp: tuple[int, int, int] | None = None
+    #: ASTRA's record of a result this task made, as written at each of
+    #: its places. With the file, all its commit needs: the driver reads
+    #: nothing in the run's checkout once a task has reported.
+    records: tuple[bytes, ...] = ()
     #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
     #: Console lines from the boundary: a downgrade notice, a denial.
@@ -120,6 +128,10 @@ class RunContext:
     hashed: Mapping[Path, tuple[tuple[int, int, int], content.Digest]] = field(
         default_factory=dict
     )
+    #: For a run in a checkout of its commit (:mod:`checkout`), the project
+    #: root in the researcher's tree, where a result is moved once its
+    #: recipe has made it. None where the recipe runs in the project's own.
+    project: Path | None = None
 
 
 def require_in_commit(root: Path, specs: Sequence[str]) -> None:
@@ -351,7 +363,7 @@ def execute(
             [_SHELL, "-c", task.command],
             cwd=task.workdir,
             prefix=uv_prefix(root),
-            env=child_env(),
+            env=context.runtime.env,
             output=output,
         )
     finished = datetime.now(UTC)
@@ -365,9 +377,9 @@ def execute(
         )
     if moved := _gate(root, context.environment):
         return TaskOutcome(task.id, "failed", reason=moved, notes=outcome.notes)
-    # A declared input is a file in the project's tree, which only a
-    # sandbox makes read-only: written in place, the record would name
-    # bytes that no longer exist anywhere.
+    # A declared input is a file of the tree the recipe runs in, which
+    # only a sandbox makes read-only: written in place, the record would
+    # name bytes that no longer exist anywhere.
     if rewritten := [
         entry
         for entry, (path, stamp) in watched.items()
@@ -442,6 +454,23 @@ def execute(
                 finished=_instant(finished),
             ),
         )
+        records = tuple(path.read_bytes() for path in task.record_paths)
+        # Made in a checkout, the file goes to its place in the project
+        # now, last, and before anything is told it exists: what reads it
+        # starts after this returns, and finds it through the link left
+        # here. Not once the run is over: a task goes on after the driver
+        # that submitted it is gone, and would put its file over what a
+        # later run has committed.
+        if context.project is not None:
+            if _abandoned():
+                return TaskOutcome(
+                    task.id,
+                    "failed",
+                    reason="the run it was made for ended before it did, so it stays in "
+                    "that run's checkout",
+                    notes=outcome.notes,
+                )
+            checkout.hand_over(task, context.project)
     except (OSError, ValueError, ProjectError) as e:
         return TaskOutcome(
             task.id,
@@ -450,8 +479,33 @@ def execute(
             notes=outcome.notes,
         )
     return TaskOutcome(
-        task.id, "made", content_hash=content_hash, size=size, stamp=stamp, notes=outcome.notes
+        task.id,
+        "made",
+        content_hash=content_hash,
+        size=size,
+        stamp=stamp,
+        records=records,
+        notes=outcome.notes,
     )
+
+
+def _abandoned() -> bool:
+    """Whether the run that submitted this task is gone.
+
+    Its scheduler knows: once the driver is, however it went, nothing
+    holds the task's result any more, and the scheduler tells the worker
+    so while the recipe runs on, since nothing can stop that. Asked where
+    a task runs on such a worker, and nowhere else: the rerun entry point
+    has no run to outlive.
+    """
+    from distributed import get_worker
+
+    try:
+        here = get_worker()
+    except ValueError:
+        return False
+    state = here.state.tasks.get(here.get_current_task())
+    return state is None or state.state == "cancelled"
 
 
 def _instant(moment: datetime) -> str:
@@ -545,10 +599,14 @@ def main(argv: list[str]) -> int:
             print(
                 f"error: uncommitted changes — {', '.join(edited)} — so the commit a "
                 "record names would not say what its recipe ran on (UNCOMMITTED_CHANGES). "
-                "Commit them first.",
+                "Commit your own first. What a run left where results go, `lc materialize` "
+                "commits or makes again; a file still there after it is no result's, and "
+                "yours to remove.",
                 file=sys.stderr,
             )
             return 2
+        # A run that is making this result would commit its own as well.
+        checkout.require_free(root, [task.id])
         require_in_commit(root, graph.specs)
         # What the recipe reads at another commit is given as a run gives it.
         trees: dict[str, list[str]] = {}
