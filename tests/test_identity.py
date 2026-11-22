@@ -1,4 +1,4 @@
-"""Tests for `lightcone.engine.identity` — what an output is identified by.
+"""Tests for `lightcone.engine.identity` — the environment a result ran under.
 
 These are sensitivity tests. A content hash is only worth having if it
 moves when the thing it identifies moves and stays put when it does not,
@@ -13,7 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine.identity import LockScan, definition_version, env_version, scan_lock
+from lightcone.engine.identity import (
+    LockScan,
+    env_version,
+    environment,
+    files,
+    scan_lock,
+)
 from lightcone.engine.project import ProjectError
 
 _LOCK = """version = 1
@@ -168,48 +174,41 @@ def test_fields_cannot_shift_into_one_another(root: Path) -> None:
     assert env_version(root) != shifted_left
 
 
-# ---- definition_version ----------------------------------------------------
+# ---- the files a record names its environment by --------------------------
 
 
-def test_definition_version_follows_all_three_terms() -> None:
-    recipe, decisions = "python fit.py {output}", {"method": "mcmc"}
-    original = definition_version(recipe=recipe, decisions=decisions, fmt="csv")
-
-    assert definition_version(recipe=recipe + " -v", decisions=decisions, fmt="csv") != original
-    assert (
-        definition_version(recipe=recipe, decisions={"method": "nested"}, fmt="csv") != original
-    )
-    assert definition_version(recipe=recipe, decisions=decisions, fmt="parquet") != original
+def test_the_iri_names_env_version(root: Path) -> None:
+    assert environment(root) == f"urn:lightcone:env:{env_version(root)}"
 
 
-def test_the_format_moves_it_even_when_the_recipe_never_names_the_output() -> None:
-    """A recipe need not use `{output}` at all, so the format cannot be
-    left to arrive through the rendered path. One that did would keep its
-    digest across a re-declared serialization — and the sidecar, named from
-    the id alone, does not move either, so the manifest would go on
-    describing an output at a path that no longer exists."""
-    fixed = "python fit.py --out results/baseline/fit.csv"
-    assert definition_version(recipe=fixed, decisions={}, fmt="csv") != definition_version(
-        recipe=fixed, decisions={}, fmt="parquet"
-    )
+@pytest.mark.parametrize("config", [False, True])
+def test_every_file_it_names_moves_env_version(root: Path, config: bool) -> None:
+    """What `files` names is what has to be in a commit to recreate the
+    environment, so each has to be something `env_version` reads: an edit
+    to any one of them moves it. `uv.toml` is named only where there is
+    one, since it then replaces `[tool.uv]`."""
+    if config:
+        (root / "uv.toml").write_text("no-binary = false\n")
+    assert ("uv.toml" in files(root)) is config
+    for name in files(root):
+        before = env_version(root)
+        path = root / name
+        edit = {
+            "pyproject.toml": '\n[tool.lightcone.image]\napt-install = ["bc"]\n',
+            "uv.toml": "no-build = true\n",
+        }.get(name, "\n")
+        path.write_text(path.read_text() + edit)
+        assert env_version(root) != before, name
 
 
-def test_decision_order_does_not_matter() -> None:
-    """Decisions are a mapping, not a sequence — two spellings of the same
-    choices define the same output."""
-    a = definition_version(recipe="r", decisions={"x": "1", "y": "2"}, fmt="csv")
-    b = definition_version(recipe="r", decisions={"y": "2", "x": "1"}, fmt="csv")
-    assert a == b
-
-
-def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
-    """The load-bearing separation. `env_version` is recorded beside an
-    output and compared to say it is *behind*; folding it in here would
-    make one added dependency remake a project's every result."""
-    before = definition_version(recipe="r", decisions={}, fmt="csv")
-    (root / ".python-version").write_text("3.12.9\n")
-    assert env_version(root)  # the environment did move
-    assert definition_version(recipe="r", decisions={}, fmt="csv") == before
+def test_a_file_it_does_not_name_does_not_move_env_version(root: Path) -> None:
+    """The other direction: nothing outside `files` is part of the
+    environment, so a commit lacking it still recreates the environment."""
+    before = env_version(root)
+    (root / "astra.yaml").write_text('spec_version: "0.1.0"\n')
+    (root / "uv.toml.bak").write_text("no-build = true\n")
+    assert "astra.yaml" not in files(root)
+    assert env_version(root) == before
 
 
 # ---- the lock scan ---------------------------------------------------------

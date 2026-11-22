@@ -203,8 +203,9 @@ def exec_policy(
     and a mechanism can only grant *creating* it through the directory
     that will hold it — so outputs declared side by side are mutually
     writable again, which the narrower per-output directory used to
-    prevent. Recorded rather than papered over: what answers whether an
-    output's bytes are its own is ``data_version``, never the sandbox. A
+    prevent. Recorded rather than papered over: what answers whether a
+    result's bytes are its own is the hash its record gives, which ASTRA's
+    checker compares with the bytes at its place, never the sandbox. A
     probe has no analysis node, so ``lc run`` gets ``results/`` whole.
 
     The containerized shape is the same policy with the host stripped

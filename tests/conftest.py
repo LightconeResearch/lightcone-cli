@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
+import tomllib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,7 +16,7 @@ from click.testing import CliRunner
 
 from lightcone.engine import dataset, project, templates
 from lightcone.engine.compute.model import Identity
-from lightcone.engine.plan import Key, Task
+from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import _run as _real_run
 
 CLUSTER_ID = Identity(provider="local", native_id="test", token="test").encode()
@@ -69,6 +70,13 @@ def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def astra_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ASTRA's cache — file hashes, papers — out of the developer's
+    own, so no test reads what another run left there."""
+    monkeypatch.setenv("ASTRA_CACHE_DIR", str(tmp_path_factory.mktemp("astra-cache")))
+
+
+@pytest.fixture(autouse=True)
 def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Blind the suite to the host's machine-level uv configuration.
 
@@ -81,6 +89,107 @@ def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
     from lightcone.engine import identity
 
     monkeypatch.setattr(identity, "_machine_config_paths", tuple)
+
+
+@pytest.fixture(autouse=True)
+def no_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite off GitHub, and off the developer's own credentials.
+
+    Nothing here may call GitHub's API, and no test may behave otherwise
+    on a host where ``gh`` is logged in or a token is exported. The
+    :func:`github` fixture puts a GitHub made of local repositories in
+    its place.
+    """
+    from lightcone.engine import github as engine
+
+    def refuse(method: str, path: str, token: str | None, body: object = None) -> object:
+        raise AssertionError(f"a test called GitHub's API: {method} {path}")
+
+    monkeypatch.setattr(engine, "_call", refuse)
+    monkeypatch.setattr(engine, "has_gh", lambda: False)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+class GitHub:
+    """A github.com made of bare repositories in a folder.
+
+    git reaches ``https://github.com/<owner>/<name>`` there through
+    ``url.<folder>.insteadOf``, so every clone, fetch and push a test
+    makes is a real one; the REST API is answered from the same folder.
+    The token's owner is ``alice``.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        #: Each call made to the API, as ``(method, path, body)``.
+        self.calls: list[tuple[str, str, object]] = []
+
+    def at(self, slug: str) -> Path:
+        """Where ``<owner>/<name>`` is kept."""
+        return self.folder / slug
+
+    def new(self, slug: str, *, private: bool = True) -> Path:
+        """Create ``<owner>/<name>``, empty, as someone does at github.com/new."""
+        repository = self.at(slug)
+        _must(_real_run(["git", "init", "-q", "--bare", str(repository)], cwd=self.folder), [])
+        (repository / "visibility").write_text("private" if private else "public")
+        return repository
+
+    def visibility(self, slug: str) -> str:
+        """Who can read ``<owner>/<name>``."""
+        return (self.at(slug) / "visibility").read_text()
+
+    def call(
+        self, method: str, path: str, token: str | None, body: dict[str, object] | None = None
+    ) -> tuple[int, dict[str, object]]:
+        """Answer one call to the REST API."""
+        self.calls.append((method, path, body))
+        parts = path.strip("/").split("/")
+        if path == "/user":
+            return (200, {"login": "alice"}) if token else (401, {"message": "Bad credentials"})
+        if method == "POST" and body is not None:
+            owner = "alice" if path == "/user/repos" else parts[1]
+            if self.at(f"{owner}/{body['name']}").exists():
+                return 422, {
+                    "message": "Repository creation failed.",
+                    "errors": [{"message": "name already exists on this account"}],
+                }
+            self.new(f"{owner}/{body['name']}", private=bool(body["private"]))
+            return 201, {}
+        repository = self.at(f"{parts[1]}/{parts[2]}")
+        if not repository.exists():
+            return 404, {"message": "Not Found"}
+        if method == "PATCH":
+            (repository / "visibility").write_text("public")
+            return 200, {}
+        private = self.visibility(f"{parts[1]}/{parts[2]}") == "private"
+        if private and not token:
+            return 404, {"message": "Not Found"}
+        return 200, {"private": private}
+
+
+@pytest.fixture
+def github(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> GitHub:
+    """Stand a local :class:`GitHub` in for github.com, with a token to create with.
+
+    The global git configuration is replaced by one that sends github.com
+    there, and carries the identity a clone commits with.
+    """
+    from lightcone.engine import github as engine
+
+    hub = GitHub(tmp_path / "github.com")
+    hub.folder.mkdir()
+    config = tmp_path / "gitconfig"
+    config.write_text(
+        f'[url "{hub.folder}/"]\n\tinsteadOf = https://github.com/\n'
+        "[user]\n\tname = Test\n\temail = t@example.com\n"
+        "[init]\n\tdefaultBranch = main\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GH_TOKEN", "a-token")
+    monkeypatch.setattr(engine, "_call", hub.call)
+    return hub
 
 
 @pytest.fixture(autouse=True)
@@ -172,9 +281,9 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+    def validate(self, tasks: Iterable[Task]) -> dict[ResultId, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
-        return {task.key: {} for task in tasks}
+        return {task.id: {} for task in tasks}
 
     def submit(
         self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
@@ -248,13 +357,9 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
     and `uv sync` together cost milliseconds.
     """
 
-    def build(
-        spec: str,
-        files: dict[str, str] | None = None,
-        universes: dict[str, str] | None = None,
-    ) -> Path:
+    def build(spec: str, files: dict[str, str] | None = None) -> Path:
         root = tmp_path / "analysis"
-        for name in ("universes", "results", "data"):
+        for name in ("results", "data"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
         (root / "pyproject.toml").write_text(
@@ -265,8 +370,6 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
         (root / ".gitattributes").write_text(templates.read("gitattributes.tmpl"))
         (root / ".gitignore").write_text(templates.read("gitignore.tmpl"))
         (root / "astra.yaml").write_text(textwrap.dedent(spec))
-        for name, text in (universes or {"baseline": "id: baseline\ndecisions: {}\n"}).items():
-            (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))
         for name, text in (files or {}).items():
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -286,6 +389,95 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
         return root
 
     return build
+
+
+def clone_of(root: Path, into: Path) -> Path:
+    """Clone *root* into a usable annexed repository, as a colleague would.
+
+    The identity is set because `clone` does not copy one and
+    `annex init` makes a commit — so without it this fails on any host
+    with no usable global identity, CI included. No annex content is
+    fetched: a fresh clone holds pointers.
+    """
+    cloned = into / "clone"
+    dataset._git(["clone", "-q", str(root), str(cloned)], cwd=into)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=cloned)
+    dataset._git(["annex", "init", "-q", "clone"], cwd=cloned)
+    return cloned
+
+
+#: An analysis whose one result, made once, says it was made first.
+FIRST = """
+spec_version: "0.1.0"
+outputs:
+  fit:
+    type: data
+    format: txt
+    recipe:
+      command: echo first > {output}
+"""
+
+#: The same analysis later, `fit` made otherwise, and `compare` reading it
+#: beside the `fit` it had at an earlier commit, given as `%s`.
+SINCE = """
+spec_version: "0.1.0"
+analyses:
+  previous: {path: ., commit: "%s"}
+outputs:
+  fit:
+    type: data
+    format: txt
+    recipe:
+      command: echo second > {output}
+  compare:
+    type: report
+    format: txt
+    inputs: [fit, previous.fit]
+    recipe:
+      command: cat {inputs} > {output}
+"""
+
+
+def since(root: Path, *, made: bool = True) -> str:
+    """Commit the project as :data:`FIRST` has it — `fit` made there, unless
+    not *made* — then declare that commit as `previous` (:data:`SINCE`).
+
+    Returns:
+        The commit `previous` is declared at.
+    """
+    if made:
+        from lightcone.engine import materialize
+
+        assert materialize.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(SINCE % at)
+    dataset.save(root, [spec], "compare with an earlier commit")
+    return at
+
+
+def with_idna(root: Path) -> Path:
+    """Have the project at *root* depend on idna, locked, synced and committed.
+
+    A recipe that imports it runs only in the environment the lock
+    describes: an empty one, which `uv run --no-sync` creates where there
+    is none, fails the import. Resolving it needs the package index.
+    """
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
+    )
+    for argv in (["uv", "lock", "-q"], ["uv", "sync", "-q", "--locked", "--exact"]):
+        _must(project._run([*argv, "--project", str(root)], cwd=root), argv)
+    dataset.save(root, [root], "depend on idna")
+    return root
+
+
+def locked_version(root: Path, name: str) -> str:
+    """The version the lock at *root* pins the package *name* at."""
+    lock = tomllib.loads((root / "uv.lock").read_text())
+    return str(next(package["version"] for package in lock["package"] if package["name"] == name))
 
 
 def _must(proc: object, argv: list[str]) -> None:

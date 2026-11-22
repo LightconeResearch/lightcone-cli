@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from lightcone.engine import assets, dataset, image, project, sandbox
+from lightcone.engine import content, dataset, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
 
 #: The runtimes that are podman underneath and share its spellings —
@@ -68,8 +68,6 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
-    #: The architecture the archive was built for.
-    arch: str = ""
 
     @property
     def supports_gpus(self) -> bool:
@@ -84,19 +82,6 @@ class Runtime:
         ``extra_inputs`` names. Derived through :func:`image.archive_path`
         so this cannot become a second spelling of the layout."""
         return image.archive_path(self.root, self.image_tag).relative_to(self.root).as_posix()
-
-    def manifest_image(self) -> dict[str, str] | None:
-        """This world as the manifest's ``image`` field; ``None`` on the
-        host. Beside the data, so a field added here cannot be forgotten
-        at the write site — the ``asdict(attestation)`` discipline."""
-        if self.mode == "direct":
-            return None
-        return {
-            "tag": self.image_tag,
-            "id": self.image_id,
-            "archive": self.archive,
-            "arch": self.arch,
-        }
 
 
 def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runtime:
@@ -178,7 +163,6 @@ def runtime_for_run(root: Path, *, build: bool, use_gpus: bool = False) -> Runti
         image_tag=tag,
         image_id=image_id,
         store_id=store_id,
-        arch=arch,
     )
 
 
@@ -196,19 +180,18 @@ def _fetch(root: Path, archive: Path) -> None:
     """
     relative = archive.relative_to(root).as_posix()
     try:
-        assets.require_fetched(archive)
+        content.require_fetched(archive)
         return
-    except assets.ContentNotFetchedError:
+    except content.ContentNotFetchedError:
         pass
-    got = project._run(["git", "annex", "get", "--", relative], cwd=root)
-    if got.returncode != 0:
+    if failed := dataset.get(root, [relative]):
         raise ProjectError(
             f"the image archive `{relative}` is not in this clone, and fetching it "
-            f"failed:\n{got.stderr.strip()}\n"
+            f"failed:\n{failed[relative]}\n"
             "It needs a reachable remote that holds the content — or rebuild a new "
             "image with `lc build`."
         )
-    assets.require_fetched(archive)
+    content.require_fetched(archive)
 
 
 def _committed(archive: Path) -> bool:
@@ -251,19 +234,17 @@ def runtime_name(root: Path) -> str:
         if project._run(["docker", "info"], cwd=root).returncode != 0:
             raise ProjectError(
                 "docker is installed but its daemon is not reachable — start it "
-                "(or install podman, which needs no daemon), then retry. "
-                "`lc status` shows what this project needs."
+                "(or install podman, which needs no daemon), then retry."
             )
     elif not name:
         raise ProjectError(
             "this project is containerized and needs a container runtime: install "
-            "podman (recommended: https://podman.io/docs/installation) or docker. "
-            "`lc status` shows what this project needs."
+            "podman (recommended: https://podman.io/docs/installation) or docker."
         )
     return name
 
 
-def backend(runtime: Runtime) -> sandbox.Backend:
+def backend(runtime: Runtime, *, workdir: Path) -> sandbox.Backend:
     """Pick the exec boundary for a resolved runtime.
 
     The only *mode* branch above the sandbox seam, mirroring
@@ -273,6 +254,9 @@ def backend(runtime: Runtime) -> sandbox.Backend:
 
     Args:
         runtime: A resolved runtime.
+        workdir: The folder the command runs in. A host mechanism runs it
+            where the process is; a container is told, since the runtime
+            decides where its command starts.
 
     Returns:
         The backend the exec goes through.
@@ -289,7 +273,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     return OCIBackend(
         runtime=cast(OCIRuntime, runtime.runtime),
         image_id=runtime.store_id,
-        root=runtime.root,
+        workdir=workdir,
         user_flags=(*uid_flags(runtime.runtime), *pull),
     )
 
@@ -373,8 +357,8 @@ def image_state(root: Path) -> tuple[str, str, str]:
     if not _committed(archive):
         return ("absent", tag, relative)
     try:
-        assets.require_fetched(archive)
-    except assets.ContentNotFetchedError:
+        content.require_fetched(archive)
+    except content.ContentNotFetchedError:
         return ("unfetched", tag, relative)
     return ("present", tag, relative)
 

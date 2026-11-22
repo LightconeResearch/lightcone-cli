@@ -1,11 +1,4 @@
-"""What a materialized output is identified by.
-
-Two hashes, and they answer different questions on purpose.
-
-``definition_version`` is what the spec says an output *is*: its rendered
-recipe and the decisions it was made under. It is the rebuild trigger —
-when it moves, the artifact on disk is no longer an instance of the thing
-the spec describes, so keeping it would be mislabelling it.
+"""The environment a result ran under, and how far its identity reaches.
 
 ``env_version`` is the environment's identity: the lock's bytes, the
 interpreter pin's bytes, the settings that decide *which artifacts*
@@ -15,25 +8,25 @@ over-sensitive — raw lock bytes, so a comment reflow moves it — because
 the alternative is a parse that silently disagrees with uv about what the
 lock means.
 
-**``env_version`` is not part of ``definition_version``**, and that is the
-whole shape of the model. An environment moves for reasons that have
-nothing to do with a given output — one added dependency rewrites the lock
-for the whole project — and a research artifact costs hours to remake and
-is often already looked at. So an environment edit does not stale
-anything; it makes an artifact *behind*, which is a fact the report states
-and a rebuild the caller can ask for. Over-sensitivity is affordable
-exactly because it no longer spends compute.
+A record names the environment its recipe ran in by an IRI, and
+:func:`environment` is that IRI: ``env_version`` under lc's own ``urn:``
+prefix. The name is lc's, so what it holds is lc's to say, and it is the
+files of the record's commit that :func:`files` lists — which is what
+makes it one lc can recreate. ASTRA records the environment and never
+compares it, **and neither does the rebuild rule** — that is the whole
+shape of the model. An environment moves for reasons that have nothing
+to do with a given result — one added dependency rewrites the lock for
+the whole project — and a research result costs hours to remake and is
+often already looked at. So an environment edit does not stale anything;
+it makes a result *behind*, which is a fact the report states and a
+rebuild the caller can ask for. Over-sensitivity is affordable exactly
+because it spends no compute.
 
-What makes that safe is that nothing is lost: the environment an output
-was made under is recorded in its manifest, and the commit alongside it
-reconstructs that environment from the lock of the day.
+The git commit is not an input. It is tree-wide, so hashing it would
+put every result behind on a README edit; a record names it instead.
 
-The git commit is not an input to either hash. It is tree-wide, so
-hashing it would stale every output in the repository on a README edit.
-
-Both hashes are length-framed. Concatenating fields raw lets a boundary
-shift between them produce the same digest from different inputs — a
-recipe ending in a character the decisions begin with, say — and nothing
+The hash is length-framed. Concatenating fields raw lets a boundary shift
+between them produce the same digest from different inputs, and nothing
 about a content hash is worth having if it can be shifted.
 """
 
@@ -44,7 +37,6 @@ import json
 import os
 import re
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,7 +48,7 @@ from lightcone.engine.project import ProjectError
 #: sync materializes from an unchanged lock. Closed on purpose: anything
 #: outside it is either already covered by the lock's bytes or does not
 #: affect what ends up installed, and a set that grew by guesswork would
-#: report every output in every project as behind each time it did.
+#: report every result in every project as behind each time it did.
 _INSTALL_SETTINGS = (
     "default-groups",
     "no-binary",
@@ -109,32 +101,38 @@ def env_version(root: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
-def definition_version(*, recipe: str, decisions: Mapping[str, str], fmt: str) -> str:
-    """Compute what the spec says one output is.
+def files(root: Path) -> tuple[str, ...]:
+    """Name the files :func:`env_version` reads, from the project root.
 
-    ``sha256(recipe ‖ canonical decisions ‖ format)``, length-framed. The
-    environment is deliberately absent: see this module's docstring.
-
-    The format is framed in its own right rather than left to arrive
-    through the rendered recipe's ``{output}`` path, because a recipe need
-    not use that placeholder at all. One that does not would keep its
-    digest across a re-declared serialization while the manifest — whose
-    sidecar is named from the id alone, so it does not move either — went
-    on describing an output at a path that no longer exists.
+    A record names its environment by these files as its commit has them,
+    so they are what has to be in that commit for the environment to be
+    recreated from it.
 
     Args:
-        recipe: The rendered recipe command.
-        decisions: The decisions this output declares, as id → option.
-        fmt: The declared serialization.
+        root: The project root.
 
     Returns:
-        The digest, as ``sha256:<hex>``.
+        The lock, the interpreter pin, ``pyproject.toml`` — which holds
+        the image declaration and, without a ``uv.toml``, uv's settings —
+        and the ``uv.toml`` that replaces them where there is one.
     """
-    h = hashlib.sha256()
-    _frame(h, "recipe", recipe.encode())
-    _frame(h, "decisions", _canonical(dict(decisions)).encode())
-    _frame(h, "format", fmt.encode())
-    return f"sha256:{h.hexdigest()}"
+    config = ("uv.toml",) if (root / "uv.toml").is_file() else ()
+    return ("uv.lock", ".python-version", "pyproject.toml", *config)
+
+
+def environment(root: Path) -> str:
+    """Name the project's environment as a record does.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The IRI: :func:`env_version` under lc's ``urn:`` prefix.
+
+    Raises:
+        ProjectError: If ``uv.lock`` or ``.python-version`` is missing.
+    """
+    return f"urn:lightcone:env:{env_version(root)}"
 
 
 def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
@@ -144,11 +142,6 @@ def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
     h.update(str(len(data)).encode("ascii"))
     h.update(b"\0")
     h.update(data)
-
-
-def _canonical(value: Any) -> str:
-    """JSON with a single spelling per value — sorted keys, no padding."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _install_settings(root: Path) -> str:
@@ -164,7 +157,11 @@ def _install_settings(root: Path) -> str:
     that install the same artifacts are one environment however they spell
     it.
     """
-    return _canonical({key: _uv_config(root).get(key) for key in _INSTALL_SETTINGS})
+    return json.dumps(
+        {key: _uv_config(root).get(key) for key in _INSTALL_SETTINGS},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 # =============================================================================
@@ -324,7 +321,7 @@ def _uv_config(root: Path) -> dict[str, Any]:
     What this cannot reach is user- and system-level configuration, which
     uv *does* merge in underneath. That is machine state rather than
     project state: hashing it would make one commit answer differently on
-    two hosts, reporting every output as behind on a colleague's clone.
+    two hosts, reporting every result as behind on a colleague's clone.
     :func:`_machine_config` reports it instead.
     """
     config = root / "uv.toml"

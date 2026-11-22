@@ -164,11 +164,11 @@ def _render_data(path: Path) -> list[str]:
     return _message(
         f"cannot read {path}",
         [
-            "  if this is a data file, declare it as an input in astra.yaml:",
+            "  if this is a data file, commit it in the project and declare it as an",
+            "  input in astra.yaml, listed in the `inputs` of the output that reads it:",
             "      inputs:",
-            "        - id: <input_id>",
-            "          type: data",
-            f"          source: {path}",
+            "        <input_id>:",
+            f"          path: data/{path.name}",
         ],
     )
 

@@ -70,7 +70,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
     loaded: set[str] = set()
 
-    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+    def run(argv: list[str], *, cwd: Path, stdin: str | None = None) -> MagicMock:
         calls.append(list(argv))
         if argv[0] in ("podman", "docker", "podman-hpc"):
             if argv[1] == "image":  # the loaded probe, both spellings
@@ -92,8 +92,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(
                 returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
             )
-        if argv[:3] == ["git", "annex", "get"]:
-            _write_archive(cwd / argv[-1])  # the fetch's observable effect
+        if argv[-4:-2] == ["annex", "get"]:
+            _write_archive(cwd / (stdin or "").strip())  # the fetch's observable effect
             return MagicMock(returncode=0, stdout="", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -236,16 +236,18 @@ def test_unfetched_archive_content_is_fetched_by_lc_itself(
     runtime = container.runtime_for_run(root, build=False)
 
     assert runtime.image_id
-    (got,) = [c for c in fake if c[:3] == ["git", "annex", "get"]]
-    assert got[-1] == f".datalad/environments/{image.tag(root)}/image"
+    assert archive.read_bytes() != b"/annex/objects/SHA256E-s323--abc\n"
+    # Fetched as everything else is: ssh in batch mode, and no prompt.
+    (got,) = [c for c in fake if c[-4:-2] == ["annex", "get"]]
+    assert "core.sshCommand=ssh -o BatchMode=yes" in got
 
     archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # unfetched again
     inner = project._run
 
-    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
-        if argv[:3] == ["git", "annex", "get"]:
+    def failing(argv: list[str], *, cwd: Path, stdin: str | None = None) -> MagicMock:
+        if argv[-4:-2] == ["annex", "get"]:
             return MagicMock(returncode=1, stdout="", stderr="no reachable copy")
-        return inner(argv, cwd=cwd)
+        return inner(argv, cwd=cwd, stdin=stdin)
 
     monkeypatch.setattr(project, "_run", failing)
     with pytest.raises(ProjectError, match="fetching it failed"):
@@ -262,7 +264,6 @@ def test_a_present_archive_is_loaded_once_and_reused(
 
     assert first.image_id == expected and second.image_id == expected
     assert first.store_id == expected  # podman knows an image by its id
-    assert first.arch == "amd64"
     assert first.archive == f".datalad/environments/{image.tag(root)}/image"
     assert len(_argvs(fake, "podman", "load")) == 1  # the second run hit the store
 
@@ -332,7 +333,8 @@ def test_a_containerd_store_runs_what_it_made_of_an_archive_without_an_index(
 
     assert runtime.image_id == expected
     assert runtime.store_id == "e" * 64
-    assert container.backend(runtime).image_id == "e" * 64  # what `docker run` is given
+    # What `docker run` is given.
+    assert container.backend(runtime, workdir=runtime.root).image_id == "e" * 64
 
 
 # ---- building ---------------------------------------------------------------
@@ -703,7 +705,7 @@ def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list
     runtime = container.runtime_for_run(root, build=False)
 
     assert container.uid_flags("podman-hpc") == ["--userns=keep-id"]
-    backend = container.backend(runtime)
+    backend = container.backend(runtime, workdir=runtime.root)
     assert backend.capability.kind == "podman-hpc"
     assert "--pull=never" in backend.user_flags  # type: ignore[attr-defined]
     assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]
@@ -730,7 +732,7 @@ def test_a_foreign_arch_archive_refuses_before_loading(
 def test_the_matching_arch_loads(root: Path, fake: list[list[str]]) -> None:
     _write_archive(image.archive_path(root, image.tag(root)))
 
-    assert container.runtime_for_run(root, build=False).arch == "amd64"
+    container.runtime_for_run(root, build=False)
     assert len(_argvs(fake, "podman", "load")) == 1
 
 

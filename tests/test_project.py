@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from astra import api
 from conftest import probes, uv_calls
 
 from lightcone.engine import dataset, plan, templates
@@ -22,7 +23,6 @@ from lightcone.engine.project import (
 #: Every path convergence is responsible for.
 SCAFFOLD = (
     "astra.yaml",
-    "universes/baseline.yaml",
     "pyproject.toml",
     ".python-version",
     ".gitignore",
@@ -81,6 +81,7 @@ def test_as_dict_carries_every_field() -> None:
         "unchanged",
         "blocked",
         "warnings",
+        "online",
     }
 
 
@@ -110,14 +111,16 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
-def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path) -> None:
+def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path, real_tools: None) -> None:
     """The scaffold is an empty analysis, not an example to delete — and
     still one ASTRA accepts and lc can plan, so every verb works on a
-    project nobody has edited yet."""
+    project nobody has edited yet. Real tools, because ASTRA validates
+    against git."""
     project = tmp_path / "proj"
     converge(project)
 
     assert plan.build(project).tasks == {}
+    assert api.resolve(project).analyses[0].label == "proj"
 
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
@@ -200,18 +203,16 @@ def test_converge_adopts_an_existing_spec_without_touching_it(tmp_path: Path) ->
 
 
 def test_adoption_adds_no_layout_of_its_own(tmp_path: Path) -> None:
-    """Neither `src/` nor an empty `universes/` is created beside a
-    user-authored spec: git cannot track an empty directory, so converging
-    one would report drift on every fresh clone. Where analysis code lives
-    is the user's layout (astra-tools#100), and universes are discovered by
-    glob — a missing directory yields no universes, not an error."""
+    """No `src/` is created beside a user-authored spec: git cannot track
+    an empty directory, so converging one would report drift on every
+    fresh clone, and where analysis code lives is the user's layout
+    (astra-tools#100)."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / SPEC_FILENAME).write_text('name: "mine"\n')
 
     converge(project)
     assert not (project / "src").exists()
-    assert not (project / "universes").exists()
     assert converge(project).converged
 
 
@@ -908,17 +909,58 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         converge(tmp_path / "proj")
 
 
-def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
-    """Publication intent, derived never configured — the crate is
-    maintained iff [project].license is declared, in any of its forms."""
-    from lightcone.engine.project import license_of
+# ---- what a clone keeps of where the project is published ------------------
 
-    cases = {
-        'license = "MIT"': "MIT",
-        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
-        'license = { file = "LICENSE" }': "LICENSE",
-        "": "",
-    }
-    for spelling, expected in cases.items():
-        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
-        assert license_of(tmp_path) == expected, spelling
+
+def _origin_on_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Have git answer that `origin` is a repository on GitHub."""
+    from unittest.mock import MagicMock
+
+    from lightcone.engine import project
+
+    stubbed = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> object:
+        if argv == ["git", "config", "--get", "remote.origin.url"]:
+            stubbed(argv, cwd=cwd)  # recorded, like every other call
+            return MagicMock(returncode=0, stdout="https://github.com/lcr/analysis\n", stderr="")
+        return stubbed(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+
+
+def test_a_project_that_is_not_on_github_has_no_publication_settings(tmp_path: Path) -> None:
+    report = converge(tmp_path / "proj")
+
+    assert not report.online
+    assert "publication settings" not in report.created + report.unchanged
+
+
+def test_a_clone_from_github_is_set_up_without_asking_github_anything(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git-annex, set up beside an `origin` on GitHub, asks GitHub whether
+    it holds bytes (measured): told beforehand that it does not, `lc init`
+    works offline. The settings are the clone's own, so it converges them."""
+    _origin_on_github(monkeypatch)
+
+    report = converge(tmp_path / "proj")
+
+    assert report.online and report.as_dict()["online"]
+    assert "publication settings" in report.created
+    told = tools.index(["git", "config", "remote.origin.annex-ignore", "true"])
+    assert told < tools.index(["git", "annex", "init", "-q"])
+    assert "publication settings" in converge(tmp_path / "proj").unchanged
+
+
+def test_check_mode_writes_no_publication_setting(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    converge(tmp_path / "proj")
+    _origin_on_github(monkeypatch)
+    tools.clear()
+
+    report = converge(tmp_path / "proj", write=False)
+
+    assert report.created == ["publication settings"] and not report.converged
+    assert ["git", "config", "remote.origin.annex-ignore", "true"] not in tools

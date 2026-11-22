@@ -55,8 +55,9 @@ class OCIBackend:
     #: Execution pins on the id, never a tag, so a retagged image in the
     #: local store can never substitute.
     image_id: str
-    #: The project root — the container's working directory.
-    root: Path
+    #: The folder the command runs in: the project root for a probe, a
+    #: recipe's own analysis's folder.
+    workdir: Path
     #: How this runtime keeps mount writes owned by the invoking user,
     #: resolved by the caller so the wrap stays a pure function of its
     #: fields (``--userns=keep-id`` / ``--user uid:gid``).
@@ -125,7 +126,7 @@ class OCIBackend:
             *mounts,
             "--tmpfs", "/tmp:rw,exec",
             "--shm-size", "1g",
-            "--workdir", str(self.root),
+            "--workdir", str(self.workdir),
             *overlay,
             f"--env={SANDBOX_ENV}={self.runtime}",
             self.image_id,

@@ -55,7 +55,7 @@ def _backend(root: Path, runtime: str = "podman") -> OCIBackend:
     return OCIBackend(
         runtime=runtime,  # type: ignore[arg-type]
         image_id=_IMAGE_ID,
-        root=root,
+        workdir=root,
         user_flags=flags,
     )
 
