@@ -219,17 +219,21 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # forgot the write would report the same item repaired forever.
     config: dict[tuple[Path, str], str] = {}
 
-    def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
+    def fake_run(
+        argv: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    ) -> MagicMock:
         calls.append(list(argv))
         project = _project(argv) if "--project" in argv else cwd
+        # The environment uv syncs: the one the caller names, else `.venv`.
+        venv = Path((env or {}).get("UV_PROJECT_ENVIRONMENT", project / ".venv"))
         if argv[0] == "uv" and "--check" in argv:
-            artifact = "uv.lock" if argv[1] == "lock" else ".venv"
-            return MagicMock(returncode=0 if (project / artifact).exists() else 1)
+            artifact = project / "uv.lock" if argv[1] == "lock" else venv
+            return MagicMock(returncode=0 if artifact.exists() else 1)
         if argv[:2] == ["uv", "lock"]:
             # Only has to exist and be non-empty — convergence parses no lock.
             (project / "uv.lock").write_text("version = 1\n")
         elif argv[:2] == ["uv", "sync"]:
-            (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
+            (venv / "bin").mkdir(parents=True, exist_ok=True)
         elif argv[:2] == ["git", "init"]:
             (cwd / ".git").mkdir(exist_ok=True)
         elif argv[:3] == ["git", "annex", "init"]:

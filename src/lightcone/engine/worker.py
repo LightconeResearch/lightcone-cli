@@ -42,6 +42,7 @@ from lightcone.engine import (
     container,
     content,
     dataset,
+    environments,
     identity,
     plan,
     sandbox,
@@ -557,12 +558,14 @@ def main(argv: list[str]) -> int:
     thin wrapper over :func:`execute`, so this is an entry point rather
     than a second implementation. Nothing is classified: a rerun is a rerun.
 
-    The environment is converged here, not assumed: a rerun checks out the
-    lock but never the ``.venv``, and the recipe's own ``uv run --no-sync``
-    would silently hand it an *empty* environment while the record named
-    the lock's. The sync also carries
-    ``--locked``, so a lock that no longer matches ``pyproject.toml`` is a
-    loud refusal rather than a quiet relock.
+    The environment is prepared here, not assumed: a rerun checks out the
+    lock but no environment, and the recipe's own ``uv run --no-sync``
+    would silently hand it an *empty* one while the record named the
+    lock's. It is the environment a run of this identity shares
+    (:mod:`environments`), never the ``.venv`` of the tree a rerun runs
+    in, which is the researcher's. Its build carries ``--locked``, so a
+    lock that no longer matches ``pyproject.toml`` is a loud refusal
+    rather than a quiet relock.
 
     The image, by contrast, is *found*, never built: the run record lists
     the committed archive in ``extra_inputs``, so ``datalad rerun`` has
@@ -621,13 +624,16 @@ def main(argv: list[str]) -> int:
         runtime = container.runtime_for_run(
             root, build=False, use_gpus=TaskResources.parse(task.resources).gpus > 0,
         )
-        container.converge(runtime)
+        # The environment a run of this identity shares, as a run gives it:
+        # never the researcher's `.venv`, which this tree holds.
+        environment = identity.environment(root)
+        runtime, _ = environments.prepare(root, runtime, environment)
         made = execute(
             root,
             task,
             _from_disk(root, graph, task),
             RunContext(
-                environment=identity.environment(root),
+                environment=environment,
                 commit=dataset.head(root),
                 runtime=runtime,
             ),

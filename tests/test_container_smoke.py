@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import container, content, dataset, identity, image
+from lightcone.engine import container, content, dataset, environments, identity, image
 from lightcone.engine import materialize as engine
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError, child_env
@@ -261,6 +261,47 @@ def test_a_result_of_the_run_is_read_in_the_image(
 
     assert report.made == ["sums", "twice"], (report.failed, report.warnings)
     assert (root / "results/twice.txt").read_text() == "4\n4\n"
+    assert not dataset.status(root)
+
+
+_ASKS_PYTHON = """
+spec_version: "0.1.0"
+
+outputs:
+  prefix:
+    type: metric
+    format: txt
+    recipe:
+      command: python -c 'import sys; print(sys.prefix)' > {output}
+  again:
+    type: metric
+    format: txt
+    recipe:
+      command: python -c 'import sys; print(sys.prefix)' > {output}
+"""
+
+
+def test_runs_in_the_image_share_one_environment_mounted_on_its_own(
+    runtime: str, analysis: Callable[..., Path], cluster_id: str
+) -> None:
+    """The environment is built once for its identity, against the
+    image's interpreter, under the project's `.lightcone/envs/`, outside
+    the run's checkout: it is mounted on its own, read-only, and the next
+    run runs in the same one."""
+    root = analysis(_ASKS_PYTHON)
+    text = (root / "pyproject.toml").read_text()
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = []\n')
+    dataset.save(root, [root], "containerize")
+
+    first = engine.materialize(root, ["prefix"], cluster_id=cluster_id)
+    second = engine.materialize(root, ["again"], cluster_id=cluster_id)
+
+    assert (first.made, second.made) == (["prefix"], ["again"]), (first.warnings, second.warnings)
+    envs = (root / environments.ENVS).resolve()
+    ran_in = Path((root / "results/prefix.txt").read_text().strip())
+    assert ran_in.parent == envs
+    assert Path((root / "results/again.txt").read_text().strip()) == ran_in
+    assert [entry for entry in envs.iterdir() if not entry.is_symlink()] == [ran_in]
     assert not dataset.status(root)
 
 

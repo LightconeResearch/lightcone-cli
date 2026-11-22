@@ -828,18 +828,20 @@ outputs:
 def test_the_module_converges_the_environment(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rerun checks out the lock but never `.venv`, and the recipe's own
+    """A rerun checks out the lock but no environment, and the recipe's own
     `uv run --no-sync` silently creates an *empty* environment where none
-    exists — so the entry point syncs before anything executes, or a fresh
-    clone's rerun would record the lock's environment over a recipe that
-    ran in a bare venv. The recipe imports what the lock pins, which no
-    empty environment holds."""
+    exists — so the entry point prepares one before anything executes, or
+    a fresh clone's rerun would record the lock's environment over a
+    recipe that ran in a bare venv. The recipe imports what the lock pins,
+    which no empty environment holds; and the tree's `.venv`, the
+    researcher's, is not where it is made."""
     root = with_idna(analysis(_IMPORTS))
     monkeypatch.chdir(root)
     shutil.rmtree(root / ".venv")
 
     assert worker.main(["version"]) == 0
     assert (root / "results/version.txt").read_text().strip() == locked_version(root, "idna")
+    assert not (root / ".venv").exists()
 
 
 def test_the_module_records_the_bytes_its_task_read_in_the_tree(

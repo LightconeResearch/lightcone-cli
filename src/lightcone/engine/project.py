@@ -327,7 +327,7 @@ def uv_prefix(directory: Path) -> list[str]:
 
 
 def sync(directory: Path, env: dict[str, str] | None = None) -> list[str]:
-    """Make the host ``.venv`` match ``uv.lock``. Direct mode's converge.
+    """Make the host environment match ``uv.lock``. Direct mode's converge.
 
     Both entry points that execute recipes converge before they start,
     rather than checking and refusing: workers pass ``--no-sync``, so
@@ -340,7 +340,9 @@ def sync(directory: Path, env: dict[str, str] | None = None) -> list[str]:
 
     Args:
         directory: The project root.
-        env: The environment to run uv in, :func:`child_env` unless given.
+        env: The environment to run uv in, :func:`child_env` unless given;
+            its ``UV_PROJECT_ENVIRONMENT`` names the environment synced,
+            ``.venv`` without one.
 
     Returns:
         Whatever uv warned about.

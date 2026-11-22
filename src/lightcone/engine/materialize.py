@@ -46,6 +46,7 @@ from lightcone.engine import (
     container,
     content,
     dataset,
+    environments,
     identity,
     plan,
     project,
@@ -690,12 +691,13 @@ def materialize(
                     f"a run's checkout holds no file of a submodule: {', '.join(empty)} — a "
                     "recipe that reads or runs anything there finds an empty folder"
                 )
-            runtime = runtime.at(tree.root)
-            # Converge the environment, in the checkout: workers pass
-            # `--no-sync`, so this is the only place on a run's path where it
-            # is made to match the lock. (A rerun does not come through
-            # here; its entry point converges too.)
-            report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+            # The environment the checkout's commit describes, shared with
+            # every run of its identity, or built in the checkout: workers
+            # pass `--no-sync`, so this is the only place on a run's path
+            # where it is made to match the lock. (A rerun does not come
+            # through here; its entry point does the same.)
+            runtime, warned = environments.prepare(root, runtime.at(tree.root), environment)
+            report.warnings.extend(f"uv: {w}" for w in warned)
             # A declared input more than one task reads is hashed here, once:
             # each task would otherwise read all of it to name it in its
             # record, and a multiverse reads one catalog in every universe.
