@@ -605,6 +605,8 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
+        # A run that is making this result would commit its own as well.
+        checkout.require_free(root, [task.id])
         require_in_commit(root, graph.specs)
         # What the recipe reads at another commit is given as a run gives it.
         trees: dict[str, list[str]] = {}

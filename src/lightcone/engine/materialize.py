@@ -585,6 +585,20 @@ def materialize(
             _left_alone(found, found.task, report)
         return report
     _require_storable(root, graph)
+    # What a run that is over left goes first: a checkout that stays says a
+    # run may be making results, and reading the trees of other commits.
+    if unknown := checkout.reap(root):
+        report.warnings.append(
+            "lc cannot tell whether the runs that left these checkouts are over, so "
+            "they stay: "
+            + ", ".join(plan.declared_path(root.resolve(), left) for left in unknown)
+            + " — once a run is over, `git worktree remove --force --force <path>` "
+            "removes its checkout"
+        )
+    # Said here, before anything is fetched or built, and again as the
+    # run takes its checkout, which is what settles it.
+    making = [task.id for task in running]
+    checkout.require_free(root, making)
     # A result certain to be remade is the one thing a run need not
     # fetch: one that may run only because something it reads may is
     # left alone when that comes out as recorded, and its readers then
@@ -599,16 +613,6 @@ def materialize(
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
         unreadable = _not_as_recorded(root, graph, wanted)
-        # First, since a checkout that stays says a run may be reading the
-        # trees of other commits, which are given next.
-        if unknown := checkout.reap(root):
-            report.warnings.append(
-                "lc cannot tell whether the runs that left these checkouts are over, so "
-                "they stay: "
-                + ", ".join(plan.declared_path(root.resolve(), left) for left in unknown)
-                + " — once a run is over, `git worktree remove --force --force <path>` "
-                "removes its checkout"
-            )
         # A commit whose tree cannot be given blocks what reads a file of it:
         # whatever is on disk there is no longer known to be that commit's.
         ungiven: dict[str, str] = {}
@@ -643,7 +647,7 @@ def materialize(
                 f"the analysis, its environment or an input was committed anew, from "
                 f"{graph.checked.head} to {commit}, while this run was preparing. Run again."
             )
-        tree = checkout.take(root, commit, scheduler.allocation)
+        tree = checkout.take(root, commit, scheduler.allocation, making)
         tasks = {key: task.at(tree.root) for key, task in graph.tasks.items()}
         handles: list[Any] = []
         # The tasks submitted whose results are yet to be committed, or not.
@@ -827,8 +831,11 @@ def materialize(
         finally:
             # An unreported task can still have a running subprocess, which
             # writes in the checkout: it stays until the allocation has ended.
+            # The run makes nothing more all the same, and says so.
             if reported == len(handles):
                 checkout.leave(tree)
+            else:
+                checkout.withdraw(tree)
         return report
 
 

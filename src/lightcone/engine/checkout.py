@@ -36,8 +36,12 @@ record is true.
 
 **Whose it is.** Each run takes a checkout of its own, so several runs of
 one project share nothing but the repository, where git serializes their
-commits. A checkout is held by a lock git keeps, which names the run's
-allocation. The run that took it removes it once every task it submitted
+commits. Not two that make one result, though: each would commit its own,
+and the later commit is what the branch ends with, whichever commit it
+was made from. So a run says which results it is making, beside the lock
+that holds its checkout, and one that would make any of them is refused
+(:func:`require_free`). A checkout is held by a lock git keeps, which
+names the run's allocation. The run that took it removes it once every task it submitted
 has reported; one a run left any other way stays, since a recipe of its
 may still be writing there, until its allocation has ended, which is the
 one fact that says none is.
@@ -49,7 +53,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +69,12 @@ RUNS = ".lightcone/runs"
 #: The git a run needs: ``worktree add --lock --reason`` is 2.33's, and
 #: configuration given in the environment 2.31's.
 _GIT = (2, 33)
+
+#: Where a run says which results it is making: a file of the folder git
+#: keeps for its checkout, one result to a line. There as long as git
+#: knows the checkout, and gone with it (measured: `git worktree prune`
+#: and `git gc` leave it, `git worktree remove` takes it).
+_MAKING = "lc-making"
 
 #: How long a landing waits for the project's index, in seconds. Another
 #: run of the project holds it for as long as git-annex takes to hash the
@@ -131,20 +141,27 @@ def reap(root: Path) -> list[Path]:
     return unknown
 
 
-def take(root: Path, commit: str, allocation: str) -> Checkout:
+def take(root: Path, commit: str, allocation: str, making: Iterable[str]) -> Checkout:
     """Take a checkout of *commit* for a run on *allocation*.
+
+    The run says what it is making as it takes its checkout, and only
+    then looks at what the others are: two runs that start at once each
+    find the other, and both are refused, where looking first would let
+    both through.
 
     Args:
         root: The project root.
         commit: The commit the run builds.
         allocation: The immutable ID of the allocation the run's recipes
             execute on.
+        making: The results the run may make, as lc names them.
 
     Returns:
         The checkout, at *commit*, every annexed file a stand-in.
 
     Raises:
-        ProjectError: If git cannot make the worktree.
+        ProjectError: If git cannot make the worktree, or another run of
+            the project is making one of *making*, with no checkout left.
     """
     base = root / RUNS
     base.mkdir(parents=True, exist_ok=True)
@@ -168,7 +185,69 @@ def take(root: Path, commit: str, allocation: str) -> Checkout:
     if (root / COMMITS).is_dir():
         (tree.root / COMMITS).parent.mkdir(parents=True, exist_ok=True)
         (tree.root / COMMITS).symlink_to(root / COMMITS)
+    making = sorted(making)
+    try:
+        _name("".join(f"{result}\n" for result in making).encode(), _folder(top) / _MAKING)
+        require_free(root, making, own=top)
+    except BaseException:
+        _remove(root, top)
+        raise
     return tree
+
+
+def require_free(root: Path, results: Iterable[str], own: Path | None = None) -> None:
+    """Refuse a run that would make a result another run of the project is making.
+
+    Each would commit its own, and the later commit is what the branch
+    ends with: a slow run of an earlier commit over a quick one of a
+    later commit, with nothing left to say which is the newer.
+
+    A run is making what it said it was for as long as its checkout is
+    held and it has not said otherwise (:func:`withdraw`). One that was
+    killed outright says nothing, so what it was making stays refused
+    until its checkout goes: with its allocation, or by hand.
+
+    Args:
+        root: The project root.
+        results: The results a run would make, as lc names them.
+        own: The checkout of the run that asks, which is not another's.
+
+    Raises:
+        ProjectError: Naming the results, and the checkouts of the runs
+            making them.
+    """
+    theirs: dict[str, Path] = {}
+    for top in held(root):
+        # A checkout whose folder is gone, or that says nothing, makes nothing.
+        with suppress(OSError, ProjectError):
+            if top != own:
+                theirs.update(dict.fromkeys((_folder(top) / _MAKING).read_text().splitlines(), top))
+    if taken := sorted(theirs.keys() & set(results)):
+        named = ", ".join(f"`{result}`" for result in taken[:5])
+        more = f" and {len(taken) - 5} more" if len(taken) > 5 else ""
+        where = ", ".join(sorted({str(theirs[result]) for result in taken}))
+        raise ProjectError(
+            f"another run of the project is making {named}{more}, in {where}. Two runs "
+            "that make one result each commit theirs, and the later commit is what the "
+            "branch ends with, whichever commit it was made from. Wait for that run to "
+            "end, or interrupt it to make them from this commit instead, then run again. "
+            "If it is over and its checkout stayed, `git worktree remove --force --force "
+            "<path>` removes it."
+        )
+
+
+def withdraw(tree: Checkout) -> None:
+    """Say that a run makes nothing more, where its checkout stays.
+
+    A run that ends with tasks unreported leaves its checkout to the
+    recipes still writing there. Their results stay in it: a task whose
+    run is gone moves nothing into the project.
+
+    Args:
+        tree: The checkout of a run that is ending.
+    """
+    with suppress(OSError, ProjectError):
+        (_folder(tree.top) / _MAKING).unlink(missing_ok=True)
 
 
 def fill(tree: Checkout, paths: Sequence[str]) -> None:
@@ -297,7 +376,7 @@ def land(
     Returns:
         False where another commit took the result and its record before
         this one could: a commit of the whole index made in the instant
-        they were staged, or another run's of the same result.
+        they were staged, or another run's that found them at their place.
 
     Raises:
         ProjectError: If the project's history no longer holds the run's
@@ -394,6 +473,12 @@ def held(root: Path) -> dict[Path, str]:
         if top.parent == base and "locked" in known:
             found[top] = known["locked"]
     return found
+
+
+def _folder(top: Path) -> Path:
+    """The folder git keeps for a checkout, in the repository."""
+    asked = [*dataset.PLAIN, "rev-parse", "--absolute-git-dir"]
+    return Path(dataset._git(asked, cwd=top).strip())
 
 
 def _remove(root: Path, top: Path) -> None:

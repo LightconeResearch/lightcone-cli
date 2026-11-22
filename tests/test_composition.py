@@ -494,7 +494,7 @@ def test_a_run_reaps_before_it_gives_the_trees_of_other_commits(
     (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
     spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
     dataset.save(root, [spec], "copy it again")
-    left = checkout.take(root, dataset.head(root), CLUSTER_ID)
+    left = checkout.take(root, dataset.head(root), CLUSTER_ID, [])
     monkeypatch.setattr(compute, "phase", lambda allocation: "ended")
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -518,7 +518,7 @@ def test_a_commits_tree_is_not_made_again_while_another_run_may_be_reading_it(
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     index = root / plan.COMMITS / at / ".git" / "index"
     index.write_bytes(b"not an index")
-    running = checkout.take(root, dataset.head(root), CLUSTER_ID)
+    running = checkout.take(root, dataset.head(root), CLUSTER_ID, [])
 
     with pytest.raises(ProjectError, match="another run of the project may be reading it"):
         commits.give(root, at, None, ["data/catalog.txt"])

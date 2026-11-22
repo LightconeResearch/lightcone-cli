@@ -12,8 +12,8 @@ import os
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -66,8 +66,10 @@ def root(analysis: Callable[..., Path]) -> Path:
     return analysis(_SPEC, {"data/catalog.txt": "1\n2\n", "data/unread.txt": "declared nowhere\n"})
 
 
-def _taken(root: Path, allocation: str = CLUSTER_ID) -> checkout.Checkout:
-    return checkout.take(root, dataset.head(root), allocation)
+def _taken(
+    root: Path, allocation: str = CLUSTER_ID, making: Sequence[str] = ()
+) -> checkout.Checkout:
+    return checkout.take(root, dataset.head(root), allocation, making)
 
 
 def _object(root: Path, name: str) -> Path:
@@ -563,6 +565,120 @@ def test_a_checkout_stays_until_its_allocation_has_ended(
     assert not first.top.exists() and not third.top.exists()
 
 
+def test_a_run_is_refused_a_result_another_run_is_making(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each would commit its own, and the later commit is what the branch
+    ends with: a slow run of an earlier commit over a quick one of a
+    later commit. The second is refused before anything of it starts, by
+    name; one that makes another result runs beside the first."""
+    during: dict[str, Any] = {}
+
+    class First(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            if not during:
+                # The researcher edits, commits, and launches again.
+                (root / "notes.txt").write_text("an edit that makes it faster\n")
+                dataset.save(root, [root / "notes.txt"], "an edit")
+                with pytest.raises(ProjectError) as refused:
+                    engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+                during["refused"] = str(refused.value)
+                during["held"] = _held(root)
+                during["beside"] = engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).made
+            yield from handles
+
+    _cluster(monkeypatch, First())
+    borrowed = engine.cluster_for_run
+    entered: list[str] = []
+
+    @contextmanager
+    def counted(cluster_id: str) -> Iterator[Any]:
+        entered.append(cluster_id)
+        with borrowed(cluster_id) as scheduler:
+            yield scheduler
+
+    monkeypatch.setattr(engine, "cluster_for_run", counted)
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    (first,) = during["held"]
+    # The first run and the one beside it: the refused one used no allocation.
+    assert len(entered) == 2
+    assert "another run of the project is making `other`" in during["refused"]
+    assert str(first) in during["refused"] and "git worktree remove" in during["refused"]
+    assert during["beside"] == ["fit"]
+    assert report.made == ["other"], (report.failed, report.warnings)
+    assert not dataset.status(root) and _held(root) == []
+
+
+def test_two_runs_that_start_at_once_on_one_result_each_find_the_other(root: Path) -> None:
+    """A run says what it is making as it takes its checkout, and looks
+    at the others only then: looking first, two that start at once would
+    both find nothing. The one refused leaves no checkout."""
+    first = _taken(root, making=["fit"])
+
+    with pytest.raises(ProjectError, match="another run of the project is making `fit`"):
+        _taken(root, making=["fit", "other"])
+
+    assert _held(root) == [first.top]
+    beside = _taken(root, making=["other"])
+    assert _held(root) == sorted([first.top, beside.top])
+
+
+def test_a_run_says_what_it_makes_before_it_looks_at_the_others(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another run takes its checkout in the instant after this one looked
+    and found nobody: by then this one has said what it makes, so the
+    other finds it and is refused, and one run of the result goes on."""
+    require = checkout.require_free
+    other: list[object] = []
+
+    def and_another_at_once(*args: Any, **kwargs: Any) -> None:
+        require(*args, **kwargs)
+        if kwargs.get("own") is not None and not other:
+            other.append(None)
+            with suppress(ProjectError):
+                other.append(_taken(root, making=["fit"]))
+
+    monkeypatch.setattr(checkout, "require_free", and_another_at_once)
+
+    first = _taken(root, making=["fit"])
+
+    assert other == [None] and _held(root) == [first.top]
+
+
+def test_a_run_that_ended_early_no_longer_makes_what_it_said_it_would(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interrupted, a run leaves its checkout to the recipes still
+    writing there, and their results stay in it: nothing of it reaches
+    the project any more, so the next run makes what it was making. One
+    killed outright says nothing, and what it was making stays refused
+    until its checkout goes."""
+
+    class Interrupted(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            raise KeyboardInterrupt
+            yield
+
+    monkeypatch.setattr(compute, "phase", lambda allocation: "active")
+    _cluster(monkeypatch, Interrupted())
+    with pytest.raises(KeyboardInterrupt):
+        engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+    (left,) = _held(root)
+
+    _cluster(monkeypatch, _Inline())
+    assert engine.materialize(root, ["other"], cluster_id=CLUSTER_ID).made == ["other"]
+
+    killed = _taken(root, making=["fit"])
+    with pytest.raises(ProjectError, match="another run of the project is making `fit`"):
+        engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID)
+    dataset._git(["worktree", "remove", "--force", "--force", str(killed.top)], cwd=root)
+    assert engine.materialize(root, ["fit"], cluster_id=CLUSTER_ID).made == ["fit"]
+    assert _held(root) == [left]
+
+
 def test_a_run_removes_its_own_checkout_and_forgets_one_that_was_removed(root: Path) -> None:
     """`leave` removes the folder and what git keeps of it. A folder
     someone removed by hand is held for nothing, and one git no longer
@@ -999,7 +1115,7 @@ def test_two_runs_at_once_each_land_what_they_make(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each run has a checkout of its own, so one started while another is
-    in flight is refused nothing and shares nothing with it but the
+    in flight, to make other results, shares nothing with it but the
     repository: both results are committed, and the tree ends clean."""
     inner: list[engine.MaterializeReport] = []
 
