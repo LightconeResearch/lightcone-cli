@@ -1813,6 +1813,26 @@ def test_a_result_its_remote_lost_is_missing_once_a_fetch_finds_out(
     assert states == [("first#baseline", "missing"), ("second#baseline", "ok")]
 
 
+def test_a_fetch_from_one_remote_says_what_git_annex_said_of_it(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """Asked of one remote by name, the log is not what said it holds the
+    bytes, so it is not what says why they did not come: git-annex's own
+    words about that remote are."""
+    root = analysis(_TWO)
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    clone = clone_of(root, tmp_path)
+    key = dataset._git(["annex", "lookupkey", _FIRST], cwd=root).strip()
+    stored = root / dataset._git(["annex", "contentlocation", key], cwd=root).strip()
+    stored.parent.chmod(0o755)
+    stored.unlink()
+
+    failed = dataset.get(clone, [_FIRST], source="origin")
+
+    assert list(failed) == [_FIRST]
+    assert failed[_FIRST] and failed[_FIRST] != dataset.NO_REMOTE
+
+
 def test_a_remote_that_cannot_be_reached_is_left_as_the_log_has_it(
     root: Path, inline: None, tmp_path: Path
 ) -> None:

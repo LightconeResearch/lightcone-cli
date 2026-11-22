@@ -25,7 +25,7 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
-from lightcone.engine import dataset, project
+from lightcone.engine import checkout, dataset, project
 from lightcone.engine.plan import COMMITS
 from lightcone.engine.project import ProjectError
 
@@ -106,8 +106,9 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
     Under a name of its own, since two runs may give one commit's tree at
     once: the first to finish gives it, and the other's is discarded. A
     tree that is no longer its commit's, lc's own copy changed since it
-    was made, is never trusted: it is moved aside as the new one takes its
-    place, so that a run reading the tree never finds none there.
+    was made, is never trusted, and is made again; not while another run
+    holds a checkout, though, whose recipes may be reading it, and would
+    find the files that run fetched there gone.
     """
     if repository is None and not dataset._git_ok(
         ["cat-file", "-e", f"{commit}^{{commit}}"], cwd=root
@@ -120,14 +121,19 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
             "that holds it: a submodule's commit, which only its checkout holds"
         )
     source = repository if repository is not None else str(dataset.toplevel(root))
+    if tree.exists() and checkout.held(root):
+        raise ProjectError(
+            f"the tree of {commit} at {tree} is no longer that commit's, and another run "
+            "of the project may be reading it. Run again once that run is over"
+        )
     making = tree.with_name(f"{commit}.{uuid4().hex[:8]}.making")
-    replaced = tree.with_name(f"{commit}.{uuid4().hex[:8]}.replaced")
     making.parent.mkdir(parents=True, exist_ok=True)
     # A run that was killed while it cloned left its clone: no clone takes
-    # a day, so one that old is nobody's.
-    for left in tree.parent.glob(f"{commit}.*.*"):
-        if time.time() - left.stat().st_mtime > _ABANDONED:
-            _discard(left)
+    # a day, so one that old is nobody's. Another run may remove it first.
+    for left in tree.parent.glob(f"{commit}.*.making"):
+        with suppress(OSError):
+            if time.time() - left.stat().st_mtime > _ABANDONED:
+                _discard(left)
     try:
         dataset._git(
             [*reach, "clone", "-q", "--no-checkout", "--", source, str(making)], cwd=root
@@ -142,17 +148,16 @@ def _clone(root: Path, commit: str, repository: str | None, tree: Path, reach: l
         if found := re.match(r"(.*) <(.*)>", ident):
             dataset._git(["config", "user.name", found[1]], cwd=making)
             dataset._git(["config", "user.email", found[2]], cwd=making)
-        if tree.exists() and not _intact(tree, commit):
-            tree.rename(replaced)
+        if not _intact(tree, commit):
+            _discard(tree)
         # Refused where another run gave the tree meanwhile: theirs is it.
         with suppress(OSError):
             making.rename(tree)
         if not _intact(tree, commit):
             raise ProjectError(f"the tree of {commit} could not be put in place at {tree}")
     finally:
-        # Whichever was not moved into place, and whatever it replaced.
+        # Where it was not moved into place.
         _discard(making)
-        _discard(replaced)
 
 
 def _discard(folder: Path) -> None:

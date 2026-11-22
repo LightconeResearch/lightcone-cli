@@ -77,7 +77,7 @@ def _object(root: Path, name: str) -> Path:
 
 def _held(root: Path) -> list[Path]:
     """The checkouts runs hold under *root*, as git lists them."""
-    return sorted(checkout._held(root))
+    return sorted(checkout.held(root))
 
 
 # ---- the tree --------------------------------------------------------------
@@ -94,7 +94,7 @@ def test_a_checkout_is_the_commits_tree_and_git_annex_has_not_run_in_it(root: Pa
     assert (tree.root / "astra.yaml").read_text() == (root / "astra.yaml").read_text()
     assert (tree.top / ".git").is_file()
     assert content.standin(tree.root / "data/catalog.txt") == "git-annex"
-    assert checkout._held(root) == {tree.top: CLUSTER_ID}
+    assert checkout.held(root) == {tree.top: CLUSTER_ID}
     assert not dataset.status(root)
     assert (root / "data/catalog.txt").read_text() == "1\n2\n"
 
@@ -134,6 +134,13 @@ def test_fill_leaves_what_this_clone_lacks_the_bytes_of_for_its_task_to_refuse(
 
     checkout.fill(tree, ["data/catalog.txt"])
 
+    with pytest.raises(content.ContentNotFetchedError):
+        content.require_fetched(tree.root / "data/catalog.txt")
+
+    # Nor is it given from the project's tree, whatever is there by now:
+    # which bytes the commit means by it is the annex's to say.
+    (root / "data/catalog.txt").write_text("written since, and in no commit\n")
+    checkout.fill(tree, ["data/catalog.txt"])
     with pytest.raises(content.ContentNotFetchedError):
         content.require_fetched(tree.root / "data/catalog.txt")
 
@@ -400,9 +407,9 @@ def test_a_checkout_asks_git_lfs_for_nothing(
     """Checked out through its filter, every file Git LFS keeps would be
     downloaded for each run, or fail the checkout where one cannot be:
     here one was never pulled, and no remote has it. A checkout holds
-    their pointers; the one a task reads is given from the project's
-    tree, where `git lfs pull` put it, and the other is removed, like any
-    stand-in no output declares."""
+    their pointers; the one a task reads is given from Git LFS's own
+    store, by the object its pointer names, and the other is removed,
+    like any stand-in no output declares."""
     root = analysis(_KEPT_BY_LFS, {"tables/read.bin": "read\n", "tables/unread.bin": "unread\n"})
     for argv in (
         # What `git lfs install` configures, without its hooks: git-annex has its own.
@@ -432,6 +439,13 @@ def test_a_checkout_asks_git_lfs_for_nothing(
     # The same file, read by a recipe whose output does not declare it.
     report = engine.materialize(root, ["undeclared"], cluster_id=CLUSTER_ID)
     assert report.failed == ["undeclared"] and not report.made
+
+    # The commit's bytes, whatever the project's tree holds by now.
+    (root / "tables/read.bin").write_text("edited since, and in no commit\n")
+    tree = _taken(root)
+    checkout.fill(tree, ["tables/read.bin"])
+    assert (tree.root / "tables/read.bin").read_text() == "read\n"
+    checkout.leave(tree)
 
 
 def test_a_task_whose_run_is_gone_leaves_its_result_in_its_checkout(
@@ -486,7 +500,7 @@ def test_a_record_that_cannot_be_given_its_place_is_a_refusal(
     says any refusal."""
     name = checkout._name
 
-    def full(source: Path, target: Path) -> None:
+    def full(source: Path | bytes, target: Path) -> None:
         if ".astra" in target.parts and checkout.RUNS not in target.as_posix():
             raise OSError(28, "No space left on device")
         name(source, target)
@@ -637,6 +651,113 @@ def test_a_landing_waits_for_the_projects_index_as_long_as_another_run_holds_it(
 
     assert report.made == ["other"], (report.failed, report.warnings)
     assert not dataset.status(root)
+
+
+def _merging(root: Path) -> None:
+    """Leave a merge stopped for its conflict in the project's tree, on a
+    commit that follows the one it was at."""
+    for argv in (
+        ["checkout", "-q", "-b", "theirs"],
+        ["commit", "-q", "--allow-empty", "-m", "theirs"],
+        ["checkout", "-q", "-"],
+    ):
+        dataset._git(argv, cwd=root)
+    (root / "notes.txt").write_text("ours\n")
+    dataset.save(root, [root / "notes.txt"], "ours")
+    dataset._git(["checkout", "-q", "theirs"], cwd=root)
+    (root / "notes.txt").write_text("theirs\n")
+    dataset.save(root, [root / "notes.txt"], "theirs, on the same file")
+    dataset._git(["checkout", "-q", "-"], cwd=root)
+    assert not dataset._git_ok(["merge", "-q", "theirs"], cwd=root)
+    assert dataset.under_way(root) == "merge"
+
+
+def test_a_landing_waits_for_a_merge_under_way_in_the_projects_tree(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git commits nothing else in a tree while a merge is under way
+    there, and a rebase would take the commit with it if abandoned. The
+    researcher is in the middle of something: the result waits for them
+    to conclude it, and is committed then."""
+
+    class Merging(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            _merging(root)
+            threading.Timer(
+                1.5, lambda: dataset._git(["merge", "--abort"], cwd=root)
+            ).start()
+            yield from handles
+
+    _cluster(monkeypatch, Merging())
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["other"], (report.failed, report.warnings)
+    assert dataset.under_way(root) is None and not dataset.status(root)
+
+
+def test_a_merge_that_outlasts_a_landing_ends_the_run_and_takes_nothing_of_it(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the time a landing waits, the run says what it waited for.
+    Here the merge began as the result was being committed, so git had
+    staged it before it refused the commit: nothing of the result is left
+    in the merge the researcher goes on with, at its place or staged."""
+    monkeypatch.setattr(checkout, "LANDING", 0.2)
+    save = dataset.save
+    begun: list[bool] = []
+
+    def as_a_merge_begins(*args: Any, **kwargs: Any) -> bool:
+        if not begun:
+            begun.append(True)
+            _merging(root)
+        return save(*args, **kwargs)
+
+    monkeypatch.setattr(dataset, "save", as_a_merge_begins)
+
+    with pytest.raises(ProjectError, match="a merge is under way"):
+        engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert not os.path.lexists(root / "results/other.txt")
+    assert "results" not in dataset._git(["diff", "--cached", "--name-only"], cwd=root)
+    dataset._git(["merge", "--abort"], cwd=root)
+    assert not dataset.status(root)
+
+
+def test_a_run_does_not_start_in_a_tree_with_a_merge_under_way(root: Path, inline: None) -> None:
+    """Every result it made would wait for the merge to be concluded: said
+    before anything runs."""
+    _merging(root)
+
+    with pytest.raises(ProjectError, match="a merge is under way"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert _held(root) == []
+
+
+def test_a_run_commits_what_its_tasks_reported_once_its_checkout_is_gone(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout goes once its allocation has ended, removed by whichever
+    run finds it, and the run that took it may still be committing what
+    its tasks reported. It needs nothing there: the file is in the
+    project's tree, and its record came with the report."""
+
+    class Reaped(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            (top,) = checkout.held(root)
+            checkout._remove(root, top)
+            assert not top.exists()
+            yield from handles
+
+    _cluster(monkeypatch, Reaped())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["fit", "other"], (report.failed, report.warnings)
+    assert (root / "results/fit.txt").read_text() == "1\n2\n"
+    assert not dataset.status(root) and _held(root) == []
+    assert engine.check(root, []).up_to_date
 
 
 def test_a_project_below_the_top_of_its_repository_runs_in_a_checkout_of_all_of_it(

@@ -32,8 +32,9 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
+from uuid import uuid4
 
-from lightcone.engine import content, dataset, image, project, sandbox
+from lightcone.engine import content, dataset, identity, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
 
 #: The runtimes that are podman underneath and share its spellings —
@@ -329,11 +330,12 @@ def backend(runtime: Runtime, *, workdir: Path) -> sandbox.Backend:
 def build(root: Path) -> tuple[Runtime, str]:
     """Converge the system-layer image, the whole of ``lc build``.
 
-    Refuses a dirty tree before anything else: the archive is committed,
-    ``dataset.save`` stages scoped but commits the whole index, and the
-    tag derives from ``pyproject.toml`` — so the declaration must be
-    committed before the image it defines, and nothing of the user's may
-    be swept into the image commit.
+    Refuses, before anything else, a tree in which a file the image is
+    derived from is not committed: the archive is committed, and its tag
+    derives from ``pyproject.toml`` — so the declaration must be committed
+    before the image it defines. Nothing else in the tree is its concern:
+    the commit takes the archive and ``.datalad/config`` alone, and what a
+    run in flight has put where results go is that run's to commit.
 
     Args:
         root: The project root.
@@ -344,8 +346,8 @@ def build(root: Path) -> tuple[Runtime, str]:
         was already there.
 
     Raises:
-        ProjectError: On a direct-mode project, a dirty tree, a missing
-            committer identity, or a failed build.
+        ProjectError: On a direct-mode project, an uncommitted
+            declaration, a missing committer identity, or a failed build.
     """
     if project.mode(root) == "direct":
         raise ProjectError(
@@ -355,12 +357,13 @@ def build(root: Path) -> tuple[Runtime, str]:
     project.require_git()
     project.require_git_annex()
     dataset.require_committer(root)
-    if dataset.status(root):
+    # What the image is derived from, and what its commit carries beside it.
+    derived = {*identity.files(root), ".datalad/config"}
+    if uncommitted := sorted(derived.intersection(path for _, path in dataset.status(root))):
         raise ProjectError(
-            "uncommitted changes — the image is derived from pyproject.toml and "
-            "committed into the repository, so `lc build` needs the tree to say "
-            "what it is building from. Commit your own first; what a run left where "
-            "results go, `lc materialize` settles, and builds the image too."
+            f"uncommitted changes to {', '.join(uncommitted)} — the image is derived from "
+            "the project's environment files and committed into the repository, so "
+            "`lc build` needs them committed to say what it is building from."
         )
     dataset.require_free_index(root)
     existed = image_state(root)[0] != "absent"
@@ -463,8 +466,7 @@ def _repository_flags(runtime: Runtime) -> list[str]:
     A checkout's ``.git`` names the repository, which is outside it: the
     repository is mounted where it is, read-only, and git is given the
     options that keep git-annex and Git LFS out of a checkout. A build
-    backend that asks git for a version finds one, as it did when the
-    project's own tree, ``.git`` and all, was what a container saw.
+    backend that asks git for a version then finds one.
     """
     if runtime.repository is None:
         return []
@@ -519,9 +521,9 @@ def policy_for(
 
         require_gpu_runtime(runtime.runtime)
     # A container sees what is mounted, and a checkout's `.git` names a
-    # repository outside it: mounted too, so git in the image works as it
-    # did in the project's own tree, with the options that keep git-annex
-    # and Git LFS out. A host mechanism grants no git to run.
+    # repository outside it: mounted too, so git in the image answers for
+    # the run's commit, with the options that keep git-annex and Git LFS
+    # out. A host mechanism grants no git to run.
     repository = runtime.repository if runtime.mode == "containerized" else None
     policy = sandbox.exec_policy(
         runtime.root,
@@ -683,8 +685,9 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     # Saved beside its final name and renamed into place: a save that
     # dies midway must not leave a partial archive that the dirty-tree
-    # refusal would then tell the user to commit.
-    partial = archive.parent / "image.partial"
+    # refusal would then tell the user to commit. Under a name of its
+    # own, since two runs may build one image at once.
+    partial = archive.parent / f"image.{uuid4().hex[:8]}.partial"
     save_format = ["--format", "docker-archive"] if runtime in _PODMAN_FAMILY else []
     try:
         _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)

@@ -550,12 +550,18 @@ def materialize(
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
     dataset.require_free_index(root)
+    if doing := dataset.under_way(root):
+        raise ProjectError(
+            f"a {doing} is under way in {root}, where git commits nothing else until it "
+            "is concluded, and a run commits each result it makes. Conclude it, then run "
+            "again."
+        )
     # The graph — and with it the spec validation and the lock scan —
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, environment = _graph(root, targets, report)
-    # A run builds the commit ASTRA read, in a checkout of it, so what is
+    # A run builds the commit the project is at, in a checkout of it: what is
     # not committed would silently be no part of it. Asked after the
     # graph, which says where runs write: a change there is no work of the
     # researcher's but a result a run made and has not committed, or
@@ -593,6 +599,16 @@ def materialize(
         requirements = scheduler.validate(running)
         _fetch_inputs(root, wanted, report)
         unreadable = _not_as_recorded(root, graph, wanted)
+        # First, since a checkout that stays says a run may be reading the
+        # trees of other commits, which are given next.
+        if unknown := checkout.reap(root):
+            report.warnings.append(
+                "lc cannot tell whether the runs that left these checkouts are over, so "
+                "they stay: "
+                + ", ".join(plan.declared_path(root.resolve(), left) for left in unknown)
+                + " — once a run is over, `git worktree remove --force --force <path>` "
+                "removes its checkout"
+            )
         # A commit whose tree cannot be given blocks what reads a file of it:
         # whatever is on disk there is no longer known to be that commit's.
         ungiven: dict[str, str] = {}
@@ -608,14 +624,6 @@ def materialize(
         runtime = container.runtime_for_run(
             root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
         )
-        if unknown := checkout.reap(root):
-            report.warnings.append(
-                "lc cannot tell whether the runs that left these checkouts are over, so "
-                "they stay: "
-                + ", ".join(plan.declared_path(root.resolve(), left) for left in unknown)
-                + " — once a run is over, `git worktree remove --force --force <path>` "
-                "removes its checkout"
-            )
         # From here the run is in a checkout of the commit the project is
         # at, which every record it writes names: the project's tree is the
         # researcher's again, bar the commit of each result. That commit
@@ -778,10 +786,14 @@ def materialize(
             owned = {
                 path for task in tasks.values() for path in (*task.paths, *task.record_paths)
             }
+            # Asked of the checkout while it is there: another run removes
+            # it once the allocation has ended.
             strays = sorted(
                 path
-                for _, path in dataset.status(
-                    tree.root, untracked_files=True, config=dataset.PLAIN
+                for _, path in (
+                    dataset.status(tree.root, untracked_files=True, config=dataset.PLAIN)
+                    if tree.root.is_dir()
+                    else ()
                 )
                 if tree.root / path not in owned
             )
@@ -944,9 +956,10 @@ def _consume(
         # its recipe read. The file's stamp says so at no cost; where it
         # does not, the bytes do: a shared filesystem may give two nodes
         # two accounts of one file's times.
+        placed = task.at(tree.project).path
         try:
-            same = content.stamp(task.path) == outcome.stamp or (
-                content.digest_file(task.path) == outcome.digest
+            same = content.stamp(placed) == outcome.stamp or (
+                content.digest_file(placed) == outcome.digest
             )
         except OSError:
             same = False
@@ -956,7 +969,11 @@ def _consume(
             why = "its file is no longer the bytes its record names"
         else:
             checkout.land(
-                tree, task, outcome.digest, run_record(tree.root, task, dsid, archive)
+                tree,
+                task,
+                outcome.digest,
+                outcome.records,
+                run_record(tree.root, task, dsid, archive),
             )
             report.made.append(name)
             return

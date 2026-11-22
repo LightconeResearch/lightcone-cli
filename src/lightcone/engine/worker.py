@@ -77,6 +77,10 @@ class TaskOutcome:
     #: where there was none to look at. What reads the result takes the
     #: digest for that very file only, and hashes any other it finds.
     stamp: tuple[int, int, int] | None = None
+    #: ASTRA's record of a result this task made, as written at each of
+    #: its places. With the file, all its commit needs: the driver reads
+    #: nothing in the run's checkout once a task has reported.
+    records: tuple[bytes, ...] = ()
     #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
     #: Console lines from the boundary: a downgrade notice, a denial.
@@ -450,6 +454,7 @@ def execute(
                 finished=_instant(finished),
             ),
         )
+        records = tuple(path.read_bytes() for path in task.record_paths)
         # Made in a checkout, the file goes to its place in the project
         # now, last, and before anything is told it exists: what reads it
         # starts after this returns, and finds it through the link left
@@ -474,7 +479,13 @@ def execute(
             notes=outcome.notes,
         )
     return TaskOutcome(
-        task.id, "made", content_hash=content_hash, size=size, stamp=stamp, notes=outcome.notes
+        task.id,
+        "made",
+        content_hash=content_hash,
+        size=size,
+        stamp=stamp,
+        records=records,
+        notes=outcome.notes,
     )
 
 
@@ -588,8 +599,9 @@ def main(argv: list[str]) -> int:
             print(
                 f"error: uncommitted changes — {', '.join(edited)} — so the commit a "
                 "record names would not say what its recipe ran on (UNCOMMITTED_CHANGES). "
-                "Commit your own first; what a run left where results go, "
-                "`lc materialize` settles.",
+                "Commit your own first. What a run left where results go, `lc materialize` "
+                "commits or makes again; a file still there after it is no result's, and "
+                "yours to remove.",
                 file=sys.stderr,
             )
             return 2

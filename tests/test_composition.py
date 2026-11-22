@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from conftest import CLUSTER_ID, FIRST, clone_of, ran_in, since
 
-from lightcone.engine import commits, dataset, plan, templates, worker
+from lightcone.engine import checkout, commits, dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
@@ -449,6 +449,32 @@ def test_a_commits_tree_git_cannot_read_is_made_again(
 
     assert report.made == ["copy"], (report.blocked, report.warnings)
     assert (root / "results" / "copy.txt").read_text() == "stars\n"
+
+
+def test_a_commits_tree_is_not_made_again_while_another_run_may_be_reading_it(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """Made again, a tree would be gone for a moment, and with it the
+    files another run fetched there for the recipes it has running. While
+    a run holds a checkout, a tree that is no longer its commit's is
+    refused instead, and made again once none does."""
+    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
+    at = dataset.head(root)
+    spec = root / "astra.yaml"
+    spec.write_text(_READS_AN_INPUT % at)
+    dataset.save(root, [spec], "copy the catalog as it was")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    index = root / plan.COMMITS / at / ".git" / "index"
+    index.write_bytes(b"not an index")
+    running = checkout.take(root, dataset.head(root), CLUSTER_ID)
+
+    with pytest.raises(ProjectError, match="another run of the project may be reading it"):
+        commits.give(root, at, None, ["data/catalog.txt"])
+    assert index.read_bytes() == b"not an index"
+
+    checkout.leave(running)
+    commits.give(root, at, None, ["data/catalog.txt"])
+    assert (root / plan.COMMITS / at / "data/catalog.txt").read_text() == "stars\n"
 
 
 _READS_UPSTREAMS_INPUT = """

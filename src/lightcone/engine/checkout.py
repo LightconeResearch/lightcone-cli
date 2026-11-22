@@ -29,8 +29,10 @@ whatever its size, and leaves a link in its stead for the tasks that read
 it. The driver commits it there (:func:`land`) as it would one made in
 place: git-annex takes a file that has one name as its own object, without
 a copy, and git takes the file for unchanged because it was added where
-it is. A result lands only while the project's history holds the run's
-commit, which is where its record is true.
+it is. Its record comes with what the worker reports, so a run reads
+nothing in its checkout once a task has reported. A result lands only
+while the project's history holds the run's commit, which is where its
+record is true.
 
 **Whose it is.** Each run takes a checkout of its own, so several runs of
 one project share nothing but the repository, where git serializes their
@@ -46,7 +48,9 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -116,10 +120,10 @@ def reap(root: Path) -> list[Path]:
     """
     from lightcone.engine import compute
 
-    held = _held(root)
-    phases = {holder: compute.phase(holder) for holder in set(held.values())}
+    runs = held(root)
+    phases = {holder: compute.phase(holder) for holder in set(runs.values())}
     unknown = []
-    for left, holder in held.items():
+    for left, holder in runs.items():
         if phases[holder] == "ended" or not left.exists():
             _remove(root, left)
         elif phases[holder] == "unknown":
@@ -176,10 +180,12 @@ def fill(tree: Checkout, paths: Sequence[str]) -> None:
     now. One whose bytes this clone lacks stays the stand-in it is, and
     the task that reads it refuses it by name.
 
-    A file among *paths* that another tool keeps is given from the
-    project's tree, where that tool put its bytes: what Git LFS keeps,
-    which checks out here as its pointer, and what DVC keeps, which git
-    ignores, so that the commit holds no file of it.
+    What Git LFS keeps checks out here as its pointer, and is given the
+    same way, from the store Git LFS keeps in the repository, by the
+    object that pointer names. A file among *paths* the commit holds
+    nothing of is one git ignores, as DVC has it ignore the data it keeps:
+    nothing says which bytes the commit means by it, and it is given as
+    the project's tree has it.
 
     Every other file a tool keeps is removed. No output declares it as an
     input, and left as a stand-in it would be read all the same: a line of
@@ -204,20 +210,23 @@ def fill(tree: Checkout, paths: Sequence[str]) -> None:
         for path, key in dataset.annexed(tree.project, tree.commit).items()
         if path.startswith(inside)
     }
-    kept = annexed.keys() | set(dataset.filtered(tree.root, "lfs", dataset.PLAIN))
+    lfs = set(dataset.filtered(tree.root, "lfs", dataset.PLAIN))
+    kept = annexed.keys() | lfs
     stored = dataset.located(tree.project, [annexed[path] for path in wanted & annexed.keys()])
+    objects = dataset.lfs_objects(tree.project) if wanted & lfs else None
     for path in kept:
+        here = tree.root / path
         if path not in wanted:
-            (tree.root / path).unlink(missing_ok=True)
+            here.unlink(missing_ok=True)
         elif annexed.get(path) in stored:
-            _name(stored[annexed[path]], tree.root / path)
-    for path in wanted:
+            _name(stored[annexed[path]], here)
+        elif objects is not None and content.standin(here) == "Git LFS":
+            oid = re.search(r"^oid sha256:([0-9a-f]{64})$", here.read_text(), re.M)
+            if oid and (fetched := objects / oid[1][:2] / oid[1][2:4] / oid[1]).is_file():
+                _name(fetched, here)
+    for path in wanted - kept:
         here, there = tree.root / path, tree.project / path
-        if (
-            (not os.path.lexists(here) or content.standin(here))
-            and there.is_file()
-            and not content.standin(there)
-        ):
+        if not os.path.lexists(here) and there.is_file():
             _name(there, here)
     if kept:
         marked = project._run(
@@ -256,12 +265,24 @@ def hand_over(task: Task, root: Path) -> None:
         os.symlink(place, made)
 
 
-def land(tree: Checkout, task: Task, digest: tuple[str, int], message: str) -> None:
+def land(
+    tree: Checkout,
+    task: Task,
+    digest: tuple[str, int],
+    records: Sequence[bytes],
+    message: str,
+) -> None:
     """Commit a result a run made, where its worker left it in the project.
 
     Its record is given its place beside it only now, with the commit: a
     record no commit holds is one no later run can tell from a result
-    made and committed.
+    made and committed. Nothing is read in the run's checkout, which
+    another run removes once the allocation has ended, whether or not
+    this one is still committing what its tasks reported.
+
+    A merge, a rebase or a cherry-pick the researcher has under way in
+    the project's tree is waited for: git commits nothing else until it
+    is concluded.
 
     Args:
         tree: The run's checkout.
@@ -269,40 +290,63 @@ def land(tree: Checkout, task: Task, digest: tuple[str, int], message: str) -> N
         digest: The hash and size of the bytes its worker hashed for the
             record. The file has been in a tree other runs write in since
             then, and what git stages has to be those bytes.
+        records: ASTRA's record of the result as its worker wrote it, at
+            each place the result has.
         message: The commit message.
 
     Raises:
         ProjectError: If the project's history no longer holds the run's
-            commit, or git does not store the result as lc stores one,
-            with the project's tree as its last commit has it.
+            commit, an operation under way there outlasts
+            :data:`LANDING`, or git does not store the result as lc
+            stores one. The project's tree is then as its last commit
+            has it.
     """
     kept = task.at(tree.project)
     owned = owns(kept)
+    deadline = time.monotonic() + LANDING
     try:
-        if not dataset.is_ancestor(tree.project, tree.commit):
-            raise ProjectError(
-                f"the project's history no longer holds {tree.commit[:7]}, the commit this "
-                "run builds, so its record would be true of nothing there. Check out a "
-                "branch that holds it and run again"
-            )
-        try:
-            for made, place in zip(task.record_paths, kept.record_paths, strict=True):
-                _name(made, place)
-        except OSError as e:
-            raise ProjectError(f"its record could not be given its place: {e}") from e
-        dataset.save(
-            tree.project,
-            owned,
-            message,
-            annexed=kept.paths,
-            in_git=kept.record_paths,
-            named=dict.fromkeys(kept.paths, digest),
-            patience=LANDING,
-        )
+        while True:
+            while (doing := dataset.under_way(tree.project)) and time.monotonic() < deadline:
+                time.sleep(1.0)
+            if doing:
+                raise ProjectError(
+                    f"a {doing} is under way in the project's tree, where git commits "
+                    "nothing else until it is concluded. Conclude it and run again"
+                )
+            if not dataset.is_ancestor(tree.project, tree.commit):
+                raise ProjectError(
+                    f"the project's history no longer holds {tree.commit[:7]}, the commit this "
+                    "run builds, so its record would be true of nothing there. Check out a "
+                    "branch that holds it and run again"
+                )
+            try:
+                for record, place in zip(records, kept.record_paths, strict=True):
+                    _name(record, place)
+            except OSError as e:
+                raise ProjectError(f"its record could not be given its place: {e}") from e
+            try:
+                dataset.save(
+                    tree.project,
+                    owned,
+                    message,
+                    annexed=kept.paths,
+                    in_git=kept.record_paths,
+                    named=dict.fromkeys(kept.paths, digest),
+                    patience=LANDING,
+                )
+                return
+            except ProjectError:
+                # One begun since it was asked: waited for like any other.
+                if not dataset.under_way(tree.project):
+                    raise
     except BaseException:
         # An interrupt too: what the run put in the project's tree and did
-        # not commit is not left there for the next run to find.
-        dataset.restore(tree.project, owned, patience=LANDING)
+        # not commit is not left there for the next run to find. Whatever
+        # ended the landing is what is said of it, not what putting back
+        # ran into; a result and its record that stay are a true pair,
+        # which the next run commits.
+        with suppress(ProjectError):
+            dataset.restore(tree.project, owned)
         raise
 
 
@@ -327,17 +371,25 @@ def leave(tree: Checkout) -> None:
     _remove(tree.project, tree.top)
 
 
-def _held(root: Path) -> dict[Path, str]:
-    """Each checkout of the project a run holds → the allocation it names."""
+def held(root: Path) -> dict[Path, str]:
+    """Each checkout of the project a run holds → the allocation it names.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The checkouts git keeps locked under the project's
+        ``.lightcone/runs/``, by path.
+    """
     base = (root / RUNS).resolve()
-    held = {}
+    found = {}
     # One block per worktree: its path first, then what git knows of it.
     for block in dataset._git(["worktree", "list", "--porcelain"], cwd=root).split("\n\n"):
         known = dict(line.partition(" ")[::2] for line in block.splitlines())
         top = Path(known.get("worktree", "")).resolve()
         if top.parent == base and "locked" in known:
-            held[top] = known["locked"]
-    return held
+            found[top] = known["locked"]
+    return found
 
 
 def _remove(root: Path, top: Path) -> None:
@@ -354,21 +406,26 @@ def _remove(root: Path, top: Path) -> None:
         dataset._git_ok(remove, cwd=root)
 
 
-def _name(source: Path, target: Path) -> None:
+def _name(source: Path | bytes, target: Path) -> None:
     """Give *target* the bytes of *source*, never absent and never partial.
 
-    As one more name for them: a hard link made beside the target and
-    renamed over it. Where the filesystem makes none — the two are not on
-    one filesystem, or the file is someone else's — a copy, renamed the
-    same way, as git-annex itself falls back to one.
+    Those of a file, as one more name for them: a hard link made beside
+    the target and renamed over it. Where the filesystem makes none — the
+    two are not on one filesystem, or the file is someone else's — a copy,
+    renamed the same way, as git-annex itself falls back to one. Bytes
+    given as they are, a record's, are written beside the target and
+    renamed like the rest.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     beside = target.with_name(f".{target.name}.{uuid4().hex[:8]}")
     try:
-        try:
-            os.link(source, beside)
-        except OSError:
-            shutil.copy2(source, beside)
+        if isinstance(source, bytes):
+            beside.write_bytes(source)
+        else:
+            try:
+                os.link(source, beside)
+            except OSError:
+                shutil.copy2(source, beside)
         os.replace(beside, target)
     finally:
         beside.unlink(missing_ok=True)

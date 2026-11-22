@@ -297,6 +297,35 @@ def is_ancestor(directory: Path, commit: str) -> bool:
     return _git_ok(["merge-base", "--is-ancestor", commit, "HEAD"], cwd=directory)
 
 
+#: What git keeps in a tree's own folder while an operation of several
+#: steps is under way there → what that operation is called.
+_UNDER_WAY = {
+    "MERGE_HEAD": "merge",
+    "CHERRY_PICK_HEAD": "cherry-pick",
+    "REVERT_HEAD": "revert",
+    "rebase-merge": "rebase",
+    "rebase-apply": "rebase",
+}
+
+
+def under_way(directory: Path) -> str | None:
+    """Name the operation git is in the middle of in a tree, if it is in one.
+
+    A merge, a rebase, a cherry-pick or a revert that stopped for its
+    conflicts, or was asked not to commit. Until it is concluded git
+    commits nothing else there: a commit of some paths alone is refused
+    (measured: ``cannot do a partial commit during a merge``).
+
+    Args:
+        directory: A folder of the tree.
+
+    Returns:
+        What the operation is called, or None.
+    """
+    folder = Path(_git(["rev-parse", "--absolute-git-dir"], cwd=directory).strip())
+    return next((name for mark, name in _UNDER_WAY.items() if (folder / mark).exists()), None)
+
+
 def same(directory: Path, one: str | None, other: str | None, paths: Sequence[str]) -> bool:
     """Whether two commits hold the same *paths*.
 
@@ -434,8 +463,10 @@ def require_free_index(directory: Path) -> None:
         if time.monotonic() > deadline:
             raise project.ProjectError(
                 f"another git command holds the project's index ({lock}), so nothing "
-                "could be committed. Wait for it to end; if none is running, a git that "
-                "was killed left that file, and removing it is the remedy."
+                "could be committed. Wait for it to end: a run of the project holds it "
+                "while it commits a result, for as long as hashing the file takes. If "
+                "none is running, a git that was killed left that file, and removing it "
+                "is the remedy."
             )
         time.sleep(0.25)
 
@@ -595,10 +626,13 @@ def restore(
 ) -> None:
     """Put *paths* back the way the last commit had them.
 
-    ``clean`` first for what a run wrote, then ``checkout`` for what it
-    deleted or truncated — through ``_git_ok``, because a first
-    materialization has nothing to go back to and ``checkout`` exits
-    nonzero on a pathspec it cannot match.
+    ``reset`` first for what was staged: a path the last commit does not
+    have is otherwise a file of the index, which ``clean`` leaves and
+    ``checkout`` cannot match, so it would stay, staged. Then ``clean``
+    for what a run wrote, and ``checkout`` for what it deleted or
+    truncated — through ``_git_ok``, because a first materialization has
+    nothing to go back to and ``checkout`` exits nonzero on a pathspec it
+    cannot match.
 
     No guard in front of it: a pathspec may be a glob, and nothing cheap
     answers "is this in HEAD" for one. ``cat-file -e`` takes a single
@@ -617,6 +651,7 @@ def restore(
     """
     for path in paths:
         rel = _rel(directory, path)
+        _git(["reset", "-q", "--", rel], cwd=directory, patience=patience)
         _git(["clean", "-qfdx", "--", rel], cwd=directory, patience=patience)
         _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory, patience=patience)
 
@@ -761,7 +796,8 @@ def get(
         directory: The repository root.
         paths: Annexed files, from the repository root.
         source: The one remote to fetch from, where the log is not to be
-            asked which holds them.
+            asked which holds them: what git-annex says of that remote is
+            then the whole answer.
         reach: git's options for reaching a remote, where they are
             another repository's than *directory*'s own (:func:`reaching`).
 
@@ -785,6 +821,8 @@ def get(
     if got.returncode != 0 and not failed:
         # git-annex refused before it reached any file.
         return dict.fromkeys(paths, got.stderr.strip())
+    if source is not None:
+        return failed
     named = holders(directory, list(failed))
     for remote in sorted({name for names in named.values() for name in names}):
         there = [path for path in failed if remote in named.get(path, ())]
@@ -1092,6 +1130,23 @@ def located(directory: Path, wanted: Iterable[str]) -> dict[str, Path]:
     # One line out per key in: its object, from *directory*, or empty.
     found = _batch(directory, ["contentlocation", "--batch"], asked)
     return {key: directory / place for key, place in zip(asked, found, strict=True) if place}
+
+
+def lfs_objects(directory: Path) -> Path:
+    """Where Git LFS keeps this clone's objects.
+
+    Its own store, in the repository's folder unless ``lfs.storage`` names
+    another. An object is at ``<first two>/<next two>/<its SHA-256>``
+    below it, once fetched.
+
+    Args:
+        directory: A folder of the repository.
+
+    Returns:
+        The folder, there or not.
+    """
+    storage = (_ask(["config", "--get", "lfs.storage"], cwd=directory) or "").strip()
+    return repository(directory) / (storage or "lfs") / "objects"
 
 
 def _batch(directory: Path, command: list[str], asked: Sequence[str]) -> list[str]:

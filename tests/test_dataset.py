@@ -372,19 +372,40 @@ def test_restore_of_a_never_committed_result_is_not_an_error(repo: Path) -> None
     assert not (output / "fit.csv").exists()
 
 
-def test_restore_of_a_staged_but_unborn_result_does_not_raise(repo: Path) -> None:
-    """The state an interrupted `save` leaves: staged, never committed.
-    `ls-files --with-tree=HEAD` calls such a path known while
-    `checkout HEAD --` then exits nonzero on it — so a guard built on the
-    former makes the restore in materialize's `finally` raise over
-    whatever interrupted the run. Unstaging is not restore's job (git's
-    own `clean` leaves an index entry alone); not raising is."""
+def test_restore_puts_back_a_result_that_was_staged_and_never_committed(repo: Path) -> None:
+    """The state a `save` cut short leaves: staged, in no commit. `clean`
+    leaves a file of the index alone and `checkout HEAD --` cannot match
+    it, so it is unstaged first; left staged, it would go into the
+    researcher's next commit, and no later run could put it back."""
     output = repo / "results" / "baseline" / "best_fit.csv"
     output.parent.mkdir(parents=True)
     output.write_text("staged, never committed\n")
     dataset._git(["add", "--", "results"], cwd=repo)
 
     dataset.restore(repo, [":(glob)results/baseline/best_fit.*"])
+
+    assert not output.exists() and not dataset.status(repo)
+
+
+def test_git_says_which_operation_is_under_way_in_a_tree(repo: Path, tmp_path: Path) -> None:
+    """A merge stopped for its conflict is under way until it is
+    concluded, in the tree it was started in and in no other."""
+    assert dataset.under_way(repo) is None
+    dataset._git(["checkout", "-q", "-b", "theirs"], cwd=repo)
+    (repo / "notes.txt").write_text("theirs\n")
+    dataset.save(repo, [repo / "notes.txt"], "theirs")
+    dataset._git(["checkout", "-q", "-"], cwd=repo)
+    (repo / "notes.txt").write_text("ours\n")
+    dataset.save(repo, [repo / "notes.txt"], "ours")
+    other = tmp_path / "other"
+    dataset._git(["worktree", "add", "-q", "--detach", str(other)], cwd=repo)
+
+    assert not dataset._git_ok(["merge", "-q", "theirs"], cwd=repo)
+
+    assert dataset.under_way(repo) == "merge"
+    assert dataset.under_way(other) is None
+    dataset._git(["merge", "--abort"], cwd=repo)
+    assert dataset.under_way(repo) is None
 
 
 def test_restore_takes_a_glob_pathspec(repo: Path) -> None:
