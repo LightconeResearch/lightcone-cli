@@ -987,8 +987,11 @@ def _consume(
                 run_record(tree.root, task, dsid, archive),
             )
             # Another commit took it first. A run's says how it was made,
-            # as this one's would have; any other does not.
-            if not landed and not dataset.subject(tree.project, placed).startswith(
+            # as this one's would have; any other does not. Asked of the
+            # record, which every making changes: the same bytes made again
+            # change no file.
+            record = task.at(tree.project).record_paths[0]
+            if not landed and not dataset.subject(tree.project, record).startswith(
                 "[DATALAD RUNCMD]"
             ):
                 report.warnings.append(

@@ -238,6 +238,8 @@ def _filled(directory: Path, modified: Sequence[str]) -> set[str]:
     copies what it is given into the annex (measured): a changed input,
     or a result another run has yet to commit, written a second time.
     """
+    # Files alone: git-annex gives up on a submodule, for every path asked.
+    modified = [path for path in modified if (directory / path).is_file()]
     looked = project._run(
         ["git", "annex", "lookupkey", "--batch"],
         cwd=directory,

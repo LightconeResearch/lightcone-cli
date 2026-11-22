@@ -659,6 +659,24 @@ def test_untracked_files_count_whatever_the_users_config_says(
     assert sorted(dataset.status(with_submodule)) == [(" M", "sub"), ("??", "fit.py")]
 
 
+def test_a_file_being_filled_in_is_told_from_a_change_beside_a_submodule(
+    with_submodule: Path,
+) -> None:
+    """git-annex gives up on a submodule, for every path it was asked
+    about with it: it is asked about files alone, or a submodule that
+    changed would have each input being fetched listed with it."""
+    catalog = with_submodule / "data" / "catalog.bin"
+    catalog.write_text("the bytes of the catalog\n")
+    dataset.save(with_submodule, [catalog], "a catalog")
+    # As a fetch that has not ended leaves it: its bytes, and git not told.
+    dataset._git(["annex", "drop", "--force", "data/catalog.bin"], cwd=with_submodule)
+    catalog.write_text("the bytes of the catalog\n")
+    (with_submodule / "sub" / "stray.py").write_text("print('stray')\n")
+    assert " M data/catalog.bin" in dataset._git(["status", "--porcelain"], cwd=with_submodule)
+
+    assert dataset.status(with_submodule) == [(" M", "sub")]
+
+
 # ---- another git holding the index ----------------------------------------
 
 

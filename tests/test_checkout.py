@@ -765,6 +765,37 @@ def test_a_result_another_commit_took_is_committed_and_said_where_no_run_record_
     and says so, since no run record then tells how it was made. Another
     run's commit of it, one that found it at its place, carries one, and
     there is nothing to say."""
+    _taken_by(monkeypatch, subject)
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["other"]
+    assert any("a commit that is no run's took it" in w for w in report.warnings) is said
+    assert dataset._git(["log", "-1", "--format=%s"], cwd=root).strip() == subject
+    assert not dataset.status(root) and engine.check(root, ["other"]).up_to_date
+
+
+def test_the_same_bytes_made_again_and_taken_by_another_commit_are_said_too(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Made again with the bytes it had, a result changes no file, only
+    its record: which commit took it is asked of the record."""
+    assert engine.materialize(root, ["other"], cluster_id=CLUSTER_ID).made == ["other"]
+    spec = root / "astra.yaml"
+    spec.write_text(spec.read_text().replace("echo other > {output}", "echo  other > {output}"))
+    dataset.save(root, [spec], "the same recipe, spelled otherwise")
+    _taken_by(monkeypatch, "my notes")
+
+    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["other"]
+    assert any("a commit that is no run's took it" in w for w in report.warnings)
+    assert not dataset.status(root)
+
+
+def _taken_by(monkeypatch: pytest.MonkeyPatch, subject: str) -> None:
+    """Have a commit of the whole index take each result a run lands, in
+    the instant it is staged."""
     save = dataset.save
 
     def taken_by_another_commit(directory: Path, paths: Any, *args: Any, **kwargs: Any) -> bool:
@@ -774,13 +805,6 @@ def test_a_result_another_commit_took_is_committed_and_said_where_no_run_record_
         return save(directory, paths, *args, **kwargs)
 
     monkeypatch.setattr(dataset, "save", taken_by_another_commit)
-
-    report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
-
-    assert report.made == ["other"]
-    assert any("a commit that is no run's took it" in w for w in report.warnings) is said
-    assert dataset._git(["log", "-1", "--format=%s"], cwd=root).strip() == subject
-    assert not dataset.status(root) and engine.check(root, ["other"]).up_to_date
 
 
 def test_what_ended_a_landing_is_what_is_said_of_it(
