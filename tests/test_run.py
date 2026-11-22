@@ -142,6 +142,14 @@ def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
 
 
+def test_a_spec_that_is_not_yaml_reads_as_an_empty_one(project: Path) -> None:
+    """`read_spec` is a best-effort probe, so the refusal belongs to
+    `plan._validate`; the probe must not traceback on the way there."""
+    (project / "astra.yaml").write_text("title: [unclosed")
+    assert engine_run.read_spec(project) == {}
+    assert engine_run.input_paths(project, {}) == []
+
+
 def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
     """A denial the researcher cannot act on is worse than the access it
     withheld: the file *is* declared, just not at the top of the tree."""

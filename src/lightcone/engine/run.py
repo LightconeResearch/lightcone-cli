@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
+
 from lightcone.engine import container, sandbox
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
@@ -110,14 +112,21 @@ def read_spec(project: Path) -> dict[str, Any]:
 
     Returns:
         The spec with sub-analyses merged in; the top-level document alone
-        if the tree will not resolve; an empty spec if there is none.
+        if the tree will not resolve; an empty spec if there is none or it
+        does not parse.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
     spec_path = project / SPEC_FILENAME
     if not spec_path.exists():
         return {}
-    data: dict[str, Any] = load_yaml(spec_path)
+    try:
+        data: dict[str, Any] = load_yaml(spec_path)
+    except yaml.YAMLError:
+        # A probe exists to debug a project, and an unparseable spec is one
+        # of the things being debugged: plan._validate turns it into the
+        # clean refusal, so the probe reports nothing rather than raising.
+        return {}
     try:
         return dict(resolve_analysis_tree(data, project))
     except Exception:

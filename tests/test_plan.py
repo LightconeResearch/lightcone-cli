@@ -203,6 +203,34 @@ def test_a_spec_astra_rejects_never_reaches_a_recipe(tmp_path: Path) -> None:
         _build(_project(tmp_path, spec))
 
 
+def test_a_spec_that_is_not_yaml_is_a_clean_error(tmp_path: Path) -> None:
+    """An unquoted colon inside a scalar is the classic typo, and it leaves
+    nothing to validate: the loader fails before ASTRA can say a word. The
+    loader's own error already names the file, the line and the column,
+    which is where the fix goes."""
+    spec = _SPEC.replace(
+        "      command: python src/fit.py {inputs.catalog} --method {decisions.method} {output}",
+        "      command: echo a: b > {output}",
+    )
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(_project(tmp_path, spec))
+    message = str(raised.value)
+    assert "mapping values are not allowed here" in message
+    assert "line 17" in message
+
+
+def test_a_universe_that_is_not_yaml_is_a_clean_error(tmp_path: Path) -> None:
+    """Universes are parsed inside the gate too, so a broken one reaches the
+    same clean error instead of the loader's traceback."""
+    root = _project(tmp_path, baseline="id: baseline\ndecisions:\n  method: a: b\n")
+    with pytest.raises(ProjectError, match="does not validate") as raised:
+        _build(root)
+    message = str(raised.value)
+    assert "baseline.yaml" in message
+    assert "mapping values are not allowed here" in message
+    assert "line 3" in message
+
+
 # ---- ordering, closure, targets --------------------------------------------
 
 
