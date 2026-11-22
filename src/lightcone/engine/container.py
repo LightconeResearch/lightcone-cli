@@ -653,9 +653,9 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     The build context is an empty scratch directory holding only the
     rendered Containerfile — no project file ever enters it, which is
     what makes "code edits never trigger a build" structural rather than
-    observed. The archive commit is scoped to the environment directory
-    plus ``.datalad/config`` (the ``datalad containers-run`` interop
-    keys), so nothing else the tree holds is committed with it.
+    observed. The archive commit is scoped to the archive and
+    ``.datalad/config`` (the ``datalad containers-run`` interop keys), so
+    nothing else the tree holds is committed with it.
     """
     relative = archive.relative_to(root).as_posix()
     # The archive is committed, so its routing must be checked *before*

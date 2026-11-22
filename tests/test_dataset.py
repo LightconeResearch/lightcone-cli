@@ -419,6 +419,8 @@ def test_a_file_git_annex_is_filling_in_is_no_change(repo: Path, tmp_path: Path)
     dataset.save(repo, [repo / "data"], "a catalog")
     clone = tmp_path / "clone"
     dataset._git(["clone", "-q", str(repo), str(clone)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
     dataset.init_annex(clone)
     assert content.standin(clone / "data" / "catalog.bin") == "git-annex"
 
@@ -426,9 +428,16 @@ def test_a_file_git_annex_is_filling_in_is_no_change(repo: Path, tmp_path: Path)
 
     assert dataset._git(["status", "--porcelain"], cwd=clone) == " M data/catalog.bin\n"
     assert dataset.status(clone) == []
+    # Whatever the user's configuration has git take a file's stat for.
+    dataset._git(["config", "diff.autoRefreshIndex", "false"], cwd=clone)
+    assert dataset.status(clone) == []
 
+    # Other bytes are a change, and are not compared: git-annex's filter
+    # would copy them into the annex, a second writing of a large file.
+    held = sorted((clone / ".git" / "annex").rglob("SHA256E-*"))
     (clone / "data" / "catalog.bin").write_text("other bytes, of another length\n")
     assert dataset.status(clone) == [(" M", "data/catalog.bin")]
+    assert sorted((clone / ".git" / "annex").rglob("SHA256E-*")) == held
 
 
 def test_a_commit_git_refuses_leaves_nothing_staged(repo: Path) -> None:
@@ -449,6 +458,31 @@ def test_a_commit_git_refuses_leaves_nothing_staged(repo: Path) -> None:
 
     assert "results" not in dataset._git(["diff", "--cached", "--name-only"], cwd=repo)
     assert made.read_text() == "made meanwhile\n"
+
+
+def test_a_path_unstaged_as_it_was_being_committed_is_not_read_as_committed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another run may commit the very files a save has staged, which
+    leaves git nothing to commit, and they are committed all the same. A
+    `git reset` in that instant leaves git nothing to commit either, and
+    nothing differs from the last commit, which never held the file: it
+    is not committed, and the save says what git said."""
+    made = repo / "results" / "fit.csv"
+    made.write_text("made, and staged\n")
+    run = dataset._run
+
+    def unstaged_meanwhile(argv: list[str], **kwargs: Any) -> Any:
+        if "commit" in argv:
+            run(["reset", "-q"], cwd=repo)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(dataset, "_run", unstaged_meanwhile)
+
+    with pytest.raises(project.ProjectError, match="git would not commit results/fit.csv"):
+        dataset.save(repo, [made], "a result")
+
+    assert dataset.status(repo, untracked_files=True) == [("??", "results/fit.csv")]
 
 
 def test_restore_takes_a_glob_pathspec(repo: Path) -> None:
@@ -1269,18 +1303,18 @@ def test_files_another_process_committed_since_they_were_staged_are_committed(
     (repo / "results").mkdir(exist_ok=True)
     made = repo / "results" / "fit.txt"
     made.write_text("fit\n")
-    git = dataset._git
+    run = dataset._run
 
-    def raced(argv: list[str], **kwargs: Any) -> str:
+    def raced(argv: list[str], **kwargs: Any) -> Any:
         if "commit" in argv:
             subprocess.run(
                 ["git", "-c", "annex.thin=true", "commit", "-q", "-m", "the other run's", "--",
                  "results/fit.txt"],
                 cwd=repo, check=True, capture_output=True,
             )  # fmt: skip
-        return git(argv, **kwargs)
+        return run(argv, **kwargs)
 
-    monkeypatch.setattr(dataset, "_git", raced)
+    monkeypatch.setattr(dataset, "_run", raced)
 
     assert dataset.save(repo, [made], "this run's", annexed=[made]) is False
     assert not dataset.status(repo)

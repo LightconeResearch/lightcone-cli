@@ -25,6 +25,7 @@ import re
 import subprocess
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -187,7 +188,7 @@ def status(
     made from other bytes than the file holds, which is what an annexed
     file is while git-annex fills it in, until that command ends
     (measured). ``git diff`` takes the file through its filter, and what
-    it finds no difference in is no change.
+    it finds no difference in is no change (:func:`_filled`).
 
     Args:
         directory: The project to inspect.
@@ -205,13 +206,13 @@ def status(
         tell the user to add.
     """
     prefix = _git([*config, "rev-parse", "--show-prefix"], cwd=directory).strip()
-    asked = [
-        *config,
-        "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
-    ]  # fmt: skip
     listed = _git(
-        [*asked, "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
-         "--", "."],
+        [
+            *config,
+            "-c", f"status.showUntrackedFiles={'all' if untracked_files else 'normal'}",
+            "status", "--porcelain", "-z", "--no-renames", "--ignore-submodules=none",
+            "--", ".",
+        ],
         cwd=directory,
     )  # fmt: skip
     changes = []
@@ -219,16 +220,52 @@ def status(
         path = posixpath.relpath(entry[3:], prefix or ".")
         # An untracked folder keeps the slash that says it is one.
         changes.append((entry[:2], f"{path}/" if entry.endswith("/") and path != "." else path))
-    if any(code == " M" for code, _ in changes):
-        differ = set(
+    modified = [path for code, path in changes if code == " M"]
+    # Asked of git-annex, so only where it is set up, and never in a tree
+    # it must not run in, where no file is one it fills in.
+    if modified and not config and is_annexed(directory):
+        filled = _filled(directory, modified)
+        changes = [change for change in changes if change[1] not in filled]
+    return changes
+
+
+def _filled(directory: Path, modified: Sequence[str]) -> set[str]:
+    """The files among *modified* that hold the very bytes their index
+    entry names: ones git-annex filled in and has yet to tell git of.
+
+    Only a file of the size its key names is compared. Any other is a
+    change, and compared, it would go through git-annex's filter, which
+    copies what it is given into the annex (measured): a changed input,
+    or a result another run has yet to commit, written a second time.
+    """
+    looked = project._run(
+        ["git", "annex", "lookupkey", "--batch"],
+        cwd=directory,
+        stdin="".join(f"{path}\n" for path in modified),
+    )
+    # One line out per path in: its key in the index, or empty.
+    keyed = looked.stdout.split("\n")[:-1]
+    if looked.returncode != 0 or len(keyed) != len(modified):
+        return set()
+    sized = []
+    for path, key in zip(modified, keyed, strict=True):
+        with suppress(OSError):
+            named = _KEY_SIZE.match(key)
+            if named and (directory / path).stat().st_size == int(named[1]):
+                sized.append(path)
+    differ: set[str] = set()
+    for start in range(0, len(sized), _MANY):
+        # Compared whatever the user's configuration says: with
+        # `diff.autoRefreshIndex` off, git lists a file on its stat alone.
+        differ.update(
             _git(
-                [*asked, "diff", "--name-only", "-z", "--no-renames", "--relative",
-                 "--ignore-submodules=none", "--", "."],
+                ["-c", "diff.autoRefreshIndex=true", "diff", "--name-only", "-z",
+                 "--no-renames", "--relative", "--",
+                 *(f":(literal){path}" for path in sized[start : start + _MANY])],
                 cwd=directory,
             ).split("\0")
         )  # fmt: skip
-        changes = [(code, path) for code, path in changes if code != " M" or path in differ]
-    return changes
+    return set(sized) - differ
 
 
 def require_committer(directory: Path) -> None:
@@ -298,6 +335,20 @@ def repository(directory: Path) -> Path:
     """
     found = _git(["rev-parse", "--git-common-dir"], cwd=directory).strip()
     return (directory / found).resolve()
+
+
+def subject(directory: Path, path: Path | str) -> str:
+    """The subject of the last commit that changed *path*.
+
+    Args:
+        directory: The repository root.
+        path: A file of the repository.
+
+    Returns:
+        The commit's first line, or empty where no commit holds the path.
+    """
+    said = _ask(["log", "-1", "--format=%s", "--", _rel(directory, path)], cwd=directory)
+    return (said or "").strip()
 
 
 def is_ancestor(directory: Path, commit: str) -> bool:
@@ -618,20 +669,27 @@ def save(
     # The annex config rides on the commit too: a partial commit takes
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
-    try:
-        _git(
-            [*annex, "commit", "-q", "-m", message, "--", *relative],
-            cwd=directory,
-            patience=patience,
-        )
-    except project.ProjectError:
+    committed = _run(
+        [*annex, "commit", "-q", "-m", message, "--", *relative],
+        cwd=directory,
+        patience=patience,
+    )
+    if committed.returncode != 0:
         # Another run of the project may have committed these very files
         # since they were staged, which leaves git nothing to commit: they
-        # are committed all the same.
-        if _git_ok(["diff", "--quiet", "HEAD", "--", *relative], cwd=directory):
+        # are committed all the same. Not so a path git no longer tracks,
+        # unstaged since by someone's `git reset` or `git stash`, which no
+        # comparison with the last commit sees.
+        if _git_ok(["diff", "--quiet", "HEAD", "--", *relative], cwd=directory) and _git_ok(
+            ["ls-files", "--error-unmatch", "--", *relative], cwd=directory
+        ):
             return False
         _git_ok(["reset", "-q", "--", *relative], cwd=directory)
-        raise
+        # In git's words, without the message it was given to commit.
+        named_paths = ", ".join(path.removeprefix(":(literal)") for path in relative)
+        raise project.ProjectError(
+            f"git would not commit {named_paths}:\n{committed.stderr.strip()}"
+        )
     _git(
         ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
          "--no-commit"],
@@ -860,6 +918,9 @@ def get(
 # =============================================================================
 # Where the bytes go
 # =============================================================================
+
+#: The size a git-annex key names its content by, whatever its backend.
+_KEY_SIZE = re.compile(r"[A-Z0-9_]+-s([0-9]+)-")
 
 #: A key of git-annex's ``SHA256`` and ``SHA256E`` backends, which names
 #: the size and the hash of its bytes.

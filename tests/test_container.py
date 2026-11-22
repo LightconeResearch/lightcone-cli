@@ -518,9 +518,6 @@ def test_lc_build_refuses_an_uncommitted_declaration_and_nothing_else(
     def dirty(argv: list[str], *, cwd: Path, **kwargs: object) -> object:
         if argv[0] == "git" and "status" in argv:
             return MagicMock(returncode=0, stdout="".join(f"{c}\0" for c in changed), stderr="")
-        if argv[0] == "git" and "diff" in argv:
-            differ = "".join(f"{c[3:]}\0" for c in changed if c.startswith(" M"))
-            return MagicMock(returncode=0, stdout=differ, stderr="")
         return run(argv, cwd=cwd, **kwargs)
 
     monkeypatch.setattr(project, "_run", dirty)

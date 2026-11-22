@@ -753,19 +753,24 @@ def test_a_merge_begun_as_a_result_is_committed_takes_nothing_of_it(
     assert not dataset.status(root)
 
 
-def test_a_result_a_commit_of_the_whole_index_took_is_said_to_have_no_commit_of_its_own(
-    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("subject", "said"), [("my notes", True), ("[DATALAD RUNCMD] other", False)]
+)
+def test_a_result_another_commit_took_is_committed_and_said_where_no_run_record_tells_of_it(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch, subject: str, said: bool
 ) -> None:
     """A result is staged for an instant before its commit, in the index
     the researcher commits from. A commit of theirs in that instant takes
     it, with its record: a true pair, which the run reads as committed,
-    and says so, since no run record then tells how it was made."""
+    and says so, since no run record then tells how it was made. Another
+    run's commit of it, one that found it at its place, carries one, and
+    there is nothing to say."""
     save = dataset.save
 
     def taken_by_another_commit(directory: Path, paths: Any, *args: Any, **kwargs: Any) -> bool:
         if kwargs.get("named"):
             dataset._git(["add", "-A", "--", *paths], cwd=directory)
-            dataset._git(["commit", "-q", "-m", "my notes"], cwd=directory)
+            dataset._git(["commit", "-q", "-m", subject], cwd=directory)
         return save(directory, paths, *args, **kwargs)
 
     monkeypatch.setattr(dataset, "save", taken_by_another_commit)
@@ -773,8 +778,8 @@ def test_a_result_a_commit_of_the_whole_index_took_is_said_to_have_no_commit_of_
     report = engine.materialize(root, ["other"], cluster_id=CLUSTER_ID)
 
     assert report.made == ["other"]
-    assert any("another commit than this run's took it" in w for w in report.warnings)
-    assert dataset._git(["log", "-1", "--format=%s"], cwd=root).strip() == "my notes"
+    assert any("a commit that is no run's took it" in w for w in report.warnings) is said
+    assert dataset._git(["log", "-1", "--format=%s"], cwd=root).strip() == subject
     assert not dataset.status(root) and engine.check(root, ["other"]).up_to_date
 
 

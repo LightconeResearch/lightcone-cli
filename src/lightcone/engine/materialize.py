@@ -891,7 +891,7 @@ def _adopt(
             patience=checkout.LANDING,
         ):
             report.warnings.append(
-                f"{task.id}: a run made it and never committed it — committed now"
+                f"{task.id}: at its place with its record, and in no commit — committed now"
             )
     return adopted
 
@@ -979,17 +979,21 @@ def _consume(
         elif not same:
             why = "its file is no longer the bytes its record names"
         else:
-            if not checkout.land(
+            landed = checkout.land(
                 tree,
                 task,
                 outcome.digest,
                 outcome.records,
                 run_record(tree.root, task, dsid, archive),
+            )
+            # Another commit took it first. A run's says how it was made,
+            # as this one's would have; any other does not.
+            if not landed and not dataset.subject(tree.project, placed).startswith(
+                "[DATALAD RUNCMD]"
             ):
                 report.warnings.append(
-                    f"{name}: another commit than this run's took it, with its record, "
-                    "in the instant it was staged — yours, or another run's of the same "
-                    "result — so no commit of its own says how it was made"
+                    f"{name}: a commit that is no run's took it, with its record, in the "
+                    "instant it was staged, so no commit says how it was made"
                 )
             report.made.append(name)
             return

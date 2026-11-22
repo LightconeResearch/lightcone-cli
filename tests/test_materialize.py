@@ -930,7 +930,7 @@ def test_a_result_made_and_never_committed_is_committed_by_the_next_run(
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.made == ["second#baseline"], (report.failed, report.warnings)
-    assert any("first#baseline" in w and "never committed" in w for w in report.warnings)
+    assert any("first#baseline" in w and "in no commit" in w for w in report.warnings)
     assert _commits(root) == before + 2
     assert not dataset.status(root)
     assert (root / "results/baseline/second.txt").read_text() == "changed\n"
