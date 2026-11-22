@@ -1045,6 +1045,52 @@ def test_the_researchers_commits_during_a_run_take_nothing_from_it(
     assert (root / "notes.md").is_file() and not dataset.status(root)
 
 
+def test_a_result_is_committed_after_what_it_read_whatever_order_the_reports_come_in(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scheduler hands a report over as it fetches it, which need not be
+    the order the tasks ended in. The history is in the order of the
+    graph all the same: what replays it makes a result before what reads
+    it."""
+    root = analysis(_CHAIN, {"data/catalog.txt": "1\n"})
+
+    class Reversed(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            yield from reversed(handles)
+
+    _cluster(monkeypatch, Reversed())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == ["fit", "again"], (report.failed, report.warnings)
+    subjects = dataset._git(["log", "-2", "--format=%s"], cwd=root).splitlines()
+    assert subjects == ["[DATALAD RUNCMD] again", "[DATALAD RUNCMD] fit"]
+
+
+def test_what_read_a_result_the_run_did_not_commit_is_not_committed_whichever_reported_first(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its record would name bytes no commit holds. Held to whether the
+    result it read was committed, not to which of the two reports the
+    scheduler handed over first."""
+    root = analysis(_CHAIN, {"data/catalog.txt": "1\n"})
+    before = dataset.head(root)
+
+    class Reversed(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            # As another run's of the same result, moved there since.
+            (root / "results/fit.txt").unlink()
+            (root / "results/fit.txt").write_text("another run's\n")
+            yield from reversed(handles)
+
+    _cluster(monkeypatch, Reversed())
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert (report.made, report.failed) == ([], ["fit", "again"]), report.warnings
+    assert dataset.head(root) == before
+
+
 def test_a_result_does_not_land_once_the_history_no_longer_holds_the_runs_commit(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

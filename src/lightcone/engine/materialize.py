@@ -646,6 +646,8 @@ def materialize(
         tree = checkout.take(root, commit, scheduler.allocation)
         tasks = {key: task.at(tree.root) for key, task in graph.tasks.items()}
         handles: list[Any] = []
+        # The tasks submitted whose results are yet to be committed, or not.
+        awaited: set[ResultId] = set()
         reported = 0
         try:
             # The plan was read from the project's tree, where another run
@@ -767,18 +769,32 @@ def materialize(
                     resources=requirements[task.id],
                 )
                 handles.append(pending[task.id])
+                awaited.add(task.id)
             from lightcone.engine.compute import UNSTOPPED
 
             unlanded: set[ResultId] = set()
             archive = runtime.archive if runtime.mode == "containerized" else ""
+            # A result is committed after each result of the run it read,
+            # in whatever order the reports come: a scheduler hands each
+            # over as it fetches it, which need not be the order the tasks
+            # ended in, and what read a result the run fails to commit is
+            # not committed either. A report that came early waits.
+            early: dict[ResultId, worker.TaskOutcome] = {}
             for outcome in scheduler.completed(handles):
                 reported += 1
-                try:
-                    _consume(tree, tasks[outcome.id], outcome, dsid, archive, unlanded, report)
-                except Exception as exc:
-                    if reported == len(handles):
-                        raise
-                    raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
+                early[outcome.id] = outcome
+                while ready := next(
+                    (o for o in early.values() if awaited.isdisjoint(tasks[o.id].depends_on)),
+                    None,
+                ):
+                    del early[ready.id]
+                    try:
+                        _consume(tree, tasks[ready.id], ready, dsid, archive, unlanded, report)
+                    except Exception as exc:
+                        if reported == len(handles):
+                            raise
+                        raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
+                    awaited.discard(ready.id)
             # Every recipe ran in a checkout of the run's commit. What one
             # left there beyond the results the run made goes with the
             # checkout, and a change to the commit's own files means the
