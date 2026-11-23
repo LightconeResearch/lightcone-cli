@@ -403,7 +403,7 @@ def test_initializes_a_repository_with_an_annex(
     project = tmp_path / "proj"
     report = converge(project)
 
-    assert ["git", "init", "-q"] in tools
+    assert ["git", "init", "-q", "--initial-branch=main"] in tools
     assert ["git", "annex", "init", "-q"] in tools
     assert ".git" in report.created
     assert "git-annex" in report.created
