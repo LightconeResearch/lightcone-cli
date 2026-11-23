@@ -155,11 +155,44 @@ def test_the_store_is_a_shared_git_annex_repository_declared_for_every_clone(
     assert "autoenable=true" in dataset._git(["show", "git-annex:remote.log"], cwd=published)
 
 
-def test_publishing_again_sends_nothing_and_says_so(published: Path) -> None:
+def _connections(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """What git is asked to do with GitHub from here on, one verb per connection."""
+    real, made = project._run, []
+
+    def counted(argv: list[str], **kwargs: object) -> object:
+        made.extend(verb for verb in ("ls-remote", "fetch", "push") if verb in argv)
+        return real(argv, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(project, "_run", counted)
+    return made
+
+
+def test_publishing_again_sends_nothing_and_says_so(
+    published: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In one connection to GitHub, which costs seconds over ssh: what it
+    holds is what this clone last fetched or pushed."""
+    connections = _connections(monkeypatch)
+
     report = publish.publish(published)
 
     assert report.ok and report.published
     assert not (report.sent or report.commits or report.created or report.declared)
+    assert connections == ["ls-remote"]
+
+
+def test_a_log_someone_else_published_is_fetched_before_anything_is_sent(
+    published: Path, store: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It says what is in the store already, and the push then goes at once."""
+    assert publish.publish(_join(tmp_path), confirm=store).confirmed
+    _remake(published)
+    connections = _connections(monkeypatch)
+
+    report = publish.publish(published)
+
+    assert report.ok and report.commits == 3
+    assert connections == ["ls-remote", "fetch", "push"]
 
 
 def test_only_what_changed_is_sent_next(published: Path, github: GitHub) -> None:

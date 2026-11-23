@@ -277,8 +277,11 @@ def publish(
             dataset.confirm(root, remote, _settings(declared, address))
             report.confirmed = True
     report.store = _described(declared, target)
-    if heads:
-        # GitHub's copy of git-annex's log says what others already sent.
+    # GitHub's copy of git-annex's log says what others already sent, unless
+    # it is the very one this clone last fetched or pushed. Each connection
+    # to GitHub costs seconds over ssh (measured).
+    fetched = dataset._ask(["rev-parse", "-q", "--verify", "origin/git-annex"], cwd=root) or ""
+    if heads and heads.get("git-annex", "") != fetched.strip():
         dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
         unsent, report.nowhere = _lacking(root, declared, files, kinds)
 
@@ -297,7 +300,7 @@ def publish(
         # the store would reach clones as results to make again.
         return report
     report.commits = _commits(root, theirs, report.commit)
-    _push(root, branch, target)
+    _push(root, branch, target, heads or {})
     if going_public and not creating:
         assert token is not None
         github.make_public(target, token)
@@ -460,24 +463,32 @@ def _commits(root: Path, theirs: str, commit: str) -> int:
     return int(dataset._git(["rev-list", "--count", span], cwd=root).strip())
 
 
-def _push(root: Path, branch: str, target: github.Repository) -> None:
+def _push(
+    root: Path, branch: str, target: github.Repository, heads: dict[str, str]
+) -> None:
     """Send git-annex's log, then the branch, to GitHub.
 
     The log first has to hold what this clone noted and what GitHub's copy
-    says (``dataset.record_copies``). Both refs go or neither does. Where
-    GitHub refuses, someone published in between: their log is taken in
-    and the push tried once more, unless the branch itself moved, which is
-    theirs to pull.
+    says (``dataset.record_copies``). Both refs go or neither does; where
+    GitHub's *heads* are both already, and the branch is set up to pull
+    from it, nothing goes. Where GitHub refuses, someone published in
+    between: their log is taken in and the push tried once more, unless
+    the branch itself moved, which is theirs to pull.
 
     Raises:
         ProjectError: If the branch moved, or GitHub refuses again, in
             git's own words.
     """
+    refs = [f"refs/heads/{branch}", "refs/heads/git-annex"]
     push = [
         "git", *dataset.reaching(root), "push", "-q", "--atomic", "origin",
-        f"refs/heads/{branch}:refs/heads/{branch}", "refs/heads/git-annex:refs/heads/git-annex",
+        *(f"{ref}:{ref}" for ref in refs),
     ]  # fmt: skip
     dataset.record_copies(root)
+    tracked = (dataset._ask(["config", "--get", f"branch.{branch}.remote"], cwd=root) or "").strip()
+    held = [heads.get(ref.removeprefix("refs/heads/"), "") for ref in refs]
+    if tracked and dataset._git(["rev-parse", *refs], cwd=root).split() == held:
+        return
     if project._run(push, cwd=root).returncode != 0:
         dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
         moved = dataset._ask(
@@ -500,7 +511,7 @@ def _push(root: Path, branch: str, target: github.Repository) -> None:
                 "the store stays there."
             )
     # So that `git pull`, with nothing more, takes in what others publish.
-    if not (dataset._ask(["config", "--get", f"branch.{branch}.remote"], cwd=root) or "").strip():
+    if not tracked:
         dataset._git(["branch", "-q", f"--set-upstream-to=origin/{branch}", branch], cwd=root)
 
 
