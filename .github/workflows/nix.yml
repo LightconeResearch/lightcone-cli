@@ -1,0 +1,65 @@
+name: Nix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build
+        run: nix build --print-build-logs
+
+      - name: Smoke test
+        run: |
+          ./result/bin/lc --version
+          ./result/bin/astra --version
+          ./result/bin/git-annex version
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/result/bin/lc" init demo
+          "$GITHUB_WORKSPACE/result/bin/lc" init demo --check
+
+  version:
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Flake evaluates on every system
+        run: nix flake check --all-systems
+
+      - name: lastRelease is the latest tag
+        run: |
+          expected=$(uvx --from setuptools-scm python -m setuptools_scm)
+          name=$(nix eval --raw .#packages.x86_64-linux.default.name)
+          actual=${name#lightcone-}
+          echo "hatch-vcs: $expected"
+          echo "nix:       $actual"
+          if [ "${expected%%.dev*}" != "${actual%%.dev*}" ]; then
+            tag=$(git describe --tags --abbrev=0)
+            echo "::error file=flake.nix::set lastRelease = \"${tag#v}\";"
+            exit 1
+          fi
