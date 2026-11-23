@@ -1106,9 +1106,11 @@ def test_status_ends_with_one_line_while_the_project_is_not_online(
 
 
 def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_there(
-    runner: CliRunner, tmp_path: Path
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result = runner.invoke(main, ["init", str(tmp_path / "analysis")])
+    (tmp_path / "analysis").mkdir()
+    monkeypatch.chdir(tmp_path / "analysis")
+    result = runner.invoke(main, ["init"])
 
     assert result.exit_code == 0
     assert result.output.rstrip().splitlines()[-3:] == [
@@ -1117,6 +1119,23 @@ def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_ther
         "    lc publish github.com/OWNER/analysis --public",
     ]
     assert "lc publish" not in runner.invoke(main, ["init", "--check", str(tmp_path / "b")]).output
+
+
+def test_init_of_another_directory_says_where_to_publish_it_from(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lc publish` acts on the current directory, not the one `lc init` was given."""
+    monkeypatch.chdir(tmp_path)
+    below = runner.invoke(main, ["init", "analysis"]).output.rstrip().splitlines()
+    monkeypatch.chdir(tmp_path / "analysis")
+    beside = runner.invoke(main, ["init", str(tmp_path / "my b")]).output
+
+    assert below[-3:] == [
+        "  Not online yet. To back it up and share it, choose who can read it:",
+        "    cd analysis && lc publish github.com/OWNER/analysis --private",
+        "    cd analysis && lc publish github.com/OWNER/analysis --public",
+    ]
+    assert f"    cd '{(tmp_path / 'my b').resolve()}' && lc publish" in beside
 
 
 def test_init_says_nothing_of_publishing_for_a_project_that_is_online(

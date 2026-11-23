@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import shlex
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -163,10 +164,17 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     else:
         _render_init_output(report, directory, dry_run=check_only)
         if write and not report.blocked and not report.online:
+            # `lc publish` publishes the current directory, which the project
+            # just converged need not be.
+            here = Path.cwd().resolve()
+            cd = ""
+            if directory != here:
+                shown = directory.relative_to(here) if directory.is_relative_to(here) else directory
+                cd = f"cd {shlex.quote(str(shown))} && "
             click.echo(
                 "\n  Not online yet. To back it up and share it, choose who can read it:\n"
-                f"    lc publish github.com/OWNER/{directory.name} --private\n"
-                f"    lc publish github.com/OWNER/{directory.name} --public"
+                f"    {cd}lc publish github.com/OWNER/{directory.name} --private\n"
+                f"    {cd}lc publish github.com/OWNER/{directory.name} --public"
             )
 
     if check_only and not report.converged:
