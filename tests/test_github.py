@@ -161,6 +161,19 @@ def test_who_can_read_a_repository_is_githubs_answer(
     assert api.asked == [("GET", "/repos/alice/analysis", "t", None)]
 
 
+def test_the_branch_a_repository_shows_first_is_set_or_githubs_refusal_quoted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _Api((200, {}), (403, {"message": "Must have admin rights to Repository."}))
+    monkeypatch.setattr(github, "_call", api)
+
+    github.show_first(_REPO, "t", "master")
+    with pytest.raises(ProjectError, match="Must have admin rights"):
+        github.show_first(_REPO, "t", "master")
+
+    assert api.asked[0] == ("PATCH", "/repos/alice/analysis", "t", {"default_branch": "master"})
+
+
 def test_a_repository_is_created_under_the_user_the_token_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

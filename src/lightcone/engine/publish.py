@@ -29,7 +29,8 @@ what the store already took. It sends what the commit names, the current
 versions, with the results the analysis reads at commits it declares in
 this repository. It sends no tag and no other branch, deletes nothing
 anywhere, and merges nothing: where GitHub's branch has commits this
-clone lacks, it refuses.
+clone lacks, it refuses. GitHub shows that branch first, never
+git-annex's log, in a repository lc creates.
 """
 
 from __future__ import annotations
@@ -106,6 +107,9 @@ class PublishReport:
     commit: str = ""
     #: How many commits this call sent.
     commits: int = 0
+    #: The branch this call made the one GitHub shows first, in place of
+    #: git-annex's log; empty where it changed nothing.
+    shown_first: str = ""
     #: Check mode: how many commits GitHub lacks.
     unpushed: int = 0
     #: Changes that are not committed, which no publication sends.
@@ -187,13 +191,20 @@ def publish(
         raise ProjectError(
             "HEAD is not on a branch, and lc publishes a branch: `git switch` to one."
         )
-    report.target, report.branch, report.commit = target.slug, branch, dataset.head(root)
+    commit = dataset._ask(["rev-parse", "--verify", "HEAD"], cwd=root)
+    if commit is None:
+        raise ProjectError(
+            "this project has no commit to publish. `lc init` leaves project files "
+            "uncommitted: review them with `git status`, then `git add` the files you "
+            "want to publish and `git commit`. Run `lc publish` again afterwards."
+        )
+    report.target, report.branch, report.commit = target.slug, branch, commit.strip()
     dataset.populate(root)
     dataset.enable_store(root)
     token = github.token(root)
 
     # --- What stands, before anything is done ------------------------------
-    heads, said = _heads(root, origin or target.url)
+    heads, first, said = _heads(root, origin or target.url)
     creating = heads is None
     if creating:
         if check:
@@ -277,8 +288,11 @@ def publish(
             dataset.confirm(root, remote, _settings(declared, address))
             report.confirmed = True
     report.store = _described(declared, target)
-    if heads:
-        # GitHub's copy of git-annex's log says what others already sent.
+    # GitHub's copy of git-annex's log says what others already sent, unless
+    # it is the very one this clone last fetched or pushed. Each connection
+    # to GitHub costs seconds over ssh (measured).
+    fetched = dataset._ask(["rev-parse", "-q", "--verify", "origin/git-annex"], cwd=root) or ""
+    if heads and heads.get("git-annex", "") != fetched.strip():
         dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
         unsent, report.nowhere = _lacking(root, declared, files, kinds)
 
@@ -297,11 +311,27 @@ def publish(
         # the store would reach clones as results to make again.
         return report
     report.commits = _commits(root, theirs, report.commit)
-    _push(root, branch, target)
+    _push(root, branch, target, heads or {})
     if going_public and not creating:
         assert token is not None
         github.make_public(target, token)
         report.made_public, report.visibility = True, "public"
+    # GitHub shows first a branch of its choosing among those the first push
+    # to a repository brings, and chose git-annex's log over the analysis
+    # (measured).
+    if creating or first == "git-annex":
+        if token is None:
+            report.warnings.append(
+                f"GitHub shows git-annex's log first on {target.slug}, not the analysis: make "
+                f"`{branch}` its default branch in the repository's settings, or publish again "
+                "with a GitHub token."
+            )
+        else:
+            try:
+                github.show_first(target, token, branch)
+                report.shown_first = branch
+            except ProjectError as refused:
+                report.warnings.append(str(refused))
     return report
 
 
@@ -344,19 +374,26 @@ def _target(origin: str, url: str) -> github.Repository | None:
     return current
 
 
-def _heads(root: Path, address: str) -> tuple[dict[str, str] | None, str]:
-    """The branches the repository at *address* holds, each with its commit;
-    or None, with git's own words, where git cannot reach it."""
+def _heads(root: Path, address: str) -> tuple[dict[str, str] | None, str, str]:
+    """The remote branches, its default branch, and git's error if unreachable.
+
+    Git credentials suffice even for a private repository: no API token
+    is needed to learn which branch a clone would check out.
+    """
     asked = project._run(
-        ["git", *dataset.reaching(root), "ls-remote", "--heads", address], cwd=root
+        ["git", *dataset.reaching(root), "ls-remote", "--symref", address,
+         "HEAD", "refs/heads/*"], cwd=root
     )
     if asked.returncode != 0:
-        return None, (asked.stderr or "").strip()
-    heads = {}
+        return None, "", (asked.stderr or "").strip()
+    heads, first = {}, ""
     for line in (asked.stdout or "").splitlines():
         commit, _, ref = line.partition("\t")
-        heads[ref.removeprefix("refs/heads/")] = commit
-    return heads, ""
+        if ref == "HEAD" and commit.startswith("ref: refs/heads/"):
+            first = commit.removeprefix("ref: refs/heads/")
+        elif ref.startswith("refs/heads/"):
+            heads[ref.removeprefix("refs/heads/")] = commit
+    return heads, first, ""
 
 
 def _require_creatable(target: github.Repository, token: str | None, said: str) -> None:
@@ -460,24 +497,32 @@ def _commits(root: Path, theirs: str, commit: str) -> int:
     return int(dataset._git(["rev-list", "--count", span], cwd=root).strip())
 
 
-def _push(root: Path, branch: str, target: github.Repository) -> None:
+def _push(
+    root: Path, branch: str, target: github.Repository, heads: dict[str, str]
+) -> None:
     """Send git-annex's log, then the branch, to GitHub.
 
     The log first has to hold what this clone noted and what GitHub's copy
-    says (``dataset.record_copies``). Both refs go or neither does. Where
-    GitHub refuses, someone published in between: their log is taken in
-    and the push tried once more, unless the branch itself moved, which is
-    theirs to pull.
+    says (``dataset.record_copies``). Both refs go or neither does; where
+    GitHub's *heads* are both already, and the branch is set up to pull
+    from it, nothing goes. Where GitHub refuses, someone published in
+    between: their log is taken in and the push tried once more, unless
+    the branch itself moved, which is theirs to pull.
 
     Raises:
         ProjectError: If the branch moved, or GitHub refuses again, in
             git's own words.
     """
+    refs = [f"refs/heads/{branch}", "refs/heads/git-annex"]
     push = [
         "git", *dataset.reaching(root), "push", "-q", "--atomic", "origin",
-        f"refs/heads/{branch}:refs/heads/{branch}", "refs/heads/git-annex:refs/heads/git-annex",
+        *(f"{ref}:{ref}" for ref in refs),
     ]  # fmt: skip
     dataset.record_copies(root)
+    tracked = (dataset._ask(["config", "--get", f"branch.{branch}.remote"], cwd=root) or "").strip()
+    held = [heads.get(ref.removeprefix("refs/heads/"), "") for ref in refs]
+    if tracked and dataset._git(["rev-parse", *refs], cwd=root).split() == held:
+        return
     if project._run(push, cwd=root).returncode != 0:
         dataset._git([*dataset.reaching(root), "fetch", "-q", "origin"], cwd=root)
         moved = dataset._ask(
@@ -500,7 +545,7 @@ def _push(root: Path, branch: str, target: github.Repository) -> None:
                 "the store stays there."
             )
     # So that `git pull`, with nothing more, takes in what others publish.
-    if not (dataset._ask(["config", "--get", f"branch.{branch}.remote"], cwd=root) or "").strip():
+    if not tracked:
         dataset._git(["branch", "-q", f"--set-upstream-to=origin/{branch}", branch], cwd=root)
 
 
@@ -745,7 +790,7 @@ def _files(root: Path, report: PublishReport) -> tuple[dict[str, str], dict[str,
         graph, environment = materialize._graph(root, [], scan)
         states = Counter(
             found.verdict.state
-            for found in materialize._classify(root, graph, environment, refresh=False)
+            for found in materialize._classify(root, graph, environment, refresh=())
         )
     except ProjectError as unread:
         report.warnings.append(

@@ -192,7 +192,7 @@ def materialize(
             that hold them, as the driver found them: whether a run can
             fetch them is git-annex's to say, and a task asks git nothing.
         context: The run's driver-resolved facts.
-        refresh: Whether to remake a result that is merely behind.
+        refresh: Whether this result was explicitly requested to be remade.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.

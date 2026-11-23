@@ -108,6 +108,28 @@ def _heads(github: GitHub) -> dict[str, str]:
 # =============================================================================
 
 
+def test_a_fresh_project_explains_the_commit_needed_before_publication(
+    tmp_path: Path, github: GitHub, store: str, real_tools: None,
+) -> None:
+    """An unborn branch is a normal state after init, not an opaque git
+    failure or a reason to create an empty repository online."""
+    root = tmp_path / "fresh"
+    project.converge(root)
+
+    with pytest.raises(ProjectError, match="no commit to publish") as refused:
+        publish.publish(root, _URL, visibility="private", data=store)
+
+    assert "git status" in str(refused.value) and "git commit" in str(refused.value)
+    assert github.calls == []
+    assert not github.at("alice/analysis").exists()
+    assert not Path(store).exists()
+    assert dataset._ask(["rev-parse", "--verify", "HEAD"], cwd=root) is None
+
+    dataset.save(root, [root], "Set up analysis")
+    report = publish.publish(root, _URL, visibility="private", data=store)
+    assert report.ok and report.created and report.published
+
+
 def test_the_first_publication_creates_the_repository_and_declares_the_store(
     made: Path, store: str, github: GitHub
 ) -> None:
@@ -129,6 +151,41 @@ def test_the_first_publication_creates_the_repository_and_declares_the_store(
         "main": dataset.head(made),
         "git-annex": dataset._git(["rev-parse", "git-annex"], cwd=made).strip(),
     }
+
+
+def test_a_repository_lc_creates_shows_the_analysis_first(
+    made: Path, store: str, github: GitHub, tmp_path: Path
+) -> None:
+    """Whatever GitHub would choose among the branch and git-annex's log,
+    and whatever it calls a new repository's first branch."""
+    dataset._git(["branch", "-m", "main", "master"], cwd=made)
+
+    report = publish.publish(made, _URL, visibility="private", data=store)
+
+    assert report.ok and report.shown_first == "master"
+    assert github.default_branch("alice/analysis") == "master"
+    dataset._git(["clone", "-q", _HTTPS, str(tmp_path / "bob")], cwd=tmp_path)
+    assert (tmp_path / "bob" / "astra.yaml").exists()
+
+
+def test_a_repository_that_shows_git_annexs_log_first_is_set_right_by_the_next_publication(
+    published: Path, github: GitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As GitHub left it where lc pushed `master` and `git-annex` to a new
+    repository (measured), and with nothing else to send."""
+    github.show_first("alice/analysis", "git-annex")
+
+    report = publish.publish(published)
+
+    assert report.ok and report.shown_first == "main" and not report.commits
+    assert github.default_branch("alice/analysis") == "main"
+    assert publish.publish(published).shown_first == ""
+    # Without a token lc cannot, and says what can.
+    github.show_first("alice/analysis", "git-annex")
+    monkeypatch.delenv("GH_TOKEN")
+    report = publish.publish(published)
+    assert report.ok and not report.shown_first
+    assert "make `main` its default branch in the repository's settings" in report.warnings[-1]
 
 
 def test_a_publication_leaves_the_clone_set_up_to_pull_and_for_datalad(
@@ -155,11 +212,44 @@ def test_the_store_is_a_shared_git_annex_repository_declared_for_every_clone(
     assert "autoenable=true" in dataset._git(["show", "git-annex:remote.log"], cwd=published)
 
 
-def test_publishing_again_sends_nothing_and_says_so(published: Path) -> None:
+def _connections(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """What git is asked to do with GitHub from here on, one verb per connection."""
+    real, made = project._run, []
+
+    def counted(argv: list[str], **kwargs: object) -> object:
+        made.extend(verb for verb in ("ls-remote", "fetch", "push") if verb in argv)
+        return real(argv, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(project, "_run", counted)
+    return made
+
+
+def test_publishing_again_sends_nothing_and_says_so(
+    published: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In one connection to GitHub, which costs seconds over ssh: what it
+    holds is what this clone last fetched or pushed."""
+    connections = _connections(monkeypatch)
+
     report = publish.publish(published)
 
     assert report.ok and report.published
     assert not (report.sent or report.commits or report.created or report.declared)
+    assert connections == ["ls-remote"]
+
+
+def test_a_log_someone_else_published_is_fetched_before_anything_is_sent(
+    published: Path, store: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It says what is in the store already, and the push then goes at once."""
+    assert publish.publish(_join(tmp_path), confirm=store).confirmed
+    _remake(published)
+    connections = _connections(monkeypatch)
+
+    report = publish.publish(published)
+
+    assert report.ok and report.commits == 3
+    assert connections == ["ls-remote", "fetch", "push"]
 
 
 def test_only_what_changed_is_sent_next(published: Path, github: GitHub) -> None:

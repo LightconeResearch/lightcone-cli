@@ -36,7 +36,7 @@ import posixpath
 import re
 import shlex
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -135,7 +135,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     Args:
         root: The project root.
         targets: What to classify; empty means everything.
-        refresh: Whether a result that is merely behind would be remade.
+        refresh: Whether to remake the requested results regardless of state.
 
     Returns:
         ``planned`` naming each result that would run and why, ``behind``
@@ -148,8 +148,9 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     """
     report = MaterializeReport()
     graph, environment = _graph(root, targets, report)
+    asked = graph.resolve(list(targets)) if targets else list(graph.tasks)
     blocked: set[ResultId] = set()
-    for found in _classify(root, graph, environment, refresh=refresh):
+    for found in _classify(root, graph, environment, refresh=asked if refresh else ()):
         verdict = found.verdict
         # What a run leaves alone reads nothing, so nothing it reads blocks it.
         stale = {
@@ -158,12 +159,12 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             if dep not in graph.tasks and (why := worker.unreadable(graph.checked.statuses[dep]))
         }
         reads_blocked = bool(stale) or bool(blocked.intersection(found.task.depends_on))
-        if found.may_run(refresh=refresh) and reads_blocked:
+        if found.may_run() and reads_blocked:
             blocked.add(found.task.id)
             report.blocked.append(found.task.id)
             report.warnings.extend(f"{dep}: {why}" for dep, why in stale.items())
-        elif verdict.calls_for_a_remake(refresh=refresh):
-            report.planned[found.task.id] = verdict.why
+        elif verdict.calls_for_a_remake(refresh=found.refresh):
+            report.planned[found.task.id] = verdict.why or "requested with --refresh"
         elif found.upstream:
             # Nothing here can know whether a rebuild comes out
             # byte-identical, and assuming it will would under-report.
@@ -193,20 +194,22 @@ class _Classified:
     verdict: plan.Verdict
     #: A task upstream of this one that may run, or empty.
     upstream: ResultId
+    #: Whether this result was explicitly requested with ``--refresh``.
+    refresh: bool
 
-    def may_run(self, *, refresh: bool) -> bool:
+    def may_run(self) -> bool:
         """Whether a run has to hand this task to a worker."""
-        return bool(self.upstream) or self.verdict.calls_for_a_remake(refresh=refresh)
+        return bool(self.upstream) or self.verdict.calls_for_a_remake(refresh=self.refresh)
 
-    def certain(self, *, refresh: bool) -> bool:
+    def certain(self) -> bool:
         """Whether a run is sure to make this result again: nothing it
         makes first can leave it standing."""
-        through = self.verdict.through_reads and bool(self.upstream)
-        return self.verdict.calls_for_a_remake(refresh=refresh) and not through
+        through = not self.refresh and self.verdict.through_reads and bool(self.upstream)
+        return self.verdict.calls_for_a_remake(refresh=self.refresh) and not through
 
 
 def _classify(
-    root: Path, graph: Graph, environment: str, *, refresh: bool
+    root: Path, graph: Graph, environment: str, *, refresh: Collection[ResultId]
 ) -> list[_Classified]:
     """Classify every task of *graph*, upstream first.
 
@@ -220,8 +223,8 @@ def _classify(
         root: The project root.
         graph: The tasks to classify, each after the tasks it reads.
         environment: The IRI of the project's environment.
-        refresh: Whether behind results count as running, which is what
-            decides whether their dependents may run too.
+        refresh: The results explicitly requested with ``--refresh``. Their
+            dependencies are remade only where stale or missing.
 
     Returns:
         One entry per task, in the graph's order.
@@ -250,6 +253,7 @@ def _classify(
             "the results it lacks are — `lc init` sets it up."
         )
     held = dataset.holders(root, list(away.values()))
+    refreshed = set(refresh)
     may_run: set[ResultId] = set()
     classified = []
     for key, task in graph.tasks.items():
@@ -261,8 +265,9 @@ def _classify(
             remotes,
             plan.classify(found=found, environment=environment, remotes=remotes),
             next((dep for dep in task.depends_on if dep in may_run), ""),
+            key in refreshed,
         )
-        if entry.may_run(refresh=refresh):
+        if entry.may_run():
             may_run.add(key)
         classified.append(entry)
     return classified
@@ -355,7 +360,7 @@ def status(root: Path) -> StatusReport:
     Reads records through ASTRA's checker, and git-annex's log of which
     remote holds the bytes this clone lacks; runs nothing, fetches
     nothing, commits nothing, and does not care whether the tree is
-    clean. Classified with ``refresh=False``, because this says what the
+    clean. Classified with nothing refreshed, because this says what the
     project *is* rather than what some run would do to it.
 
     Args:
@@ -378,7 +383,7 @@ def status(root: Path) -> StatusReport:
     answer.environment = environment
     answer.online = dataset.target(root) is not None
     checked = graph.checked.to_json()["statuses"]
-    for found in _classify(root, graph, environment, refresh=False):
+    for found in _classify(root, graph, environment, refresh=()):
         held = found.found.bytes
         unfetched = found.verdict.state in ("ok", "behind") and not (
             held is None or held.state == "present"
@@ -489,7 +494,7 @@ def fetch(root: Path, targets: Sequence[str]) -> FetchReport:
             report.failed[name] = f"its bytes are kept by {kept.kept_by}, not git-annex"
         else:
             wanted[declared] = name
-    for found in _classify(root, graph, environment, refresh=False):
+    for found in _classify(root, graph, environment, refresh=()):
         key, held = found.task.id, found.found.bytes
         if key not in asked:
             continue
@@ -535,7 +540,7 @@ def materialize(
         root: The project root.
         targets: Results to make, with what they read; empty means every one.
         cluster_id: The name or immutable ID returned by ``lc compute launch``.
-        refresh: Also remake results made under an earlier environment.
+        refresh: Remake the requested results regardless of state.
 
     Returns:
         What was made, left alone, failed or blocked, and why.
@@ -565,8 +570,9 @@ def materialize(
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes, _written(graph)))
     worker.require_in_commit(root, graph.specs)
-    classified = _classify(root, graph, environment, refresh=refresh)
-    running = [found.task for found in classified if found.may_run(refresh=refresh)]
+    asked = graph.resolve(list(targets)) if targets else list(graph.tasks)
+    classified = _classify(root, graph, environment, refresh=asked if refresh else ())
+    running = [found.task for found in classified if found.may_run()]
     if not running:
         # Nothing is submitted, so no allocation is needed.
         for found in classified:
@@ -581,7 +587,7 @@ def materialize(
         root,
         graph,
         running,
-        {found.task.id for found in classified if found.certain(refresh=refresh)},
+        {found.task.id for found in classified if found.certain()},
     )
     dsid = dataset.dataset_id(root)
     with cluster_for_run(cluster_id) as scheduler:
@@ -647,7 +653,7 @@ def materialize(
                 report.failed.append(task.id)
                 report.warnings.append(f"{task.id}: {why}")
                 continue
-            if not found.may_run(refresh=refresh):
+            if not found.may_run():
                 pending[task.id] = _left_alone(found, report)
                 continue
             at = {plan.at_commit(root, path) for path in task.inputs.values()}
@@ -679,7 +685,7 @@ def materialize(
                 found.found,
                 found.remotes,
                 context,
-                refresh,
+                found.refresh,
                 *[pending[dep] for dep in task.depends_on],
                 key=task.id,
                 resources=requirements[task.id],

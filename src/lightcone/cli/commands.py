@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import shlex
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -140,7 +141,8 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     """Converge DIRECTORY into a standard Lightcone project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
-    pieces lightcone manages, and never overwrites files you own.
+    pieces lightcone manages, and never overwrites files you own. Changes
+    are not committed: review and commit the project files before publishing.
 
     In a clone it sets up git-annex, which enables the store the project
     declares for its data, so `lc fetch` works from there. It creates
@@ -163,10 +165,15 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     else:
         _render_init_output(report, directory, dry_run=check_only)
         if write and not report.blocked and not report.online:
+            # `lc publish` publishes the current directory, which the project
+            # just converged need not be.
+            cd = "" if directory == Path.cwd().resolve() else (
+                f"cd -- {shlex.quote(str(directory))} && "
+            )
             click.echo(
-                "\n  Not online yet. To back it up and share it, choose who can read it:\n"
-                f"    lc publish github.com/OWNER/{directory.name} --private\n"
-                f"    lc publish github.com/OWNER/{directory.name} --public"
+                "\n  Not online yet. Commit any project changes, then choose who can read it:\n"
+                f"    {cd}lc publish github.com/OWNER/{directory.name} --private\n"
+                f"    {cd}lc publish github.com/OWNER/{directory.name} --public"
             )
 
     if check_only and not report.converged:
@@ -353,8 +360,8 @@ def build(as_json: bool) -> None:
     "--refresh",
     is_flag=True,
     help=(
-        "Also remake results that are behind — still what the analysis "
-        "asks for, but made under an earlier environment."
+        "Remake the requested results even when current; without targets, "
+        "remake every result. Dependencies are remade only where stale or missing."
     ),
 )
 @click.option(
@@ -387,9 +394,11 @@ def materialize(
     otherwise.
 
     A result made under an earlier environment is reported as behind and
-    left alone: it is still what the analysis asks for, and its record
-    names the environment and the commit that produced it. Pass
-    --refresh to remake those too.
+    left alone. Pass --refresh to remake the targets regardless of their
+    state, or every result without targets. This also reruns a result
+    after editing a script the analysis does not declare as an input.
+    Dependencies are remade only where stale or missing, unless they
+    are also targets.
     """
     from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
@@ -443,7 +452,7 @@ def materialize(
     else:
         if report.notes:
             click.echo("\n".join(["", *report.notes]), err=True)
-        _render_materialize_output(report, root, dry_run=check_only)
+        _render_materialize_output(report, root, dry_run=check_only, refresh=refresh)
 
     if not report.ok or (check_only and not report.up_to_date):
         sys.exit(1)
@@ -742,7 +751,9 @@ def publish(
 # =============================================================================
 
 
-def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
+def _render_materialize_output(
+    report: MaterializeReport, root: Path, *, dry_run: bool, refresh: bool
+) -> None:
     """Print what ran, or what would.
 
     Engine prose and paths are escaped — they are data, not markup, and a
@@ -780,8 +791,11 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     # On the verdict line as well as in the listing: on a large analysis the
     # listing scrolls away, and this is the one state that reports something
     # rather than doing it.
+    # With --refresh, what is still behind is what the targets read.
     if report.behind:
-        verdict += f" · {len(report.behind)} behind — `--refresh` remakes them"
+        verdict += f" · {len(report.behind)} behind" + (
+            ", read by the targets" if refresh else " — `--refresh` remakes them"
+        )
 
     if lines:
         lines.append("")
@@ -834,6 +848,11 @@ def _render_publish_output(report: PublishReport, *, dry_run: bool) -> None:
         lines.append(f"  {_DONE} commits  {report.branch} at {report.commit[:7]} → {target}")
     if report.unpushed:
         lines.append(f"  {_TODO} commits  {report.unpushed} of {report.branch} to send → {target}")
+    if report.shown_first and not report.created:
+        lines.append(
+            f"  {_DONE} default  {report.shown_first}, now shown first on GitHub in place of "
+            "git-annex's log"
+        )
     if report.made_public:
         lines.append(f"  {_DONE} license  {escape(report.license)}")
         lines.append(

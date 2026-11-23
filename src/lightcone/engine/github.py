@@ -3,9 +3,9 @@
 GitHub is where a project is published: its repository holds the commits
 and git-annex's log of which store holds what. git itself moves both, with
 whatever credentials git already has. This module is the rest: reading
-which repository a URL names, and the three things only GitHub's REST API
-does — saying who can read a repository, creating one, and making one
-public.
+which repository a URL names, and what only GitHub's REST API does —
+saying who can read a repository, creating one, making one public,
+and choosing its default branch.
 
 The API is called with Python's standard library and a token found in the
 environment, or from ``gh`` where that happens to be installed and logged
@@ -200,6 +200,27 @@ def make_public(repository: Repository, token: str) -> None:
     if code != 200:
         raise project.ProjectError(
             f"GitHub would not make {repository.slug} public: {_said(answer)}"
+        )
+
+
+def show_first(repository: Repository, token: str, branch: str) -> None:
+    """Make *branch* the one *repository* shows first, and a clone checks out.
+
+    Args:
+        repository: The repository.
+        token: A token allowed to administer it.
+        branch: A branch it holds.
+
+    Raises:
+        ProjectError: In GitHub's own words, if it refuses.
+    """
+    code, answer = _call(
+        "PATCH", f"/repos/{repository.owner}/{repository.name}", token, {"default_branch": branch}
+    )
+    if code != 200:
+        raise project.ProjectError(
+            f"GitHub would not make `{branch}` the default branch of {repository.slug}: "
+            f"{_said(answer)}"
         )
 
 

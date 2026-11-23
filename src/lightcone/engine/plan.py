@@ -463,16 +463,15 @@ class Verdict:
     def calls_for_a_remake(self, *, refresh: bool) -> bool:
         """Whether a run would make this result again.
 
-        ``stale`` and ``missing`` always; ``behind`` only when asked,
-        because nothing about it is wrong.
+        ``stale`` and ``missing`` always; any state when explicitly refreshed.
 
         Args:
-            refresh: Whether the caller asked for behind results too.
+            refresh: Whether the caller explicitly asked to remake this result.
 
         Returns:
             Whether to run the recipe.
         """
-        return self.state in ("stale", "missing") or (refresh and self.state == "behind")
+        return refresh or self.state in ("stale", "missing")
 
 
 def classify(
