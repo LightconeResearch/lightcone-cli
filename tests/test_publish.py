@@ -131,6 +131,42 @@ def test_the_first_publication_creates_the_repository_and_declares_the_store(
     }
 
 
+def test_a_repository_lc_creates_shows_the_analysis_first(
+    made: Path, store: str, github: GitHub, tmp_path: Path
+) -> None:
+    """Whatever GitHub would choose among the branch and git-annex's log,
+    and whatever it calls a new repository's first branch."""
+    dataset._git(["branch", "-m", "main", "master"], cwd=made)
+
+    report = publish.publish(made, _URL, visibility="private", data=store)
+
+    assert report.ok and report.shown_first == "master"
+    assert github.default_branch("alice/analysis") == "master"
+    dataset._git(["clone", "-q", _HTTPS, str(tmp_path / "bob")], cwd=tmp_path)
+    assert (tmp_path / "bob" / "astra.yaml").exists()
+
+
+def test_a_repository_that_shows_git_annexs_log_first_is_set_right_by_the_next_publication(
+    published: Path, github: GitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As GitHub left it where lc pushed `master` and `git-annex` to a new
+    repository (measured), and with nothing else to send."""
+    github.show_first("alice/analysis", "git-annex")
+
+    report = publish.publish(published)
+
+    assert report.ok and report.shown_first == "main" and not report.commits
+    assert github.default_branch("alice/analysis") == "main"
+    assert publish.publish(published).shown_first == ""
+    # Without a token lc cannot, and says what can.
+    github.show_first("alice/analysis", "git-annex")
+    (github.at("alice/analysis") / "visibility").write_text("public")
+    monkeypatch.delenv("GH_TOKEN")
+    report = publish.publish(published)
+    assert report.ok and not report.shown_first
+    assert "make `main` its default branch in the repository's settings" in report.warnings[-1]
+
+
 def test_a_publication_leaves_the_clone_set_up_to_pull_and_for_datalad(
     published: Path,
 ) -> None:

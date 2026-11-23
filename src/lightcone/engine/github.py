@@ -3,9 +3,9 @@
 GitHub is where a project is published: its repository holds the commits
 and git-annex's log of which store holds what. git itself moves both, with
 whatever credentials git already has. This module is the rest: reading
-which repository a URL names, and the three things only GitHub's REST API
-does — saying who can read a repository, creating one, and making one
-public.
+which repository a URL names, and what only GitHub's REST API does —
+saying who can read a repository and which branch it shows first,
+creating one, making one public, and choosing the branch it shows.
 
 The API is called with Python's standard library and a token found in the
 environment, or from ``gh`` where that happens to be installed and logged
@@ -131,17 +131,27 @@ def has_gh() -> bool:
     return shutil.which("gh") is not None
 
 
-def visibility(repository: Repository, token: str | None) -> Literal["private", "public"] | None:
-    """Ask GitHub who can read *repository*.
+@dataclass(frozen=True)
+class Shown:
+    """What GitHub shows of a repository to whoever asks."""
+
+    #: Who can read it: ``private`` or ``public``.
+    visibility: Literal["private", "public"]
+    #: The branch it shows first, which a clone checks out.
+    default_branch: str
+
+
+def shown(repository: Repository, token: str | None) -> Shown | None:
+    """Ask GitHub who can read *repository*, and which branch it shows first.
 
     Args:
         repository: The repository.
         token: A token to ask with, or None to ask as anyone.
 
     Returns:
-        ``public`` or ``private``; None where GitHub shows no such
-        repository to whoever asks, which is also its answer for a private
-        one asked about without a token that can read it.
+        What GitHub shows; None where it shows no such repository to
+        whoever asks, which is also its answer for a private one asked
+        about without a token that can read it.
 
     Raises:
         ProjectError: If GitHub cannot be reached, or refuses to answer.
@@ -153,7 +163,9 @@ def visibility(repository: Repository, token: str | None) -> Literal["private", 
         raise project.ProjectError(
             f"GitHub would not say who can read {repository.slug}: {_said(answer)}"
         )
-    return "private" if answer.get("private") else "public"
+    return Shown(
+        "private" if answer.get("private") else "public", str(answer.get("default_branch", ""))
+    )
 
 
 def create(repository: Repository, token: str, *, private: bool) -> None:
@@ -200,6 +212,27 @@ def make_public(repository: Repository, token: str) -> None:
     if code != 200:
         raise project.ProjectError(
             f"GitHub would not make {repository.slug} public: {_said(answer)}"
+        )
+
+
+def show_first(repository: Repository, token: str, branch: str) -> None:
+    """Make *branch* the one *repository* shows first, and a clone checks out.
+
+    Args:
+        repository: The repository.
+        token: A token allowed to administer it.
+        branch: A branch it holds.
+
+    Raises:
+        ProjectError: In GitHub's own words, if it refuses.
+    """
+    code, answer = _call(
+        "PATCH", f"/repos/{repository.owner}/{repository.name}", token, {"default_branch": branch}
+    )
+    if code != 200:
+        raise project.ProjectError(
+            f"GitHub would not make `{branch}` the default branch of {repository.slug}: "
+            f"{_said(answer)}"
         )
 
 

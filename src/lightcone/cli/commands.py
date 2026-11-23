@@ -842,6 +842,11 @@ def _render_publish_output(report: PublishReport, *, dry_run: bool) -> None:
         lines.append(f"  {_DONE} commits  {report.branch} at {report.commit[:7]} → {target}")
     if report.unpushed:
         lines.append(f"  {_TODO} commits  {report.unpushed} of {report.branch} to send → {target}")
+    if report.shown_first and not report.created:
+        lines.append(
+            f"  {_DONE} default  {report.shown_first}, now shown first on GitHub in place of "
+            "git-annex's log"
+        )
     if report.made_public:
         lines.append(f"  {_DONE} license  {escape(report.license)}")
         lines.append(

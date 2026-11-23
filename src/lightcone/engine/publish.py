@@ -29,7 +29,8 @@ what the store already took. It sends what the commit names, the current
 versions, with the results the analysis reads at commits it declares in
 this repository. It sends no tag and no other branch, deletes nothing
 anywhere, and merges nothing: where GitHub's branch has commits this
-clone lacks, it refuses.
+clone lacks, it refuses. GitHub shows that branch first, never
+git-annex's log, in a repository lc creates.
 """
 
 from __future__ import annotations
@@ -106,6 +107,9 @@ class PublishReport:
     commit: str = ""
     #: How many commits this call sent.
     commits: int = 0
+    #: The branch this call made the one GitHub shows first, in place of
+    #: git-annex's log; empty where it changed nothing.
+    shown_first: str = ""
     #: Check mode: how many commits GitHub lacks.
     unpushed: int = 0
     #: Changes that are not committed, which no publication sends.
@@ -195,12 +199,13 @@ def publish(
     # --- What stands, before anything is done ------------------------------
     heads, said = _heads(root, origin or target.url)
     creating = heads is None
+    first = ""  # The branch GitHub shows first, where it says.
     if creating:
         if check:
             raise ProjectError(f"{target.slug} could not be reached:\n{said}")
         _require_creatable(target, token, said)
     else:
-        report.visibility = _visibility(target, token, asked=bool(visibility))
+        report.visibility, first = _shown(target, token, asked=bool(visibility))
         if visibility == "private" and report.visibility == "public":
             raise ProjectError(
                 f"{target.slug} is public, and lc offers no way back: copies made while it "
@@ -305,6 +310,22 @@ def publish(
         assert token is not None
         github.make_public(target, token)
         report.made_public, report.visibility = True, "public"
+    # GitHub shows first a branch of its choosing among those the first push
+    # to a repository brings, and chose git-annex's log over the analysis
+    # (measured).
+    if creating or first == "git-annex":
+        if token is None:
+            report.warnings.append(
+                f"GitHub shows git-annex's log first on {target.slug}, not the analysis: make "
+                f"`{branch}` its default branch in the repository's settings, or publish again "
+                "with a GitHub token."
+            )
+        else:
+            try:
+                github.show_first(target, token, branch)
+                report.shown_first = branch
+            except ProjectError as refused:
+                report.warnings.append(str(refused))
     return report
 
 
@@ -373,7 +394,7 @@ def _require_creatable(target: github.Repository, token: str | None, said: str) 
             f"{github.NEW} and publish again; git then pushes with an ssh key or a "
             "credential helper."
         )
-    if github.visibility(target, token) is not None:
+    if github.shown(target, token) is not None:
         raise ProjectError(
             f"{target.slug} exists, and git cannot reach it:\n{said}\n"
             "Give git credentials for it: `gh auth login`, an ssh key, or GH_TOKEN in the "
@@ -381,19 +402,21 @@ def _require_creatable(target: github.Repository, token: str | None, said: str) 
         )
 
 
-def _visibility(target: github.Repository, token: str | None, *, asked: bool) -> str:
-    """Who can read a repository git reaches: ``private``, ``public``, or
-    empty where GitHub's API does not answer and nothing depends on it.
+def _shown(target: github.Repository, token: str | None, *, asked: bool) -> tuple[str, str]:
+    """Who can read a repository git reaches, ``private`` or ``public``, and
+    the branch GitHub shows first: each empty where GitHub's API does not
+    say and nothing depends on it.
 
     A repository git reaches that GitHub shows to nobody without the right
     token is private.
     """
     try:
-        return github.visibility(target, token) or "private"
+        shown = github.shown(target, token)
     except ProjectError:
         if asked:
             raise
-        return ""
+        return "", ""
+    return (shown.visibility, shown.default_branch) if shown else ("private", "")
 
 
 def _license(root: Path) -> str:

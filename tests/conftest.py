@@ -157,16 +157,34 @@ class GitHub:
                 }
             self.new(f"{owner}/{body['name']}", private=bool(body["private"]))
             return 201, {}
-        repository = self.at(f"{parts[1]}/{parts[2]}")
+        slug = f"{parts[1]}/{parts[2]}"
+        repository = self.at(slug)
         if not repository.exists():
             return 404, {"message": "Not Found"}
-        if method == "PATCH":
-            (repository / "visibility").write_text("public")
+        if method == "PATCH" and body is not None:
+            if body.get("private") is False:
+                (repository / "visibility").write_text("public")
+            if "default_branch" in body:
+                ref = f"refs/heads/{body['default_branch']}"
+                held = _real_run(["git", "rev-parse", "-q", "--verify", ref], cwd=repository)
+                if held.returncode:
+                    return 422, {"message": "Validation Failed"}
+                self.show_first(slug, str(body["default_branch"]))
             return 200, {}
-        private = self.visibility(f"{parts[1]}/{parts[2]}") == "private"
+        private = self.visibility(slug) == "private"
         if private and not token:
             return 404, {"message": "Not Found"}
-        return 200, {"private": private}
+        return 200, {"private": private, "default_branch": self.default_branch(slug)}
+
+    def default_branch(self, slug: str) -> str:
+        """The branch ``<owner>/<name>`` shows first: its ``HEAD``, as a clone takes it."""
+        head = _real_run(["git", "symbolic-ref", "--short", "HEAD"], cwd=self.at(slug))
+        return str(head.stdout).strip()
+
+    def show_first(self, slug: str, branch: str) -> None:
+        """Make *branch* the one ``<owner>/<name>`` shows first."""
+        ref = f"refs/heads/{branch}"
+        _must(_real_run(["git", "symbolic-ref", "HEAD", ref], cwd=self.at(slug)), [])
 
 
 @pytest.fixture
