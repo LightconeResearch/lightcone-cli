@@ -645,6 +645,24 @@ def test_a_repository_that_cannot_commit_is_refused_before_anything_runs(
     dataset.require_committer(root)
 
 
+@pytest.mark.parametrize(("configured", "branch"), [("", "main"), ("trunk", "trunk")])
+def test_a_new_repositorys_branch_is_main_unless_git_is_set_to_name_it(
+    tmp_path: Path, real_tools: None, monkeypatch: pytest.MonkeyPatch, configured: str,
+    branch: str,
+) -> None:
+    """Git before 3.0 names it `master` when nothing is set (measured: 2.56)."""
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[init]\n\tdefaultBranch = {configured}\n" if configured else "")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "absent"))
+    root = tmp_path / "demo"
+    root.mkdir()
+
+    dataset.init_git(root)
+
+    assert dataset._git(["symbolic-ref", "--short", "HEAD"], cwd=root).strip() == branch
+
+
 def test_ignore_rule_names_the_line_to_delete(repo: Path) -> None:
     """Convergence cannot repair this one, so the message has to point at
     the line rather than merely report that one exists."""

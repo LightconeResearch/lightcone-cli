@@ -39,10 +39,15 @@ from lightcone.engine import github, project
 def init_git(directory: Path) -> None:
     """Create the repository the project's history lives in.
 
+    Its first branch is ``main``, as GitHub names a new repository's,
+    unless git is set to name it otherwise (``init.defaultBranch``): left
+    to itself, git before 3.0 names it ``master``.
+
     Args:
         directory: Where to run ``git init``.
     """
-    _git(["init", "-q"], cwd=directory)
+    named = (_ask(["config", "--get", "init.defaultBranch"], cwd=directory) or "").strip()
+    _git(["init", "-q", *([] if named else ["--initial-branch=main"])], cwd=directory)
 
 
 def init_annex(directory: Path) -> None:
