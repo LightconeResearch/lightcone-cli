@@ -191,7 +191,14 @@ def publish(
         raise ProjectError(
             "HEAD is not on a branch, and lc publishes a branch: `git switch` to one."
         )
-    report.target, report.branch, report.commit = target.slug, branch, dataset.head(root)
+    commit = dataset._ask(["rev-parse", "--verify", "HEAD"], cwd=root)
+    if commit is None:
+        raise ProjectError(
+            "this project has no commit to publish. `lc init` leaves project files "
+            "uncommitted: review them with `git status`, then `git add` the files you "
+            "want to publish and `git commit`. Run `lc publish` again afterwards."
+        )
+    report.target, report.branch, report.commit = target.slug, branch, commit.strip()
     dataset.populate(root)
     dataset.enable_store(root)
     token = github.token(root)

@@ -1131,7 +1131,7 @@ def test_init_ends_with_how_to_put_a_new_project_online_and_creates_nothing_ther
 
     assert result.exit_code == 0
     assert result.output.rstrip().splitlines()[-3:] == [
-        "  Not online yet. To back it up and share it, choose who can read it:",
+        "  Not online yet. Commit any project changes, then choose who can read it:",
         "    lc publish github.com/OWNER/analysis --private",
         "    lc publish github.com/OWNER/analysis --public",
     ]
@@ -1148,7 +1148,7 @@ def test_init_of_another_directory_says_where_to_publish_it_from(
     beside = runner.invoke(main, ["init", str(tmp_path / "my b")]).output
 
     assert below[-3:] == [
-        "  Not online yet. To back it up and share it, choose who can read it:",
+        "  Not online yet. Commit any project changes, then choose who can read it:",
         f"    cd -- {tmp_path.resolve()}/analysis && "
         "lc publish github.com/OWNER/analysis --private",
         f"    cd -- {tmp_path.resolve()}/analysis && lc publish github.com/OWNER/analysis --public",

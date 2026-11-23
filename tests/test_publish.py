@@ -108,6 +108,28 @@ def _heads(github: GitHub) -> dict[str, str]:
 # =============================================================================
 
 
+def test_a_fresh_project_explains_the_commit_needed_before_publication(
+    tmp_path: Path, github: GitHub, store: str, real_tools: None,
+) -> None:
+    """An unborn branch is a normal state after init, not an opaque git
+    failure or a reason to create an empty repository online."""
+    root = tmp_path / "fresh"
+    project.converge(root)
+
+    with pytest.raises(ProjectError, match="no commit to publish") as refused:
+        publish.publish(root, _URL, visibility="private", data=store)
+
+    assert "git status" in str(refused.value) and "git commit" in str(refused.value)
+    assert github.calls == []
+    assert not github.at("alice/analysis").exists()
+    assert not Path(store).exists()
+    assert dataset._ask(["rev-parse", "--verify", "HEAD"], cwd=root) is None
+
+    dataset.save(root, [root], "Set up analysis")
+    report = publish.publish(root, _URL, visibility="private", data=store)
+    assert report.ok and report.created and report.published
+
+
 def test_the_first_publication_creates_the_repository_and_declares_the_store(
     made: Path, store: str, github: GitHub
 ) -> None:

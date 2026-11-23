@@ -175,7 +175,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
 
     Creates whatever is missing, repairs the pieces lightcone manages, and
     never overwrites a file the user owns. A directory that already holds
-    an ``astra.yaml`` is adopted, not rejected.
+    an ``astra.yaml`` is adopted, not rejected. Project files are left
+    uncommitted for the user to review, including in a new repository.
 
     Args:
         directory: The project root, created if absent.

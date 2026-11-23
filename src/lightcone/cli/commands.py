@@ -141,7 +141,8 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     """Converge DIRECTORY into a standard Lightcone project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
-    pieces lightcone manages, and never overwrites files you own.
+    pieces lightcone manages, and never overwrites files you own. Changes
+    are not committed: review and commit the project files before publishing.
 
     In a clone it sets up git-annex, which enables the store the project
     declares for its data, so `lc fetch` works from there. It creates
@@ -170,7 +171,7 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
                 f"cd -- {shlex.quote(str(directory))} && "
             )
             click.echo(
-                "\n  Not online yet. To back it up and share it, choose who can read it:\n"
+                "\n  Not online yet. Commit any project changes, then choose who can read it:\n"
                 f"    {cd}lc publish github.com/OWNER/{directory.name} --private\n"
                 f"    {cd}lc publish github.com/OWNER/{directory.name} --public"
             )
