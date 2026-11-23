@@ -146,18 +146,18 @@ _REPO = github.Repository("alice", "analysis")
 @pytest.mark.parametrize(
     ("answer", "seen"),
     [
-        ((200, {"private": True, "default_branch": "main"}), github.Shown("private", "main")),
-        ((200, {"private": False, "default_branch": "x"}), github.Shown("public", "x")),
+        ((200, {"private": True}), "private"),
+        ((200, {"private": False}), "public"),
         ((404, {"message": "Not Found"}), None),
     ],
 )
-def test_who_can_read_a_repository_and_what_it_shows_first_is_githubs_answer(
-    monkeypatch: pytest.MonkeyPatch, answer: tuple[int, dict[str, Any]], seen: object
+def test_who_can_read_a_repository_is_githubs_answer(
+    monkeypatch: pytest.MonkeyPatch, answer: tuple[int, dict[str, Any]], seen: str | None
 ) -> None:
     api = _Api(answer)
     monkeypatch.setattr(github, "_call", api)
 
-    assert github.shown(_REPO, "t") == seen
+    assert github.visibility(_REPO, "t") == seen
     assert api.asked == [("GET", "/repos/alice/analysis", "t", None)]
 
 

@@ -197,15 +197,14 @@ def publish(
     token = github.token(root)
 
     # --- What stands, before anything is done ------------------------------
-    heads, said = _heads(root, origin or target.url)
+    heads, first, said = _heads(root, origin or target.url)
     creating = heads is None
-    first = ""  # The branch GitHub shows first, where it says.
     if creating:
         if check:
             raise ProjectError(f"{target.slug} could not be reached:\n{said}")
         _require_creatable(target, token, said)
     else:
-        report.visibility, first = _shown(target, token, asked=bool(visibility))
+        report.visibility = _visibility(target, token, asked=bool(visibility))
         if visibility == "private" and report.visibility == "public":
             raise ProjectError(
                 f"{target.slug} is public, and lc offers no way back: copies made while it "
@@ -368,19 +367,26 @@ def _target(origin: str, url: str) -> github.Repository | None:
     return current
 
 
-def _heads(root: Path, address: str) -> tuple[dict[str, str] | None, str]:
-    """The branches the repository at *address* holds, each with its commit;
-    or None, with git's own words, where git cannot reach it."""
+def _heads(root: Path, address: str) -> tuple[dict[str, str] | None, str, str]:
+    """The remote branches, its default branch, and git's error if unreachable.
+
+    Git credentials suffice even for a private repository: no API token
+    is needed to learn which branch a clone would check out.
+    """
     asked = project._run(
-        ["git", *dataset.reaching(root), "ls-remote", "--heads", address], cwd=root
+        ["git", *dataset.reaching(root), "ls-remote", "--symref", address,
+         "HEAD", "refs/heads/*"], cwd=root
     )
     if asked.returncode != 0:
-        return None, (asked.stderr or "").strip()
-    heads = {}
+        return None, "", (asked.stderr or "").strip()
+    heads, first = {}, ""
     for line in (asked.stdout or "").splitlines():
         commit, _, ref = line.partition("\t")
-        heads[ref.removeprefix("refs/heads/")] = commit
-    return heads, ""
+        if ref == "HEAD" and commit.startswith("ref: refs/heads/"):
+            first = commit.removeprefix("ref: refs/heads/")
+        elif ref.startswith("refs/heads/"):
+            heads[ref.removeprefix("refs/heads/")] = commit
+    return heads, first, ""
 
 
 def _require_creatable(target: github.Repository, token: str | None, said: str) -> None:
@@ -394,7 +400,7 @@ def _require_creatable(target: github.Repository, token: str | None, said: str) 
             f"{github.NEW} and publish again; git then pushes with an ssh key or a "
             "credential helper."
         )
-    if github.shown(target, token) is not None:
+    if github.visibility(target, token) is not None:
         raise ProjectError(
             f"{target.slug} exists, and git cannot reach it:\n{said}\n"
             "Give git credentials for it: `gh auth login`, an ssh key, or GH_TOKEN in the "
@@ -402,21 +408,19 @@ def _require_creatable(target: github.Repository, token: str | None, said: str) 
         )
 
 
-def _shown(target: github.Repository, token: str | None, *, asked: bool) -> tuple[str, str]:
-    """Who can read a repository git reaches, ``private`` or ``public``, and
-    the branch GitHub shows first: each empty where GitHub's API does not
-    say and nothing depends on it.
+def _visibility(target: github.Repository, token: str | None, *, asked: bool) -> str:
+    """Who can read a repository git reaches: ``private``, ``public``, or
+    empty where GitHub's API does not answer and nothing depends on it.
 
     A repository git reaches that GitHub shows to nobody without the right
     token is private.
     """
     try:
-        shown = github.shown(target, token)
+        return github.visibility(target, token) or "private"
     except ProjectError:
         if asked:
             raise
-        return "", ""
-    return (shown.visibility, shown.default_branch) if shown else ("private", "")
+        return ""
 
 
 def _license(root: Path) -> str:

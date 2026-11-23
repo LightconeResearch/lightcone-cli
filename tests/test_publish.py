@@ -160,7 +160,6 @@ def test_a_repository_that_shows_git_annexs_log_first_is_set_right_by_the_next_p
     assert publish.publish(published).shown_first == ""
     # Without a token lc cannot, and says what can.
     github.show_first("alice/analysis", "git-annex")
-    (github.at("alice/analysis") / "visibility").write_text("public")
     monkeypatch.delenv("GH_TOKEN")
     report = publish.publish(published)
     assert report.ok and not report.shown_first

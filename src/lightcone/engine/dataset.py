@@ -258,31 +258,6 @@ def toplevel(directory: Path) -> Path:
     return Path(_git(["rev-parse", "--show-toplevel"], cwd=directory).strip())
 
 
-def changed(directory: Path, commit: str) -> list[str]:
-    """List the files of *directory* that differ between *commit* and ``HEAD``.
-
-    Two trees as git holds them, so no file is read: an annexed one
-    compares by its key, whether or not this clone has its bytes. A
-    submodule whose commit moved counts, whatever ``.gitmodules`` asks
-    git to ignore. Scoped to *directory* and relative to it, read
-    NUL-separated with renames off, as :func:`status` does and for its
-    reasons.
-
-    Args:
-        directory: The project.
-        commit: The commit to compare ``HEAD`` with.
-
-    Returns:
-        Each path that differs, relative to *directory*.
-    """
-    listed = _git(
-        ["diff", "--name-only", "-z", "--no-renames", "--relative", "--ignore-submodules=none",
-         commit, "HEAD", "--", "."],
-        cwd=directory,
-    )  # fmt: skip
-    return [path for path in listed.split("\0") if path]
-
-
 def head(directory: Path) -> str:
     """Read the commit ``HEAD`` is at.
 

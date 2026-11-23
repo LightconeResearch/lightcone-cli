@@ -120,9 +120,6 @@ class RunContext:
     hashed: Mapping[Path, tuple[tuple[int, int, int], content.Digest]] = field(
         default_factory=dict
     )
-    #: The results whose code differs between the commit each one's record
-    #: names and :attr:`commit` (`plan.classify`). A task asks git nothing.
-    moved: frozenset[ResultId] = frozenset()
 
 
 def require_in_commit(root: Path, specs: Sequence[str]) -> None:
@@ -195,7 +192,7 @@ def materialize(
             that hold them, as the driver found them: whether a run can
             fetch them is git-annex's to say, and a task asks git nothing.
         context: The run's driver-resolved facts.
-        refresh: Whether to remake a result that is merely behind.
+        refresh: Whether this result was explicitly requested to be remade.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -232,7 +229,6 @@ def _materialize(
     verdict = plan.classify(
         found=found,
         environment=context.environment,
-        moved=task.id in context.moved,
         remotes=remotes,
         read={entry: reported[key].digest for entry, key in task.produced_by.items()},
     )

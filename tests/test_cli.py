@@ -609,16 +609,16 @@ def test_the_json_report_is_machine_readable(
 def test_what_is_behind_is_said_with_what_remakes_it(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A result behind its code alone has no reason beside it. With
-    --refresh, what is still behind is what the targets read."""
+    """With --refresh, what is still behind is what the targets read."""
     from lightcone.engine.materialize import MaterializeReport
 
-    _stub(monkeypatch, materialize=MaterializeReport(made=["plot"], behind={"fit": ""}))
+    report = MaterializeReport(made=["plot"], behind={"fit": "made under an earlier environment"})
+    _stub(monkeypatch, materialize=report)
 
     plain = runner.invoke(main, ["materialize", CLUSTER_ID]).output
     refreshed = runner.invoke(main, ["materialize", CLUSTER_ID, "plot", "--refresh"]).output
 
-    assert "behind fit\n" in plain
+    assert "behind fit" in plain and "earlier environment" in plain
     assert "1 behind — `--refresh` remakes them" in " ".join(plain.split())
     assert "1 behind, read by the targets" in " ".join(refreshed.split())
 
@@ -1149,10 +1149,13 @@ def test_init_of_another_directory_says_where_to_publish_it_from(
 
     assert below[-3:] == [
         "  Not online yet. To back it up and share it, choose who can read it:",
-        "    cd analysis && lc publish github.com/OWNER/analysis --private",
-        "    cd analysis && lc publish github.com/OWNER/analysis --public",
+        f"    cd -- {tmp_path.resolve()}/analysis && "
+        "lc publish github.com/OWNER/analysis --private",
+        f"    cd -- {tmp_path.resolve()}/analysis && lc publish github.com/OWNER/analysis --public",
     ]
-    assert f"    cd '{(tmp_path / 'my b').resolve()}' && lc publish" in beside
+    assert f"    cd -- '{(tmp_path / 'my b').resolve()}' && lc publish" in beside
+    dashed = runner.invoke(main, ["init", "./-analysis"]).output
+    assert f"cd -- {Path.cwd() / '-analysis'} && lc publish" in dashed
 
 
 def test_init_says_nothing_of_publishing_for_a_project_that_is_online(

@@ -166,11 +166,9 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
         if write and not report.blocked and not report.online:
             # `lc publish` publishes the current directory, which the project
             # just converged need not be.
-            here = Path.cwd().resolve()
-            cd = ""
-            if directory != here:
-                shown = directory.relative_to(here) if directory.is_relative_to(here) else directory
-                cd = f"cd {shlex.quote(str(shown))} && "
+            cd = "" if directory == Path.cwd().resolve() else (
+                f"cd -- {shlex.quote(str(directory))} && "
+            )
             click.echo(
                 "\n  Not online yet. To back it up and share it, choose who can read it:\n"
                 f"    {cd}lc publish github.com/OWNER/{directory.name} --private\n"
@@ -361,9 +359,8 @@ def build(as_json: bool) -> None:
     "--refresh",
     is_flag=True,
     help=(
-        "Also remake the results asked for that are behind — still what the "
-        "analysis asks for, but made under an earlier environment or from code "
-        "that has changed since."
+        "Remake the requested results even when current; without targets, "
+        "remake every result. Dependencies are remade only where stale or missing."
     ),
 )
 @click.option(
@@ -395,15 +392,12 @@ def materialize(
     holds is fetched only where a recipe reads it; `lc fetch` brings it
     otherwise.
 
-    A result made under an earlier environment, or from code that has
-    changed since, is reported as behind and left alone: it is still what
-    the analysis asks for, and its record names the environment and the
-    commit that produced it. Its code is what is tracked in its analysis's
-    folder, bar the spec, the inputs it declares, the results and the
-    environment's files, so an edit to a script, or to a README, puts the
-    analysis's results behind. Pass --refresh to remake the targets that
-    are behind too, or every result without a target: never what a
-    target reads, which is still current.
+    A result made under an earlier environment is reported as behind and
+    left alone. Pass --refresh to remake the targets regardless of their
+    state, or every result without targets. This also reruns a result
+    after editing a script the analysis does not declare as an input.
+    Dependencies are remade only where stale or missing, unless they
+    are also targets.
     """
     from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
@@ -479,8 +473,7 @@ def status(as_json: bool) -> None:
     """Report where each of the analysis's results stands.
 
     For every result the analysis plans: ok; behind, where it is ok but
-    was made under an earlier environment, or from code in its analysis's
-    folder that has changed since; stale, where something it is
+    was made under an earlier environment; stale, where something it is
     made from changed since it was made, or the file at its place is not
     the one its recipe made; or missing, never made, or made with its
     bytes in neither this clone nor any of its remotes. Beside each, once
@@ -770,7 +763,7 @@ def _render_materialize_output(
 
     where = escape(str(root))
     lines = [
-        f"  {_TODO} would run {name}" + (f" — {escape(why)}" if why else "")
+        f"  {_TODO} would run {name} — {escape(why)}"
         for name, why in report.planned.items()
     ]
     lines += [f"  {_DONE} made {name}" for name in report.made]
@@ -778,7 +771,7 @@ def _render_materialize_output(
     # a result came from, and the only line here that tells you something
     # you could not have worked out from the exit code.
     lines += [
-        f"  {_BEHIND} behind {name}" + (f" — {escape(why)}" if why else "")
+        f"  {_BEHIND} behind {name} — {escape(why)}"
         for name, why in report.behind.items()
     ]
     lines += [f"  {_QUIET} ok {name}" for name in report.unchanged]

@@ -536,7 +536,7 @@ def test_an_unchanged_result_is_ok_and_left_alone() -> None:
     verdict = classify(found=_unchanged(), environment=_ENV)
     assert (verdict.state, verdict.why) == ("ok", "")
     assert not verdict.calls_for_a_remake(refresh=False)
-    assert not verdict.calls_for_a_remake(refresh=True)
+    assert verdict.calls_for_a_remake(refresh=True)
 
 
 def test_a_result_astra_finds_changed_is_stale_in_astras_words() -> None:
@@ -637,7 +637,7 @@ def test_a_rebuild_that_gives_the_recorded_bytes_leaves_the_result_standing() ->
     out as the bytes this result's record says it read."""
     verdict = classify(found=_READS_STALE, environment=_ENV, read={"summary": _READ})
     assert verdict.state == "ok"
-    assert not verdict.calls_for_a_remake(refresh=True)
+    assert verdict.calls_for_a_remake(refresh=True)
 
 
 def test_a_rebuild_that_gives_other_bytes_makes_the_result_stale() -> None:
@@ -706,22 +706,6 @@ def test_a_moved_environment_is_behind_and_not_stale() -> None:
     assert (verdict.state, verdict.why) == ("behind", "made under an earlier environment")
     assert not verdict.calls_for_a_remake(refresh=False)
     assert verdict.calls_for_a_remake(refresh=True)
-
-
-def test_moved_code_is_behind_and_not_stale_and_no_more_is_said() -> None:
-    """An edit to a script nothing declares: nothing the specification
-    compares changed, and a README edit should not stale a result either.
-    Whether the files that changed touch the result is not known."""
-    verdict = classify(found=_unchanged(), environment=_ENV, moved=True)
-    both = classify(found=_unchanged("urn:lightcone:env:sha256:old"), environment=_ENV, moved=True)
-
-    assert (verdict.state, verdict.why) == ("behind", "")
-    assert not verdict.calls_for_a_remake(refresh=False)
-    assert verdict.calls_for_a_remake(refresh=True)
-    assert (both.state, both.why) == ("behind", "made under an earlier environment")
-    assert classify(found=_changed("the command changed"), environment=_ENV, moved=True).state == (
-        "stale"
-    )
 
 
 def test_behind_is_decided_whether_or_not_the_bytes_are_here() -> None:

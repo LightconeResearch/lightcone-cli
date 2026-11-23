@@ -249,12 +249,11 @@ def test_refresh_remakes_what_is_only_behind(root: Path) -> None:
     assert (root / _FIRST).read_text() == "one\n"
 
 
-def test_refresh_does_not_remake_what_is_unchanged(root: Path) -> None:
-    """`--refresh` widens the run by one state, not to everything. Without
-    this it would be a rebuild-the-world flag wearing another name."""
+def test_refresh_remakes_what_is_unchanged(root: Path) -> None:
+    """An explicit request needs no change to the spec or environment."""
     _make(root, "first#baseline")
 
-    assert _make(root, "first#baseline", refresh=True).status == "ok"
+    assert _make(root, "first#baseline", refresh=True).status == "made"
 
 
 def _reads_first(result: TaskOutcome) -> list[dict[str, object]]:

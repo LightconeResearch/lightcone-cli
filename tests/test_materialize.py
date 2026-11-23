@@ -16,7 +16,7 @@ import json
 import pickle
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -243,100 +243,83 @@ def _edit(root: Path, path: str, text: str) -> None:
     dataset.save(root, [root / path], f"edit {path}")
 
 
-def test_a_code_edit_puts_results_behind_and_remakes_nothing(
-    analysis: Callable[..., Path], inline: None
+@pytest.mark.parametrize("declared_elsewhere", [False, True])
+def test_refresh_reruns_current_code_without_refreshing_dependencies(
+    analysis: Callable[..., Path], inline: None, declared_elsewhere: bool,
 ) -> None:
-    """The script is no declared input, so nothing the specification
-    compares changed. What a run commits itself is no code: right after
-    one, nothing is behind."""
-    root = analysis(_SCRIPTED, {"src/first.sh": "echo one\n"})
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    assert engine.check(root, []).behind == {}
-    _edit(root, "src/first.sh", "echo two\n")
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert report.made == [] and report.up_to_date
-    assert report.behind == {"first": "", "second": ""}
-    assert (root / "results/first.txt").read_text() == "one\n"
-
-
-def test_refresh_remakes_the_targets_that_are_behind_and_not_what_they_read(
-    analysis: Callable[..., Path], inline: None
-) -> None:
-    """What a target reads is still what the analysis asks for. Without a
-    target, every result is asked for, and what reads one made with other
-    bytes is made again."""
-    root = analysis(_SCRIPTED, {"src/first.sh": "echo one\n"})
+    """A script need not be declared for its output to be explicitly remade,
+    even when another output declares that same script as an input."""
+    spec = _SCRIPTED
+    if declared_elsewhere:
+        spec += "inputs:\n  script: {path: src/first.sh}\n"
+        spec = spec.replace("inputs: [first]", "inputs: [first, script]")
+    root = analysis(spec, {"src/first.sh": "echo one\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     _edit(root, "src/first.sh", "echo two\n")
+    assert engine.check(root, ["first"]).unchanged == ["first"]
 
+    check = engine.check(root, ["second"], refresh=True)
+    assert list(check.planned) == ["second"] and check.unchanged == ["first"]
     second = engine.materialize(root, ["second"], refresh=True, cluster_id=CLUSTER_ID)
-
-    assert second.made == ["second"] and list(second.behind) == ["first"]
+    assert second.made == ["second"] and second.unchanged == ["first"]
     assert (root / "results/second.txt").read_text() == "one\n"
+
+    check = engine.check(root, ["first"], refresh=True)
+    assert check.planned == {"first": "requested with --refresh"}
+    first = engine.materialize(root, ["first"], refresh=True, cluster_id=CLUSTER_ID)
+    assert first.made == ["first"]
+    assert (root / "results/first.txt").read_text() == "two\n"
     every = engine.materialize(root, [], refresh=True, cluster_id=CLUSTER_ID)
     assert set(every.made) == {"first", "second"} and every.behind == {}
     assert (root / "results/second.txt").read_text() == "two\n"
 
 
-def test_what_is_compared_otherwise_or_read_by_no_recipe_is_no_code(
-    analysis: Callable[..., Path], inline: None
+def test_refresh_remakes_every_target_even_when_a_rebuild_is_byte_identical(
+    root: Path, inline: None,
 ) -> None:
-    """The project's README, git's own files, the environment's, and the
-    inputs, which ASTRA's checker compares: an input that changed stales
-    what reads it, and puts nothing else behind."""
-    spec = _SCRIPTED + "inputs:\n  notes: {path: data/notes.txt}\n"
-    spec = spec.replace("inputs: [first]", "inputs: [first, notes]")
-    root = analysis(spec, {"src/first.sh": "echo one\n", "data/notes.txt": "v1\n"})
+    """A stale dependency becoming current again cannot cancel an explicit
+    request to remake its consumer."""
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    _edit(root, "README.md", "# What this analysis is\n")
-    _edit(root, ".gitignore", (root / ".gitignore").read_text() + "scratch/\n")
-    _edit(root, "pyproject.toml", (root / "pyproject.toml").read_text() + "# a comment\n")
-    _edit(root, "data/notes.txt", "v2\n")
+    _edit(root, "astra.yaml", (root / "astra.yaml").read_text().replace(
+        "echo {decisions.method}", "printf '%s\\n' {decisions.method}",
+    ))
+    before = _commits(root)
 
-    report = engine.check(root, [])
+    report = engine.materialize(root, [], refresh=True, cluster_id=CLUSTER_ID)
 
-    assert report.behind == {} and list(report.planned) == ["second"]
+    assert report.made == ["first#baseline", "second#baseline"]
+    assert _commits(root) == before + 2
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
+    # A refresh also remakes a whole analysis that was already current.
+    assert engine.materialize(root, [], refresh=True, cluster_id=CLUSTER_ID).made == report.made
 
 
-def test_each_analysis_has_its_own_code(analysis: Callable[..., Path], inline: None) -> None:
-    """A declared analysis's recipe runs in its folder, the project's outside
-    it: an edit in one puts only its own results behind."""
-    driven = """
-        spec_version: "0.1.0"
-        outputs:
-          where:
-            type: data
-            format: txt
-            recipe:
-              command: sh tool.sh > {output}
-    """
-    drives = """
-        spec_version: "0.1.0"
-        analyses:
-          stage: {path: stage}
-        outputs:
-          copy:
-            type: report
-            format: txt
-            inputs: [stage.where]
-            recipe:
-              command: sh src/copy.sh {inputs} > {output}
-    """
-    root = analysis(drives, {
-        "stage/astra.yaml": driven, "stage/tool.sh": "echo a\n", "src/copy.sh": "cat $1\n",
-    })  # fmt: skip
-    attributes = (root / ".gitattributes").read_text()
-    _edit(root, ".gitattributes", attributes + "stage/results/** annex.largefiles=anything\n")
+def test_targeted_refresh_leaves_dependencies_behind(root: Path, inline: None) -> None:
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    _move_the_environment(root)
 
-    _edit(root, "stage/tool.sh", "echo b\n")
-    assert list(engine.check(root, []).behind) == ["stage:where"]
-    _edit(root, "src/copy.sh", "cat $1 $1\n")
-    assert list(engine.check(root, []).behind) == ["stage:where", "copy"]
-    assert engine.materialize(root, ["copy"], refresh=True, cluster_id=CLUSTER_ID).made == ["copy"]
-    assert list(engine.check(root, []).behind) == ["stage:where"]
+    check = engine.check(root, ["second"], refresh=True)
+    report = engine.materialize(root, ["second"], refresh=True, cluster_id=CLUSTER_ID)
+
+    assert list(check.planned) == report.made == ["second#baseline"]
+    assert list(check.behind) == list(report.behind) == ["first#baseline"]
+
+
+def test_a_record_with_unavailable_history_can_be_reported_and_remade(
+    root: Path, inline: None,
+) -> None:
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    path = root / _FIRST_RECORD
+    record = json.loads(path.read_text())
+    record["generated_by"]["commit"] = "a" * 40
+    _edit(root, _FIRST_RECORD, json.dumps(record))
+
+    first = engine.status(root).results[0]
+    assert first.state == "stale" and "aaaaaaaa" in first.why
+    assert "first#baseline" in engine.check(root, []).planned
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.ok and report.made == ["first#baseline"]
+    assert engine.check(root, []).up_to_date
 
 
 def test_a_stale_result_is_stale_even_when_the_environment_also_moved(
@@ -1541,13 +1524,16 @@ outputs:
 """
 
 
-def test_a_clone_fetches_a_result_an_identical_rebuild_leaves_standing(
-    analysis: Callable[..., Path], inline: None, tmp_path: Path
+@pytest.mark.parametrize("refresh", [False, True])
+def test_a_clone_fetches_only_results_a_rebuild_might_leave_standing(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, refresh: bool,
 ) -> None:
     """`second` may run only because `first` may, and is left alone when
     `first` comes out byte-identical. `third`, which does run, then reads
     the bytes `second` already had — so they are fetched, though `second`
-    was among the tasks that might run."""
+    was among the tasks that might run. With --refresh it is certain to
+    be remade, so its old bytes need no transfer."""
     root = analysis(_CHAIN, {"data/catalog.txt": "2\n1\n"})
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
     clone = clone_of(root, tmp_path)
@@ -1559,10 +1545,23 @@ def test_a_clone_fetches_a_result_an_identical_rebuild_leaves_standing(
     )
     dataset.save(clone, [spec], "the same bytes upstream, another recipe downstream")
 
-    report = engine.materialize(clone, [], cluster_id=CLUSTER_ID)
+    fetched: list[str] = []
+    get = dataset.get
+
+    def fetch(directory: Path, paths: Sequence[str]) -> dict[str, str]:
+        fetched.extend(paths)
+        return get(directory, paths)
+
+    monkeypatch.setattr(dataset, "get", fetch)
+    report = engine.materialize(clone, [], refresh=refresh, cluster_id=CLUSTER_ID)
 
     assert report.ok, report.warnings
-    assert (report.made, report.unchanged) == (["first", "third"], ["second"])
+    assert (report.made, report.unchanged) == (
+        (["first", "second", "third"], []) if refresh else (["first", "third"], ["second"])
+    )
+    assert fetched == (
+        ["data/catalog.txt"] if refresh else ["data/catalog.txt", "results/second.txt"]
+    )
     assert (clone / "results/third.txt").read_text() == "1\n"
     assert not dataset.status(clone)
 

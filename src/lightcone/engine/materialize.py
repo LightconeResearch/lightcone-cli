@@ -135,13 +135,12 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
     Args:
         root: The project root.
         targets: What to classify; empty means everything.
-        refresh: Whether a result asked for that is merely behind would be
-            remade.
+        refresh: Whether to remake the requested results regardless of state.
 
     Returns:
         ``planned`` naming each result that would run and why, ``behind``
-        those made under an earlier environment or from code that has
-        changed since, and ``unchanged`` the rest, which are ok.
+        those made under an earlier environment, and ``unchanged`` the
+        rest, which are ok.
 
     Raises:
         ProjectError: If the analysis or the lock cannot be read, or a
@@ -165,7 +164,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             report.blocked.append(found.task.id)
             report.warnings.extend(f"{dep}: {why}" for dep, why in stale.items())
         elif verdict.calls_for_a_remake(refresh=found.refresh):
-            report.planned[found.task.id] = verdict.why
+            report.planned[found.task.id] = verdict.why or "requested with --refresh"
         elif found.upstream:
             # Nothing here can know whether a rebuild comes out
             # byte-identical, and assuming it will would under-report.
@@ -195,12 +194,8 @@ class _Classified:
     verdict: plan.Verdict
     #: A task upstream of this one that may run, or empty.
     upstream: ResultId
-    #: Whether a run remakes it where it is merely behind: asked for, with
-    #: ``--refresh``.
+    #: Whether this result was explicitly requested with ``--refresh``.
     refresh: bool
-    #: Whether its code changed since the commit its record names
-    #: (`plan.classify`).
-    moved: bool
 
     def may_run(self) -> bool:
         """Whether a run has to hand this task to a worker."""
@@ -209,7 +204,7 @@ class _Classified:
     def certain(self) -> bool:
         """Whether a run is sure to make this result again: nothing it
         makes first can leave it standing."""
-        through = self.verdict.through_reads and bool(self.upstream)
+        through = not self.refresh and self.verdict.through_reads and bool(self.upstream)
         return self.verdict.calls_for_a_remake(refresh=self.refresh) and not through
 
 
@@ -228,10 +223,8 @@ def _classify(
         root: The project root.
         graph: The tasks to classify, each after the tasks it reads.
         environment: The IRI of the project's environment.
-        refresh: The results a run remakes where they are merely behind,
-            which is what decides whether their dependents may run too: the
-            ones asked for with ``--refresh``, never what they read, which
-            is still what the analysis asks for.
+        refresh: The results explicitly requested with ``--refresh``. Their
+            dependencies are remade only where stale or missing.
 
     Returns:
         One entry per task, in the graph's order.
@@ -260,7 +253,7 @@ def _classify(
             "the results it lacks are — `lc init` sets it up."
         )
     held = dataset.holders(root, list(away.values()))
-    moved, refreshed = _moved(root, graph), set(refresh)
+    refreshed = set(refresh)
     may_run: set[ResultId] = set()
     classified = []
     for key, task in graph.tasks.items():
@@ -270,12 +263,9 @@ def _classify(
             task,
             found,
             remotes,
-            plan.classify(
-                found=found, environment=environment, moved=key in moved, remotes=remotes
-            ),
+            plan.classify(found=found, environment=environment, remotes=remotes),
             next((dep for dep in task.depends_on if dep in may_run), ""),
             key in refreshed,
-            key in moved,
         )
         if entry.may_run():
             may_run.add(key)
@@ -550,9 +540,7 @@ def materialize(
         root: The project root.
         targets: Results to make, with what they read; empty means every one.
         cluster_id: The name or immutable ID returned by ``lc compute launch``.
-        refresh: Also remake the results asked for that are behind: made
-            under an earlier environment, or from code that has changed
-            since.
+        refresh: Remake the requested results regardless of state.
 
     Returns:
         What was made, left alone, failed or blocked, and why.
@@ -650,7 +638,6 @@ def materialize(
             commit=dataset.head(root),
             runtime=runtime,
             hashed=hashed,
-            moved=frozenset(found.task.id for found in classified if found.moved),
         )
         pending: dict[ResultId, Any] = {}
         handles = []
@@ -1325,53 +1312,6 @@ def _owned(root: Path, task: Task) -> list[str]:
         f":(literal){plan.declared_path(root, path)}"
         for path in (*task.paths, *task.record_paths)
     ]
-
-
-def _moved(root: Path, graph: Graph) -> set[ResultId]:
-    """The results whose code differs between the commit each one's record
-    names and ``HEAD``, which a run starts from.
-
-    A result's code is what its recipe may run: what is tracked in its
-    analysis's folder, outside the analyses in folders of it (ASTRA's
-    ``CODE_OUTSIDE_ANALYSIS``). Not what is compared otherwise, or a
-    result would be behind for good: the results and records a run
-    writes, which commit after the one their records name; each spec and
-    the inputs it declares, which ASTRA's checker compares; and the files
-    the environment's identity is made of. Nor git's and DataLad's own
-    files, which `lc init` converges and no recipe reads, nor the
-    project's README, which is written for people.
-
-    One comparison per commit records name, which a multiverse shares
-    among its results; an analysis made in one run names one.
-    """
-    written = _written(graph)
-    compared = {
-        *graph.specs,
-        *(path for _, path in graph.inputs.values()),
-        *identity.files(root),
-        "README.md",
-    }
-    folders = {posixpath.join(posixpath.dirname(spec), "") for spec in graph.specs}
-    changed: dict[str, list[str]] = {}
-    moved: set[ResultId] = set()
-    for key, task in graph.tasks.items():
-        record = graph.checked.statuses[key].record
-        if record is None:
-            continue
-        commit = record.generated_by.commit
-        if commit not in changed:
-            changed[commit] = [
-                path
-                for path in dataset.changed(root, commit)
-                if path not in compared
-                and not path.startswith((*written, ".datalad/"))
-                and posixpath.basename(path) not in (".gitignore", ".gitattributes", ".gitmodules")
-            ]
-        here = posixpath.join(posixpath.relpath(task.workdir, root), "").removeprefix("./")
-        inner = tuple(folder for folder in folders if folder != here and folder.startswith(here))
-        if any(path.startswith(here) and not path.startswith(inner) for path in changed[commit]):
-            moved.add(key)
-    return moved
 
 
 def _written(graph: Graph) -> tuple[str, ...]:

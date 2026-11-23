@@ -174,7 +174,7 @@ class GitHub:
         private = self.visibility(slug) == "private"
         if private and not token:
             return 404, {"message": "Not Found"}
-        return 200, {"private": private, "default_branch": self.default_branch(slug)}
+        return 200, {"private": private}
 
     def default_branch(self, slug: str) -> str:
         """The branch ``<owner>/<name>`` shows first: its ``HEAD``, as a clone takes it."""
