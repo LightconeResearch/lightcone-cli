@@ -779,7 +779,7 @@ def _files(root: Path, report: PublishReport) -> tuple[dict[str, str], dict[str,
         graph, environment = materialize._graph(root, [], scan)
         states = Counter(
             found.verdict.state
-            for found in materialize._classify(root, graph, environment, refresh=False)
+            for found in materialize._classify(root, graph, environment, refresh=())
         )
     except ProjectError as unread:
         report.warnings.append(

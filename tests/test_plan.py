@@ -708,6 +708,22 @@ def test_a_moved_environment_is_behind_and_not_stale() -> None:
     assert verdict.calls_for_a_remake(refresh=True)
 
 
+def test_moved_code_is_behind_and_not_stale_and_no_more_is_said() -> None:
+    """An edit to a script nothing declares: nothing the specification
+    compares changed, and a README edit should not stale a result either.
+    Whether the files that changed touch the result is not known."""
+    verdict = classify(found=_unchanged(), environment=_ENV, moved=True)
+    both = classify(found=_unchanged("urn:lightcone:env:sha256:old"), environment=_ENV, moved=True)
+
+    assert (verdict.state, verdict.why) == ("behind", "")
+    assert not verdict.calls_for_a_remake(refresh=False)
+    assert verdict.calls_for_a_remake(refresh=True)
+    assert (both.state, both.why) == ("behind", "made under an earlier environment")
+    assert classify(found=_changed("the command changed"), environment=_ENV, moved=True).state == (
+        "stale"
+    )
+
+
 def test_behind_is_decided_whether_or_not_the_bytes_are_here() -> None:
     """A clone with no content still knows which environment made what."""
     found = _unchanged("urn:lightcone:env:sha256:old", fetched=False)

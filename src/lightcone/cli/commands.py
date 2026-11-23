@@ -361,8 +361,9 @@ def build(as_json: bool) -> None:
     "--refresh",
     is_flag=True,
     help=(
-        "Also remake results that are behind — still what the analysis "
-        "asks for, but made under an earlier environment."
+        "Also remake the results asked for that are behind — still what the "
+        "analysis asks for, but made under an earlier environment or from code "
+        "that has changed since."
     ),
 )
 @click.option(
@@ -394,10 +395,15 @@ def materialize(
     holds is fetched only where a recipe reads it; `lc fetch` brings it
     otherwise.
 
-    A result made under an earlier environment is reported as behind and
-    left alone: it is still what the analysis asks for, and its record
-    names the environment and the commit that produced it. Pass
-    --refresh to remake those too.
+    A result made under an earlier environment, or from code that has
+    changed since, is reported as behind and left alone: it is still what
+    the analysis asks for, and its record names the environment and the
+    commit that produced it. Its code is what is tracked in its analysis's
+    folder, bar the spec, the inputs it declares, the results and the
+    environment's files, so an edit to a script, or to a README, puts the
+    analysis's results behind. Pass --refresh to remake the targets that
+    are behind too, or every result without a target: never what a
+    target reads, which is still current.
     """
     from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
@@ -451,7 +457,7 @@ def materialize(
     else:
         if report.notes:
             click.echo("\n".join(["", *report.notes]), err=True)
-        _render_materialize_output(report, root, dry_run=check_only)
+        _render_materialize_output(report, root, dry_run=check_only, refresh=refresh)
 
     if not report.ok or (check_only and not report.up_to_date):
         sys.exit(1)
@@ -473,7 +479,8 @@ def status(as_json: bool) -> None:
     """Report where each of the analysis's results stands.
 
     For every result the analysis plans: ok; behind, where it is ok but
-    was made under an earlier environment; stale, where something it is
+    was made under an earlier environment, or from code in its analysis's
+    folder that has changed since; stale, where something it is
     made from changed since it was made, or the file at its place is not
     the one its recipe made; or missing, never made, or made with its
     bytes in neither this clone nor any of its remotes. Beside each, once
@@ -750,7 +757,9 @@ def publish(
 # =============================================================================
 
 
-def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
+def _render_materialize_output(
+    report: MaterializeReport, root: Path, *, dry_run: bool, refresh: bool
+) -> None:
     """Print what ran, or what would.
 
     Engine prose and paths are escaped — they are data, not markup, and a
@@ -761,7 +770,7 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
 
     where = escape(str(root))
     lines = [
-        f"  {_TODO} would run {name} — {escape(why)}"
+        f"  {_TODO} would run {name}" + (f" — {escape(why)}" if why else "")
         for name, why in report.planned.items()
     ]
     lines += [f"  {_DONE} made {name}" for name in report.made]
@@ -769,7 +778,7 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     # a result came from, and the only line here that tells you something
     # you could not have worked out from the exit code.
     lines += [
-        f"  {_BEHIND} behind {name} — {escape(why)}"
+        f"  {_BEHIND} behind {name}" + (f" — {escape(why)}" if why else "")
         for name, why in report.behind.items()
     ]
     lines += [f"  {_QUIET} ok {name}" for name in report.unchanged]
@@ -788,8 +797,11 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     # On the verdict line as well as in the listing: on a large analysis the
     # listing scrolls away, and this is the one state that reports something
     # rather than doing it.
+    # With --refresh, what is still behind is what the targets read.
     if report.behind:
-        verdict += f" · {len(report.behind)} behind — `--refresh` remakes them"
+        verdict += f" · {len(report.behind)} behind" + (
+            ", read by the targets" if refresh else " — `--refresh` remakes them"
+        )
 
     if lines:
         lines.append("")

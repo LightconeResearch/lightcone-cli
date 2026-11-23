@@ -120,6 +120,9 @@ class RunContext:
     hashed: Mapping[Path, tuple[tuple[int, int, int], content.Digest]] = field(
         default_factory=dict
     )
+    #: The results whose code differs between the commit each one's record
+    #: names and :attr:`commit` (`plan.classify`). A task asks git nothing.
+    moved: frozenset[ResultId] = frozenset()
 
 
 def require_in_commit(root: Path, specs: Sequence[str]) -> None:
@@ -229,6 +232,7 @@ def _materialize(
     verdict = plan.classify(
         found=found,
         environment=context.environment,
+        moved=task.id in context.moved,
         remotes=remotes,
         read={entry: reported[key].digest for entry, key in task.produced_by.items()},
     )

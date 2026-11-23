@@ -220,6 +220,125 @@ def test_check_with_refresh_plans_what_is_behind(root: Path, inline: None) -> No
     assert not report.up_to_date
 
 
+#: Two results made by a script the analysis does not declare.
+_SCRIPTED = """
+spec_version: "0.1.0"
+outputs:
+  first:
+    type: metric
+    format: txt
+    recipe:
+      command: sh src/first.sh > {output}
+  second:
+    type: report
+    format: txt
+    inputs: [first]
+    recipe:
+      command: cat {inputs.first} > {output}
+"""
+
+
+def _edit(root: Path, path: str, text: str) -> None:
+    (root / path).write_text(text)
+    dataset.save(root, [root / path], f"edit {path}")
+
+
+def test_a_code_edit_puts_results_behind_and_remakes_nothing(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The script is no declared input, so nothing the specification
+    compares changed. What a run commits itself is no code: right after
+    one, nothing is behind."""
+    root = analysis(_SCRIPTED, {"src/first.sh": "echo one\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    assert engine.check(root, []).behind == {}
+    _edit(root, "src/first.sh", "echo two\n")
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.made == [] and report.up_to_date
+    assert report.behind == {"first": "", "second": ""}
+    assert (root / "results/first.txt").read_text() == "one\n"
+
+
+def test_refresh_remakes_the_targets_that_are_behind_and_not_what_they_read(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """What a target reads is still what the analysis asks for. Without a
+    target, every result is asked for, and what reads one made with other
+    bytes is made again."""
+    root = analysis(_SCRIPTED, {"src/first.sh": "echo one\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    _edit(root, "src/first.sh", "echo two\n")
+
+    second = engine.materialize(root, ["second"], refresh=True, cluster_id=CLUSTER_ID)
+
+    assert second.made == ["second"] and list(second.behind) == ["first"]
+    assert (root / "results/second.txt").read_text() == "one\n"
+    every = engine.materialize(root, [], refresh=True, cluster_id=CLUSTER_ID)
+    assert set(every.made) == {"first", "second"} and every.behind == {}
+    assert (root / "results/second.txt").read_text() == "two\n"
+
+
+def test_what_is_compared_otherwise_or_read_by_no_recipe_is_no_code(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The project's README, git's own files, the environment's, and the
+    inputs, which ASTRA's checker compares: an input that changed stales
+    what reads it, and puts nothing else behind."""
+    spec = _SCRIPTED + "inputs:\n  notes: {path: data/notes.txt}\n"
+    spec = spec.replace("inputs: [first]", "inputs: [first, notes]")
+    root = analysis(spec, {"src/first.sh": "echo one\n", "data/notes.txt": "v1\n"})
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+    _edit(root, "README.md", "# What this analysis is\n")
+    _edit(root, ".gitignore", (root / ".gitignore").read_text() + "scratch/\n")
+    _edit(root, "pyproject.toml", (root / "pyproject.toml").read_text() + "# a comment\n")
+    _edit(root, "data/notes.txt", "v2\n")
+
+    report = engine.check(root, [])
+
+    assert report.behind == {} and list(report.planned) == ["second"]
+
+
+def test_each_analysis_has_its_own_code(analysis: Callable[..., Path], inline: None) -> None:
+    """A declared analysis's recipe runs in its folder, the project's outside
+    it: an edit in one puts only its own results behind."""
+    driven = """
+        spec_version: "0.1.0"
+        outputs:
+          where:
+            type: data
+            format: txt
+            recipe:
+              command: sh tool.sh > {output}
+    """
+    drives = """
+        spec_version: "0.1.0"
+        analyses:
+          stage: {path: stage}
+        outputs:
+          copy:
+            type: report
+            format: txt
+            inputs: [stage.where]
+            recipe:
+              command: sh src/copy.sh {inputs} > {output}
+    """
+    root = analysis(drives, {
+        "stage/astra.yaml": driven, "stage/tool.sh": "echo a\n", "src/copy.sh": "cat $1\n",
+    })  # fmt: skip
+    attributes = (root / ".gitattributes").read_text()
+    _edit(root, ".gitattributes", attributes + "stage/results/** annex.largefiles=anything\n")
+    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
+
+    _edit(root, "stage/tool.sh", "echo b\n")
+    assert list(engine.check(root, []).behind) == ["stage:where"]
+    _edit(root, "src/copy.sh", "cat $1 $1\n")
+    assert list(engine.check(root, []).behind) == ["stage:where", "copy"]
+    assert engine.materialize(root, ["copy"], refresh=True, cluster_id=CLUSTER_ID).made == ["copy"]
+    assert list(engine.check(root, []).behind) == ["stage:where"]
+
+
 def test_a_stale_result_is_stale_even_when_the_environment_also_moved(
     root: Path, inline: None
 ) -> None:

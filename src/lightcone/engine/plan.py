@@ -422,8 +422,12 @@ def declared_path(root: Path, path: Path) -> str:
 # record, ``stale`` where something it is made from has changed since the
 # commit its record names, ``unchanged`` otherwise, which lc calls ``ok``.
 # A runner adds one state, ``behind``: ok, but made under another
-# environment than the project's. Nothing about it is wrong — its record's commit recreates that
-# environment — so it is reported, and remade only when a run asks.
+# environment than the project's, or from code that has changed since.
+# Nothing about it is wrong — its record's commit recreates both — so it is
+# reported, and remade only when a run asks. Code is what the
+# specification does not compare: an edit to a script stales nothing
+# unless the script is a declared input, and a README edit should not, so
+# a code edit puts what it may have touched behind instead (``moved``).
 #
 # lc also calls ``stale`` a result whose place holds bytes that are neither
 # its record's nor a stand-in for them (ASTRA's ``ABSENT_RESULT``): written
@@ -454,7 +458,9 @@ class Verdict:
     """One result's state, and the sentence explaining it."""
 
     state: State
-    #: Why, for every state but ``ok``.
+    #: Why, for every state but ``ok``, and but ``behind`` where only its
+    #: code moved: which of the files that changed its recipe runs is not
+    #: known, so nothing is said of them.
     why: str = ""
     #: Stale only through what it reads, and nothing else wrong with it:
     #: made again with the bytes its record gives, those leave it standing.
@@ -479,6 +485,7 @@ def classify(
     *,
     found: Status,
     environment: str,
+    moved: bool = False,
     remotes: Sequence[str] | None = None,
     read: Mapping[str, Digest] | None = None,
 ) -> Verdict:
@@ -491,6 +498,8 @@ def classify(
     Args:
         found: What ASTRA's checker found of the result before the run.
         environment: The IRI of the project's environment as it now is.
+        moved: Whether the result's code differs between the commit its
+            record names and the one a run starts from.
         remotes: Where this clone lacks the bytes its record gives, the
             remotes that hold them (``dataset.holders``); none at all
             makes the result missing. None where nothing was asked: the
@@ -528,4 +537,4 @@ def classify(
         )
     if record.generated_by.environment.iri != environment:
         return Verdict("behind", "made under an earlier environment")
-    return Verdict("ok")
+    return Verdict("behind") if moved else Verdict("ok")

@@ -606,6 +606,23 @@ def test_the_json_report_is_machine_readable(
     }
 
 
+def test_what_is_behind_is_said_with_what_remakes_it(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result behind its code alone has no reason beside it. With
+    --refresh, what is still behind is what the targets read."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, materialize=MaterializeReport(made=["plot"], behind={"fit": ""}))
+
+    plain = runner.invoke(main, ["materialize", CLUSTER_ID]).output
+    refreshed = runner.invoke(main, ["materialize", CLUSTER_ID, "plot", "--refresh"]).output
+
+    assert "behind fit\n" in plain
+    assert "1 behind — `--refresh` remakes them" in " ".join(plain.split())
+    assert "1 behind, read by the targets" in " ".join(refreshed.split())
+
+
 def test_an_engine_refusal_is_a_clean_error(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
