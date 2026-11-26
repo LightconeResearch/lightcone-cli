@@ -29,7 +29,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -54,8 +54,7 @@ class Runtime:
 
     root: Path
     mode: Literal["direct", "containerized"]
-    #: Where the project environment lives: ``.venv``, or the in-image
-    #: ``.lightcone/venv``.
+    #: The private or published environment this execution uses.
     env_dir: Path
     #: ``podman``, ``podman-hpc`` or ``docker``; empty in direct mode.
     runtime: str = ""
@@ -68,6 +67,51 @@ class Runtime:
     #: substitute. The image id itself under podman and Docker's classic
     #: store; a manifest's digest under Docker's containerd store.
     store_id: str = ""
+
+    #: Commands in execution worktrees must leave annex/LFS filters disabled.
+    staged: bool = False
+    #: Only git metadata needed by version-aware package build backends.
+    git_read: tuple[Path, ...] = ()
+
+    @property
+    def env(self) -> dict[str, str]:
+        """Tell uv which complete environment to use, including outside the tree."""
+        env = {**project.child_env(), "UV_PROJECT_ENVIRONMENT": str(self.env_dir)}
+        if self.staged:
+            env.update(dataset.plain_env(env))
+        return env
+
+    def at(self, root: Path) -> Runtime:
+        """Enter the resolved world from a run's pinned checkout.
+
+        Args:
+            root: Project root in the checkout.
+
+        Returns:
+            The runtime, with a private environment until one is prepared.
+
+        Raises:
+            ProjectError: If the checkout declares another image.
+        """
+        mode = project.mode(root)
+        if (mode, image.tag(root) if mode == "containerized" else "") != (
+            self.mode, self.image_tag,
+        ):
+            raise ProjectError("the image declaration changed while the run was preparing")
+        gitdir = Path(dataset._git(
+            [*dataset.PLAIN, "rev-parse", "--absolute-git-dir"], cwd=root,
+        ).strip())
+        common = (root / dataset._git(
+            [*dataset.PLAIN, "rev-parse", "--git-common-dir"], cwd=root,
+        ).strip()).resolve()
+        # A build backend may ask git for its version. Mount metadata only,
+        # never the common directory itself, which would expose every annex object.
+        metadata = (gitdir, *(common / name for name in
+                             ("objects", "refs", "packed-refs", "shallow")))
+        return replace(
+            self, root=root, env_dir=project.env_dir(root), staged=True,
+            git_read=tuple(path for path in metadata if path.exists()),
+        )
 
     @property
     def supports_gpus(self) -> bool:
@@ -282,10 +326,8 @@ def build(root: Path) -> tuple[Runtime, str]:
     """Converge the system-layer image, the whole of ``lc build``.
 
     Refuses a dirty tree before anything else: the archive is committed,
-    ``dataset.save`` stages scoped but commits the whole index, and the
-    tag derives from ``pyproject.toml`` — so the declaration must be
-    committed before the image it defines, and nothing of the user's may
-    be swept into the image commit.
+    and its tag derives from ``pyproject.toml``, so the declaration must
+    be committed before the image it defines.
 
     Args:
         root: The project root.
@@ -364,8 +406,8 @@ def image_state(root: Path) -> tuple[str, str, str]:
 
 
 def sync(root: Path, runtime: Runtime) -> list[str]:
-    """Converge ``.lightcone/venv`` inside the image. The containerized twin
-    of ``project.sync``.
+    """Converge the project environment inside the image. The containerized
+    twin of ``project.sync``.
 
     The one container run that gets a writable project mount — converge
     once, then execute without writing to the environment, the same
@@ -385,26 +427,59 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     Raises:
         ProjectError: If uv fails inside the container.
     """
+    return _check_call(_uv_in_image(root, runtime, "rw", project._SYNC_ARGS), cwd=root)
+
+
+def current(runtime: Runtime) -> bool:
+    """Whether the project environment is what the lock says, whichever world
+    this is. uv's own read-only check (measured: it writes nothing, and
+    answers alike from another tree of the same lock).
+
+    Args:
+        runtime: The resolved runtime.
+
+    Returns:
+        False where uv would change anything in it, or there is none.
+    """
+    args = [*project._SYNC_ARGS, "--check"]
+    if runtime.mode == "direct":
+        argv = ["uv", *args, "--project", str(runtime.root)]
+    else:
+        argv = _uv_in_image(runtime.root, runtime, "ro", args)
+    return project._run(argv, cwd=runtime.root, env=runtime.env).returncode == 0
+
+
+def _uv_in_image(root: Path, runtime: Runtime, access: str, args: list[str]) -> list[str]:
+    """A uv command against the project environment, run inside the image.
+
+    The environment is mounted on its own where it is not in the tree,
+    with *access*: a check never writes it.
+    """
     asked = project._run(["uv", "cache", "dir"], cwd=root)
     if asked.returncode != 0:
         raise ProjectError(f"`uv cache dir` failed:\n{asked.stderr.strip()}")
     cache = asked.stdout.strip()
-    argv = [
+    env = runtime.env_dir
+    if access == "rw" and not env.is_relative_to(root):
+        env.mkdir(parents=True, exist_ok=True)
+    return [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse
         # bind reads from container_t, and relabeling user data is worse.
         "--security-opt", "label=disable",
         *uid_flags(runtime.runtime),
         "-v", f"{root}:{root}:rw",
+        *(["-v", f"{env}:{env}:{access}"] if not env.is_relative_to(root) else []),
         "-v", f"{cache}:{cache}:rw",
+        *(arg for path in runtime.git_read for arg in ("-v", f"{path}:{path}:ro")),
+        *(f"--env={k}={v}" for k, v in dataset.plain_env({}).items()),
         "--env", f"UV_CACHE_DIR={cache}",
-        "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
+        "--env", f"UV_PROJECT_ENVIRONMENT={env}",
         "-w", str(root),
         runtime.store_id,
-        # The same sync `project.sync` runs, spelled once for both modes.
-        "uv", *project._SYNC_ARGS, "--project", str(root),
+        # The same uv `project.sync` runs, spelled once for both modes.
+        "uv", *args, "--project", str(root),
     ]  # fmt: skip
-    return _check_call(argv, cwd=root)
 
 
 def converge(runtime: Runtime) -> list[str]:
@@ -422,7 +497,7 @@ def converge(runtime: Runtime) -> list[str]:
         Whatever uv warned about.
     """
     if runtime.mode == "direct":
-        return project.sync(runtime.root)
+        return project.sync(runtime.root, runtime.env)
     return sync(runtime.root, runtime)
 
 
@@ -453,7 +528,7 @@ def policy_for(
         require_gpu_runtime(runtime.runtime)
     return sandbox.exec_policy(
         runtime.root,
-        read_paths=read_paths,
+        read_paths=[*read_paths, runtime.env_dir],
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,

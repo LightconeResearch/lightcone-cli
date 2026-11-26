@@ -231,10 +231,13 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     """Run COMMAND on CLUSTER in the project's sandboxed environment.
 
     Use `lc run CLUSTER -- COMMAND...` with a cluster name or ID; the allocation
-    remains available after the command finishes.
+    remains available after the command finishes. The probe uses a private
+    checkout with local edits readable. It downloads no input data. New or
+    replaced regular files in results/ return to the project when it finishes;
+    deletions stay in the private checkout.
     """
     from lightcone.engine import run as engine_run
-    from lightcone.engine.project import current_project
+    from lightcone.engine.project import declared_project
 
     _require_cluster_id(cluster_id)
     if command and command[0] == "--":
@@ -242,7 +245,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     if not command:
         raise click.UsageError("A command is required; no interactive shell is opened.")
     try:
-        outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
+        outcome = engine_run.probe(declared_project(), command, cluster_id=cluster_id)
     except KeyboardInterrupt:
         _interrupted(cluster_id, "the remote command may still be running")
         raise
@@ -373,7 +376,7 @@ def build(as_json: bool) -> None:
 def materialize(
     targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
 ) -> None:
-    """Make the analysis's results on CLUSTER, committing each as it lands.
+    """Make results on CLUSTER, then collect and commit them in dependency order.
 
     Execution requires a cluster name or ID as its first positional argument.
     With --check, all positional arguments are targets and no cluster is used.
@@ -402,7 +405,7 @@ def materialize(
     """
     from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
-    from lightcone.engine.project import current_project
+    from lightcone.engine.project import declared_project
 
     cluster_id = ""
     if check_only:
@@ -422,7 +425,7 @@ def materialize(
         cluster_id, *remaining = targets
         _require_cluster_id(cluster_id)
         targets = tuple(remaining)
-    root = current_project()
+    root = declared_project()
     if not check_only and not as_json:
         # The engine never prints, and the build it may be about to run
         # can take minutes — so the one place that owns the console says
@@ -443,7 +446,8 @@ def materialize(
         except KeyboardInterrupt:
             _interrupted(
                 cluster_id, "remote recipes may still be writing results",
-                " and confirm they have stopped before cleaning results/",
+                " and confirm they have stopped before removing retained "
+                ".lightcone/runs/ checkouts",
             )
             raise
 

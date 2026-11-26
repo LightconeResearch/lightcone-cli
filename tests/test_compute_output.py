@@ -88,7 +88,7 @@ def test_interrupt_warns_that_the_remote_command_may_still_run(
     analysis: Callable[..., Path], detached_cluster: str,
 ) -> None:
     root = analysis("spec_version: '0.1.0'\n")
-    started = root / "results/started"
+    runs = root / ".lightcone/runs"
     process = subprocess.Popen(
         [
             sys.executable, "-c", "from lightcone.cli.commands import main; main()",
@@ -100,12 +100,13 @@ def test_interrupt_warns_that_the_remote_command_may_still_run(
     )
     try:
         deadline = time.monotonic() + 15
-        while not started.exists():
+        while not list(runs.glob("*/results/started")):
             if process.poll() is not None:
                 pytest.fail(process.communicate()[1].decode(errors="replace"))
             if time.monotonic() >= deadline:
                 pytest.fail("remote command did not start")
             time.sleep(0.05)
+        assert not (root / "results/started").exists()
         process.send_signal(signal.SIGINT)
         _, stderr = process.communicate(timeout=15)
         assert process.returncode != 0

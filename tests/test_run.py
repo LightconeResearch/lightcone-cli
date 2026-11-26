@@ -130,67 +130,9 @@ def test_a_declared_project_still_needs_the_lock(project: Path) -> None:
     assert "missing uv.lock" in str(raised.value)
 
 
-def test_a_missing_spec_declares_no_input(project: Path) -> None:
-    (project / "astra.yaml").unlink()
-    assert engine_run.input_paths(project) == []
-
-
-# ---- declared inputs ------------------------------------------------------
-
-
-def test_declared_file_inputs_become_read_paths(project: Path) -> None:
-    assert engine_run.input_paths(project) == [(project / "data" / "local.csv").resolve()]
-
-
-def test_the_inputs_of_a_declared_analysis_become_read_paths_too(project: Path) -> None:
-    """A recipe of `stage` reads `stage`'s input, so a probe is granted it:
-    denied there, it would say nothing of what the recipe gets."""
-    (project / "stage" / "data").mkdir(parents=True)
-    (project / "stage" / "data" / "catalog.csv").write_text("a,b\n")
-    (project / "stage" / "astra.yaml").write_text(
-        'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.csv}\n'
-    )
-    (project / "astra.yaml").write_text(SPEC + "analyses:\n  stage: {path: stage}\n")
-    _tracked(project)
-
-    assert engine_run.input_paths(project) == [
-        (project / "data" / "local.csv").resolve(),
-        (project / "stage" / "data" / "catalog.csv").resolve(),
-    ]
-
-
-def test_an_input_declared_at_another_commit_is_no_read_path(project: Path) -> None:
-    """What an analysis declared at a commit reads is in that commit's
-    tree, which a run gives: the file that now sits at the same path of
-    the working tree is not it."""
-    subprocess.run(
-        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "first"],
-        cwd=project, check=True, capture_output=True,
-    )
-    at = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    (project / "astra.yaml").write_text(
-        f'spec_version: "0.1.0"\nanalyses:\n  previous: {{path: ., commit: "{at}"}}\n'
-    )
-    _tracked(project)
-
-    assert engine_run.input_paths(project) == []
-
-
-def test_a_spec_with_no_inputs_is_fine(tmp_path: Path) -> None:
-    root = tmp_path / "bare"
-    root.mkdir()
-    (root / "astra.yaml").write_text('spec_version: "0.1.0"\n')
-    _tracked(root)
-    assert engine_run.input_paths(root) == []
-
-
-def test_an_analysis_astra_cannot_resolve_grants_nothing(project: Path) -> None:
-    """A probe exists to debug a project, and an invalid analysis is
-    exactly when someone reaches for one — so that is no refusal."""
-    (project / "astra.yaml").write_text(SPEC + "analyses:\n  sub: {path: ../gone}\n")
-    assert engine_run.input_paths(project) == []
+@pytest.fixture
+def runnable_project(analysis: Any) -> Path:
+    return analysis(SPEC, {"data/local.csv": "a,b\n"})
 
 
 # ---- the uv hop -----------------------------------------------------------
@@ -213,7 +155,7 @@ def test_a_worker_does_not_sync_the_prepared_environment(project: Path) -> None:
 
 
 def test_the_probe_reports_the_uv_scrub_in_its_notes(
-    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
 ) -> None:
     """The probe is what builds the child environment, so the scrub's
     fact rides its outcome — the caller prints notes verbatim, and no
@@ -229,14 +171,14 @@ def test_the_probe_reports_the_uv_scrub_in_its_notes(
     )
     monkeypatch.setattr(sandbox, "run", lambda *a, **k: outcome)
 
-    outcome = engine_run.probe(project, ["true"], cluster_id=cluster_id)
+    outcome = engine_run.probe(runnable_project, ["true"], cluster_id=cluster_id)
 
     assert sum("UV_NO_BINARY" in note for note in outcome.notes) == 1
     assert outcome.notes[-5:] == ("denial", "", "remedy", "", "trailer")
 
 
 def test_a_forwarding_deadline_is_not_reported_as_uv_output(
-    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
 ) -> None:
     from lightcone.engine import container, sandbox
     from lightcone.engine.compute.output import Forwarder
@@ -248,7 +190,7 @@ def test_a_forwarding_deadline_is_not_reported_as_uv_output(
         returncode=0, attestation=Attestation(mechanism="none", fs="open"),
     ))
 
-    outcome = engine_run.probe(project, ["true"], cluster_id=cluster_id)
+    outcome = engine_run.probe(runnable_project, ["true"], cluster_id=cluster_id)
 
     assert outcome.notes[:2] == (
         "uv: Resolved 1 package",
@@ -257,7 +199,7 @@ def test_a_forwarding_deadline_is_not_reported_as_uv_output(
 
 
 def test_missing_driver_tool_is_reported_before_contacting_compute(
-    project: Path, monkeypatch: pytest.MonkeyPatch,
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from lightcone.engine import compute
 
@@ -270,11 +212,11 @@ def test_missing_driver_tool_is_reported_before_contacting_compute(
     monkeypatch.setattr(engine_run, "require_uv", unavailable)
     monkeypatch.setattr(compute, "connect", unexpected)
     with pytest.raises(ProjectError, match="uv is missing"):
-        engine_run.probe(project, ["true"], cluster_id="unused")
+        engine_run.probe(runnable_project, ["true"], cluster_id="unused")
 
 
 def test_remote_probe_forwards_both_streams_and_exit_status(
-    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from lightcone.engine import container
@@ -284,7 +226,7 @@ def test_remote_probe_forwards_both_streams_and_exit_status(
     monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: [])
     monkeypatch.setattr(container, "backend", lambda _, **__: Unavailable(Capability("none")))
     outcome = engine_run.probe(
-        project,
+        runnable_project,
         [sys.executable, "-c", (
             "import sys; print('remote stdout'); print('remote stderr', file=sys.stderr); "
             "assert sys.stdin.read() == ''; sys.exit(7)"
@@ -298,7 +240,7 @@ def test_remote_probe_forwards_both_streams_and_exit_status(
 
 
 def test_an_unavailable_cluster_fails_before_environment_preparation(
-    project: Path, monkeypatch: pytest.MonkeyPatch,
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from lightcone.engine import compute, container
 
@@ -311,11 +253,11 @@ def test_an_unavailable_cluster_fails_before_environment_preparation(
     monkeypatch.setattr(compute, "connect", unavailable)
     monkeypatch.setattr(container, "runtime_for_run", unexpected)
     with pytest.raises(ProjectError, match="pending"):
-        engine_run.probe(project, ["true"], cluster_id="pending")
+        engine_run.probe(runnable_project, ["true"], cluster_id="pending")
 
 
 def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available(
-    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
+    runnable_project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
 ) -> None:
     from lightcone.engine import compute, container
     from lightcone.engine.sandbox.boundary import Unavailable
@@ -323,14 +265,14 @@ def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available
     monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: ["/nonexistent-lc-test-uv"])
     monkeypatch.setattr(container, "backend", lambda _, **__: Unavailable())
     with pytest.raises(ProjectError, match="cluster execution failed") as raised:
-        engine_run.probe(project, ["true"], cluster_id=cluster_id)
+        engine_run.probe(runnable_project, ["true"], cluster_id=cluster_id)
     assert "did not stop the allocation" in str(raised.value)
     with compute.connect(cluster_id) as client:
         assert client.scheduler_info()["workers"]
 
 
 def test_each_invocation_gets_new_task_keys_and_keeps_the_cluster_alive(
-    project: Path, cluster_id: str, monkeypatch: pytest.MonkeyPatch,
+    runnable_project: Path, cluster_id: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from distributed import Client
 
@@ -349,7 +291,7 @@ def test_each_invocation_gets_new_task_keys_and_keeps_the_cluster_alive(
 
     monkeypatch.setattr(Client, "submit", record)
     for _ in range(2):
-        assert engine_run.probe(project, ["true"], cluster_id=cluster_id).returncode == 0
+        assert engine_run.probe(runnable_project, ["true"], cluster_id=cluster_id).returncode == 0
     assert len(keys) == 2 and keys[0] != keys[1]
 
     with compute.connect(cluster_id) as client:

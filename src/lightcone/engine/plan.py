@@ -19,8 +19,8 @@ analysis is inside the project's folder, so whatever a run reads or
 writes of the working tree is there, and nowhere else. A result from a
 commit is no task: it is read, never built, as its record at that commit
 gives it. Whatever a recipe reads at another commit, a run gives it in
-that commit's tree, a clone of the repository that holds the commit
-checked out at it under :data:`COMMITS`, and ASTRA's command names it
+that commit's tree, a detached checkout of its repository inside the run tree
+under :data:`COMMITS`, and ASTRA's command names it
 there, wherever that analysis is. Refused: an analysis read from the
 working tree outside the project's folder, one in a repository of its
 own, where lc could commit nothing, and a recipe that would run on a
@@ -54,8 +54,8 @@ if TYPE_CHECKING:
 ResultId = str
 
 #: Where a run gives the tree of each other commit a recipe reads a file
-#: at, from the project root: ``<COMMITS>/<commit id>/`` is a clone of the
-#: repository that holds the commit, checked out at it, and ASTRA names
+#: at, from the run's project root: ``<COMMITS>/<commit id>/`` is a detached
+#: checkout of the repository that holds the commit, and ASTRA names
 #: each such file at its path in that tree.
 COMMITS = ".lightcone/commits"
 
@@ -83,6 +83,21 @@ class Task:
     inputs: dict[str, Path]
     #: ASTRA's declaration; executor support is checked only when executing.
     resources: dict[str, Any] = field(default_factory=dict)
+
+    def at(self, root: Path) -> Task:
+        """Use ASTRA's same paths and command in another checkout.
+
+        Args:
+            root: The project root in that checkout.
+
+        Returns:
+            This task with its filesystem lookups rooted there.
+        """
+        return replace(
+            self, root=root, workdir=root / self.workdir.relative_to(self.root),
+            inputs={entry: root / path.relative_to(self.root)
+                    for entry, path in self.inputs.items()},
+        )
 
     @property
     def id(self) -> ResultId:

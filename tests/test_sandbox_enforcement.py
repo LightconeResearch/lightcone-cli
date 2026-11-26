@@ -556,3 +556,35 @@ def test_an_allowlisted_tool_resolves_to_the_copy_that_was_granted(
     assert result.returncode == 0, result.stderr
     resolved = Path(result.stdout.splitlines()[0].strip())
     assert policy.grants(resolved, policy.execute), f"{resolved} is not in the exec set"
+
+
+@pytest.mark.parametrize("in_scratch", [False, True])
+def test_an_input_link_beneath_a_writable_output_directory_is_read_only(
+    project: Path, outside: Path, backend: sandbox.Backend,
+    monkeypatch: pytest.MonkeyPatch, in_scratch: bool,
+) -> None:
+    """The grant follows the target; the writable parent cannot widen it."""
+    from lightcone.engine.sandbox import policy as policy_module
+    from lightcone.engine.sandbox.boundary import Unavailable
+
+    if in_scratch:
+        monkeypatch.setattr(policy_module, "_WRITE_BASELINE", (
+            *policy_module._WRITE_BASELINE, str(outside),
+        ))
+
+    outputs = project / "results"
+    outputs.mkdir()
+    target = outside / "secret.txt"
+    linked = outputs / "input.txt"
+    linked.symlink_to(target)
+    policy = sandbox.exec_policy(project, read_paths=[linked], write_dir=outputs)
+    with sandbox.scope(policy):
+        read = shell(backend, policy, "cat results/input.txt", cwd=project)
+        assert read.returncode == 0 and read.stdout == "undeclared\n"
+        denied = shell(backend, policy, "echo corrupted > results/input.txt", cwd=project)
+        assert denied.returncode != 0
+        assert target.read_text() == "undeclared\n"
+        # Mutation check: ordinary permissions allow precisely the denied write.
+        allowed = shell(Unavailable(), policy, "echo corrupted > results/input.txt", cwd=project)
+        assert allowed.returncode == 0
+        assert target.read_text() == "corrupted\n"

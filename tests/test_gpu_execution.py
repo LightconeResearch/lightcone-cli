@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from lightcone.engine import container, dataset, identity, plan, worker
+from lightcone.engine import container, dataset, identity, image, plan, worker
 from lightcone.engine import run as engine_run
 from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
@@ -134,7 +134,11 @@ def test_container_probe_on_gpu_cluster_exposes_only_supported_gpus_and_reports_
     from lightcone.engine import compute, sandbox
 
     root, _, context = project
-    runtime = replace(context.runtime, mode="containerized", runtime=runtime_name, image_id="test")
+    config = root / "pyproject.toml"
+    config.write_text(config.read_text() + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
+    dataset.save(root, [config], "declare the mocked container")
+    runtime = replace(context.runtime, mode="containerized", runtime=runtime_name,
+                      image_id="test", image_tag=image.tag(root))
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
     monkeypatch.setattr(container, "runtime_for_run", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(container, "converge", lambda _: [])

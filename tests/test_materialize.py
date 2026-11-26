@@ -16,7 +16,7 @@ import json
 import pickle
 import subprocess
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ import pytest
 from astra.api import Bytes
 from conftest import CLUSTER_ID, _Inline, clone_of, locked_version, with_idna
 
-from lightcone.engine import content, dataset, identity, plan
+from lightcone.engine import content, dataset, identity, plan, staging
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskOutcome
@@ -589,34 +589,8 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
 
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
-    assert "discard these" in message and "results/baseline/stray.txt" in message
-    assert message.index("lc compute down") < message.index("git clean -fd results/")
-    # Nothing git knows of changed there, and `git restore` refuses a
-    # folder it knows no file of.
-    assert "git restore" not in message
-
-
-def test_the_discard_command_undoes_what_an_interrupted_run_left(
-    root: Path, inline: None
-) -> None:
-    """A task removes its record before its recipe runs, so an interrupted
-    one leaves that deletion beside part of its result — all of it lc's
-    to discard, none of it the researcher's to commit."""
-    engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    (root / ".astra/records/baseline/second.json").unlink()
-    (root / "results/baseline/second.txt").unlink()
-    (root / "results/baseline/second.txt").write_text("hal")
-    (root / "results/baseline/second.tmp").write_text("partial\n")
-
-    with pytest.raises(ProjectError) as raised:
-        engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    message = str(raised.value)
-    assert "commit these" not in message
-    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
-    assert not dataset.status(root)
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
+    assert "results/baseline/stray.txt" in message
+    assert "discard" not in message and "git clean" not in message
 
 
 def test_an_index_lock_that_never_goes_away_refuses_before_anything_runs(
@@ -700,8 +674,9 @@ def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
     monkeypatch.setattr(dataset, "save", fail)
     with pytest.raises(ProjectError, match="git commit failed") as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    # Only the first output leaves another one outstanding.
-    assert ("did not stop the allocation" in str(raised.value)) == (failing == "first#baseline")
+    # Collection starts only once every remote task has reported.
+    assert "did not stop the allocation" not in str(raised.value)
+    assert "Run files retained" in str(raised.value)
 
 def test_an_input_more_than_one_task_reads_is_hashed_once(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
@@ -729,14 +704,14 @@ def test_an_input_more_than_one_task_reads_is_hashed_once(
     _cluster(monkeypatch, _Copied())
     first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(first.made) == 2
-    assert hashed.count(root / "data/catalog.fits") == 1
+    assert sum(path.name == "catalog.fits" for path in hashed) == 1
     for name in ("first", "second"):
         made = json.loads((root / f".astra/records/baseline/{name}.json").read_text())
         [catalog] = [i for i in made["generated_by"]["inputs"] if i["entry"] == "catalog"]
         assert (catalog["content_hash"], catalog["size"]) == real(root / "data/catalog.fits")
     second = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert len(second.unchanged) == 2
-    assert hashed.count(root / "data/catalog.fits") == 1
+    assert sum(path.name == "catalog.fits" for path in hashed) == 1
 
 
 def _consuming(path: str) -> str:
@@ -803,7 +778,7 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
-def test_an_edit_while_the_graph_runs_is_reported(
+def test_an_edit_while_the_graph_runs_is_preserved(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The dirty check runs at start of run and records are written
@@ -821,7 +796,8 @@ def test_an_edit_while_the_graph_runs_is_reported(
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
-    assert any("notes.md" in w and "in flight" in w for w in report.warnings)
+    assert not report.warnings
+    assert (root / "notes.md").read_text() == "scribbled while the graph ran\n"
 
 
 def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
@@ -843,7 +819,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert report.ok
-    assert any("notes.py" in w and "in flight" in w for w in report.warnings)
+    assert not report.warnings
     staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
     assert staged == ["notes.py"]
     ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
@@ -965,8 +941,10 @@ def test_an_interrupted_run_retains_what_never_reported(
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert dataset.status(root)
-    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
+    assert not dataset.status(root)
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
+    (retained,) = [path for path in (root / staging.RUNS).iterdir() if path.is_dir()]
+    assert (retained / "results/baseline/second.txt").read_text() == "changed\n"
 
 
 # ---- where git stores what a run commits ----------------------------------
@@ -1167,9 +1145,9 @@ def test_a_file_a_recipe_writes_beside_its_result_is_not_the_results(
     assert report.made == ["fit"], (report.failed, report.warnings)
     committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=root).split()
     assert sorted(committed) == [".astra/records/fit.json", "results/fit.txt"]
-    assert (root / "results/fit.txt.idx").read_text() == "index\n"
+    assert not (root / "results/fit.txt.idx").exists()
     assert any(
-        "results/fit.txt.idx" in w and "left uncommitted" in w for w in report.warnings
+        "results/fit.txt.idx" in w and "discarded undeclared" in w for w in report.warnings
     ), report.warnings
 
 
@@ -1545,23 +1523,27 @@ def test_a_clone_fetches_only_results_a_rebuild_might_leave_standing(
     )
     dataset.save(clone, [spec], "the same bytes upstream, another recipe downstream")
 
+    from lightcone.engine import project
+
     fetched: list[str] = []
-    get = dataset.get
+    run = project._run
+    expected_paths = ["data/catalog.txt"] if refresh else ["data/catalog.txt", "results/second.txt"]
+    commit = dataset.head(clone)
+    expected_keys = dataset.keys(clone, [f"{commit}:{path}" for path in expected_paths])
 
-    def fetch(directory: Path, paths: Sequence[str]) -> dict[str, str]:
-        fetched.extend(paths)
-        return get(directory, paths)
+    def fetch(argv: list[str], **kwargs: Any) -> Any:
+        if "get" in argv and "--batch-keys" in argv:
+            fetched.extend(kwargs["stdin"].splitlines())
+        return run(argv, **kwargs)
 
-    monkeypatch.setattr(dataset, "get", fetch)
+    monkeypatch.setattr(project, "_run", fetch)
     report = engine.materialize(clone, [], refresh=refresh, cluster_id=CLUSTER_ID)
 
     assert report.ok, report.warnings
     assert (report.made, report.unchanged) == (
         (["first", "second", "third"], []) if refresh else (["first", "third"], ["second"])
     )
-    assert fetched == (
-        ["data/catalog.txt"] if refresh else ["data/catalog.txt", "results/second.txt"]
-    )
+    assert sorted(fetched) == sorted(set(expected_keys.values()))
     assert (clone / "results/third.txt").read_text() == "1\n"
     assert not dataset.status(clone)
 
@@ -1878,7 +1860,8 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     report = engine.materialize(root, ["first"], cluster_id=CLUSTER_ID)
 
     assert report.ok
-    assert project_mod._env_is_current(root)
+    assert not project_mod._env_is_current(root)  # the researcher's environment is untouched
+    assert any((root / ".lightcone/envs").iterdir())
 
 
 def test_the_recorded_command_reproduces_the_result(
@@ -2009,7 +1992,7 @@ def test_resource_refusal_precedes_preparation_and_all_recipes(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began before all resource requests were validated")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(staging, "fill", unexpected)
     monkeypatch.setattr(engine.container, "runtime_for_run", unexpected)
     with pytest.raises(ProjectError, match="second#baseline:.*no worker"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -2036,7 +2019,7 @@ def test_execution_only_resources_do_not_block_read_only_commands(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began before execution requirements were validated")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(staging, "fill", unexpected)
     with pytest.raises(ProjectError, match="second#baseline"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not dataset.status(root)
@@ -2074,7 +2057,7 @@ def test_empty_cluster_refuses_before_project_preparation(
     def unexpected(*args: object, **kwargs: object) -> None:
         pytest.fail("preparation began without an available worker")
 
-    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(staging, "fill", unexpected)
     with pytest.raises(ProjectError, match="no workers"):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert not dataset.status(root)

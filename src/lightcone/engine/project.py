@@ -327,8 +327,8 @@ def uv_prefix(directory: Path) -> list[str]:
     return ["uv", "run", "--locked", "--no-sync", "--project", str(directory), "--"]
 
 
-def sync(directory: Path) -> list[str]:
-    """Make the host ``.venv`` match ``uv.lock``. Direct mode's converge.
+def sync(directory: Path, env: dict[str, str] | None = None) -> list[str]:
+    """Make the host environment match ``uv.lock``. Direct mode's converge.
 
     Both entry points that execute recipes converge before they start,
     rather than checking and refusing: workers pass ``--no-sync``, so
@@ -341,6 +341,9 @@ def sync(directory: Path) -> list[str]:
 
     Args:
         directory: The project root.
+        env: The environment to run uv in, :func:`child_env` unless given;
+            its ``UV_PROJECT_ENVIRONMENT`` names the environment synced,
+            ``.venv`` without one.
 
     Returns:
         Whatever uv warned about.
@@ -348,7 +351,9 @@ def sync(directory: Path) -> list[str]:
     Raises:
         ProjectError: If uv fails.
     """
-    return _check_call(["uv", *_SYNC_ARGS, "--project", str(directory)], cwd=directory)
+    return _check_call(
+        ["uv", *_SYNC_ARGS, "--project", str(directory)], cwd=directory, env=env
+    )
 
 
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
@@ -668,16 +673,27 @@ def _project_root(directory: Path | None, required: Sequence[str]) -> Path:
 
 
 def _run(
-    argv: list[str], *, cwd: Path, stdin: str | None = None
+    argv: list[str],
+    *,
+    cwd: Path,
+    stdin: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """One seam for every external tool convergence invokes.
 
     Tests monkeypatch this, so the suite never shells out and every call is
     inspectable.
 
+    Run in *env*, :func:`child_env` unless given.
     """
     return subprocess.run(
-        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env(), input=stdin
+        argv,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env() if env is None else env,
+        input=stdin,
     )
 
 
@@ -783,14 +799,16 @@ def uv_scrub_warning() -> str:
     return ""
 
 
-def _check_call(argv: list[str], *, cwd: Path) -> list[str]:
+def _check_call(
+    argv: list[str], *, cwd: Path, env: dict[str, str] | None = None
+) -> list[str]:
     """Run a tool, surfacing a nonzero exit as :class:`ProjectError`.
 
     Nothing convergence shells out to is allowed to fail silently: a
     broken lock, or a ``git init`` that didn't happen, would surface later
     as something far more confusing. Returns the tool's own warnings.
     """
-    proc = _run(argv, cwd=cwd)
+    proc = _run(argv, cwd=cwd) if env is None else _run(argv, cwd=cwd, env=env)
     if proc.returncode != 0:
         raise ProjectError(f"`{' '.join(argv)}` failed:\n{proc.stderr.strip()}")
     return tool_warnings(proc.stderr)
