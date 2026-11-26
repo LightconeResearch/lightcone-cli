@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from conftest import CLUSTER_ID, FIRST, since
 
-from lightcone.engine import dataset, identity, plan, worker
+from lightcone.engine import dataset, identity, plan, staging, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError
 
@@ -274,8 +274,11 @@ def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) ->
 
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
-    assert tasks["stage.where#u1"].path.read_text().splitlines() == ["a", str(root / "stage")]
-    assert tasks["copy#u1"].path.read_text().splitlines()[-1] == str(root)
+    lines = tasks["stage.where#u1"].path.read_text().splitlines()
+    workdir = Path(lines[1])
+    assert lines[0] == "a" and workdir.name == "stage"
+    assert workdir.is_relative_to(root / staging.RUNS)
+    assert tasks["copy#u1"].path.read_text().splitlines()[-1] == str(workdir.parent)
 
 
 def test_not_at_commit(analysis: Callable[..., Path], inline: None) -> None:
@@ -314,7 +317,8 @@ def test_rebuilt_from_commit(analysis: Callable[..., Path], inline: None) -> Non
         "content_hash": recorded.content_hash,
         "size": recorded.size,
     } in read
-    assert recorded.content_hash == _sha256(root / plan.COMMITS / at / "results" / "fit.txt")
+    key = dataset.keys(root, [f"{at}:results/fit.txt"])[f"{at}:results/fit.txt"]
+    assert recorded.content_hash == _sha256(dataset.locations(root, [key])[key])
     assert engine.check(root, []).up_to_date
 
 

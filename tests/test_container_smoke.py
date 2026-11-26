@@ -32,13 +32,22 @@ REQUIRED_ENV = "LC_CONTAINER_TESTS_REQUIRED"
 
 _SPEC = """
 spec_version: "0.1.0"
-
+inputs:
+  seed: {path: data/catalog.fits}
 outputs:
+  catalog:
+    type: data
+    format: fits
+    inputs: [seed]
+    recipe:
+      command: test -L {inputs.seed} && cp {inputs.seed} {output}
   sums:
     type: metric
     format: txt
+    inputs: [catalog]
     recipe:
-      command: echo "2+2" | bc > {output}
+      command: >-
+        test -L {inputs.catalog} && cat {inputs.catalog} >/dev/null && echo "2+2" | bc > {output}
 """
 
 
@@ -175,6 +184,20 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path, cluster_id: st
     assert outcome.attestation.network == "allowed"
     assert outcome.attestation.fs == "declared"
 
+    linked = engine_run.probe(
+        cproject, ["bash", "-c",
+                   "ln -s ../data/catalog.fits results/input; cat results/input"],
+        cluster_id=cluster_id,
+    )
+    assert linked.returncode == 0
+    denied_input = engine_run.probe(
+        cproject, ["bash", "-c",
+                   "ln -s ../data/catalog.fits results/input; echo corrupt > results/input"],
+        cluster_id=cluster_id,
+    )
+    assert denied_input.returncode != 0
+    assert (cproject / "data/catalog.fits").read_text() == "stars\n"
+
     outside = Path.home() / ".lc-smoke-outside.txt"
     outside.write_text("host secret\n")
     try:
@@ -214,7 +237,7 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path, clust
     report = engine.materialize(cproject, [], cluster_id=cluster_id)
 
     assert report.ok, report.warnings
-    assert report.made == ["sums"]
+    assert report.made == ["catalog", "sums"]
     assert (cproject / "results/sums.txt").read_text() == "4\n"
     assert not dataset.status(cproject)
 

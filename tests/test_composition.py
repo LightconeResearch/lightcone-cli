@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from conftest import CLUSTER_ID, FIRST, clone_of, since
 
-from lightcone.engine import dataset, plan, templates, worker
+from lightcone.engine import dataset, plan, staging, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
@@ -92,9 +92,11 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     driven, own = tasks["stage.out#u1"], tasks["stage:out#v1"]
     assert driven.path.is_relative_to(root / "results")
     assert own.path.is_relative_to(root / "stage" / "results")
-    assert _lines(driven.path) == ["a", str(root / "stage")]
-    assert _lines(own.path) == ["b", str(root / "stage")]
-    assert _lines(tasks["both#u1"].path) == ["a", str(root / "stage"), "b", str(root / "stage")]
+    workdir = Path(_lines(driven.path)[1])
+    assert workdir.name == "stage" and workdir.is_relative_to(root / staging.RUNS)
+    assert _lines(driven.path) == ["a", str(workdir)]
+    assert _lines(own.path) == ["b", str(workdir)]
+    assert _lines(tasks["both#u1"].path) == ["a", str(workdir), "b", str(workdir)]
     assert all(record.is_file() for task in tasks.values() for record in task.record_paths)
     assert not dataset.status(root)
     assert engine.check(root, []).up_to_date
@@ -127,17 +129,8 @@ def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_co
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     message = str(raised.value)
-    theirs, _, ours = message.partition("discard these")
-    assert "commit these" in theirs and "stage/notes.md" in theirs
-    assert "stage/" not in theirs.replace("stage/notes.md", "")
-    for left in ("stage/.astra/records/v1/out.json", "stage/results/v1/out.txt"):
-        assert left in ours
-    [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
-    assert "git clean -fd stage/results/" in command
-    (root / "stage/notes.md").unlink()
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
-    assert not dataset.status(root)
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).up_to_date
+    assert "stage/notes.md" in message and "stage/results/v1/out.tmp" in message
+    assert "discard" not in message
 
 
 def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
@@ -159,7 +152,7 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
 
     assert report.made == ["stage:out#v1"], (report.failed, report.warnings)
     [left] = [w for w in report.warnings if "stage/results/v1/out.txt.idx" in w]
-    assert "left uncommitted where results go" in left
+    assert "discarded undeclared files" in left
     assert not any("edited while the run was in flight" in w for w in report.warnings)
 
 
@@ -238,7 +231,7 @@ outputs:
 """
 
 
-def test_a_commits_tree_changed_since_a_run_made_it_is_made_again(
+def test_a_new_run_does_not_reuse_a_leftover_pinned_tree(
     analysis: Callable[..., Path], inline: None
 ) -> None:
     """The tree of a commit is kept from run to run, and a file in it is
@@ -253,7 +246,10 @@ def test_a_commits_tree_changed_since_a_run_made_it_is_made_again(
     spec.write_text(_READS_AN_INPUT % at)
     dataset.save(root, [spec], "copy the catalog as it was")
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    cached = root / plan.COMMITS / at / "data" / "catalog.txt"
+    leftover = staging.take(root, dataset.head(root))
+    leftover.give(at, None, ["data/catalog.txt"])
+    cached = leftover.root / plan.COMMITS / at / "data/catalog.txt"
+    cached.unlink()  # never edit an annex object in place
     cached.write_text("tampered\n")
     spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
     dataset.save(root, [spec], "copy it again")
@@ -262,7 +258,8 @@ def test_a_commits_tree_changed_since_a_run_made_it_is_made_again(
 
     assert report.made == ["copy"], (report.failed, report.warnings)
     assert (root / "results" / "copy.txt").read_text() == "stars\n"
-    assert cached.read_text() == "stars\n"
+    assert cached.read_text() == "tampered\n"
+    leftover.close()
 
 
 def test_a_bytes_free_clone_gives_the_tree_of_a_past_commit_from_what_it_fetches(
@@ -315,7 +312,7 @@ def test_a_result_of_another_repository_is_read_from_a_clone_of_it_at_its_commit
 
     assert report.made == ["copy"], (report.failed, report.warnings)
     assert _lines(root / "results" / "copy.txt") == ["first"]
-    assert (root / plan.COMMITS / made_at / ".git").is_dir()
+    assert not (root / plan.COMMITS).exists()
     assert not dataset.status(root)
 
 
@@ -334,7 +331,7 @@ def test_the_recorded_command_gives_a_past_commits_tree_on_a_fresh_clone(
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     root = analysis(FIRST)
-    made_at = since(root)
+    since(root)
     assert engine.materialize(root, ["compare"], cluster_id=CLUSTER_ID).ok
     original = json.loads((root / ".astra/records/compare.json").read_text())
     clone = clone_of(root, tmp_path)
@@ -349,7 +346,7 @@ def test_the_recorded_command_gives_a_past_commits_tree_on_a_fresh_clone(
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert (clone / plan.COMMITS / made_at / ".git").is_dir()
+    assert not (clone / plan.COMMITS).exists()
     rerun = json.loads((clone / ".astra/records/compare.json").read_text())
     assert rerun["content_hash"] == original["content_hash"]
     assert _lines(clone / "results" / "compare.txt") == ["second", "first"]
@@ -406,28 +403,6 @@ def test_a_commit_only_a_submodule_holds_is_not_taken_from_the_project(
 _AN_INPUT = 'spec_version: "0.1.0"\ninputs:\n  catalog: {path: data/catalog.txt}\n'
 
 
-def test_a_commits_tree_git_cannot_read_is_made_again(
-    analysis: Callable[..., Path], inline: None
-) -> None:
-    """A tree git cannot even inspect, its index damaged, is not known to
-    be its commit's: it is made again, and the recipe reads the commit's
-    bytes."""
-    root = analysis(_AN_INPUT, {"data/catalog.txt": "stars\n"})
-    at = dataset.head(root)
-    spec = root / "astra.yaml"
-    spec.write_text(_READS_AN_INPUT % at)
-    dataset.save(root, [spec], "copy the catalog as it was")
-    assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
-    spec.write_text(spec.read_text().replace("cat {inputs}", "cat -u {inputs}"))
-    dataset.save(root, [spec], "copy it again")
-
-    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert report.made == ["copy"], (report.blocked, report.warnings)
-    assert (root / "results" / "copy.txt").read_text() == "stars\n"
-
-
 _READS_UPSTREAMS_INPUT = """
 spec_version: "0.1.0"
 analyses:
@@ -458,7 +433,8 @@ def test_a_commits_tree_that_cannot_be_given_blocks_only_what_reads_it(
     upstream = upstream.rename(tmp_path / "upstream")
     root = analysis(_READS_UPSTREAMS_INPUT % (upstream.as_uri(), at))
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    (root / plan.COMMITS / at / ".git" / "index").write_bytes(b"not an index")
+    (cache,) = (root / ".lightcone/repositories").iterdir()
+    (cache / ".git/HEAD").write_text("not a git HEAD\n")
     upstream.rename(tmp_path / "gone")
     spec = root / "astra.yaml"
     spec.write_text(

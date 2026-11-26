@@ -24,7 +24,7 @@ import posixpath
 import re
 import subprocess
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -357,6 +357,7 @@ def save(
     *,
     annexed: Iterable[Path] = (),
     in_git: Iterable[Path] = (),
+    named: Mapping[Path, tuple[str, int]] | None = None,
 ) -> bool:
     """Commit *paths*.
 
@@ -418,6 +419,7 @@ def save(
         message: The commit message.
         annexed: Files among *paths* whose bytes have to go to the annex.
         in_git: Files among *paths* that have to stay in git.
+        named: Expected result hashes and sizes, checked against what was staged.
 
     Returns:
         False if there was nothing to commit.
@@ -451,6 +453,21 @@ def save(
                  for path in to_annex if not key.get(path)]
         wrong += [f"{path} was staged in the annex, where a clone with no content cannot read it"
                   for path in to_git if key.get(path)]
+        for path, expected in (named or {}).items():
+            stored = key.get(_rel(directory, path), "")
+            if not stored:
+                continue  # already named by the storage routing check
+            sha = re.match(r"SHA256E?-s([0-9]+)--([0-9a-f]{64})(?:\.|$)", stored)
+            if sha:
+                actual = (f"sha256:{sha[2]}", int(sha[1]))
+            else:
+                from lightcone.engine.content import digest_file
+
+                actual = digest_file(locations(directory, [stored])[stored])
+            if actual != expected:
+                wrong.append(
+                    f"{_rel(directory, path)} was staged with bytes its record does not name"
+                )
         if wrong:
             _git(["reset", "-q", "--", *relative], cwd=directory)
             raise project.ProjectError(
@@ -462,7 +479,10 @@ def save(
     # The annex config rides on the commit too: a partial commit takes
     # the paths' content through the clean filter again, and without the
     # flags that pass would route the bytes by stock rules.
-    _git([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
+    committed = _run([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
+    if committed.returncode != 0:
+        _git(["reset", "-q", "--", *relative], cwd=directory)
+        raise project.ProjectError(f"git could not commit the result: {committed.stderr.strip()}")
     _git(
         ["annex", "sync", "-q", "--only-annex", "--no-pull", "--no-push", "--no-content",
          "--no-commit"],
@@ -1255,3 +1275,64 @@ def _rel(directory: Path, path: Path | str) -> str:
     if resolved.is_absolute():
         resolved = resolved.relative_to(directory.resolve())
     return resolved.as_posix()
+
+
+# Filters and hooks must never populate a linked execution worktree.
+PLAIN = [
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "filter.annex.smudge=",
+    "-c", "filter.annex.clean=",
+    "-c", "filter.annex.process=",
+    "-c", "filter.annex.required=false",
+    "-c", "filter.lfs.smudge=",
+    "-c", "filter.lfs.clean=",
+    "-c", "filter.lfs.process=",
+    "-c", "filter.lfs.required=false",
+]  # fmt: skip
+
+
+def plain_env(ambient: Mapping[str, str]) -> dict[str, str]:
+    """Give :data:`PLAIN` as environment, for every git a command runs by itself.
+
+    Numbered after whatever configuration *ambient* already gives git that
+    way: a CI's ``safe.directory``, or the address its credentials are for.
+
+    Args:
+        ambient: The environment the command would otherwise run in.
+
+    Returns:
+        The variables to add to it.
+    """
+    given = ambient.get("GIT_CONFIG_COUNT", "")
+    first = int(given) if given.isdigit() else 0
+    options = [option.split("=", 1) for option in PLAIN[1::2]]
+    return {
+        "GIT_CONFIG_COUNT": str(first + len(options)),
+        **{f"GIT_CONFIG_KEY_{first + n}": key for n, (key, _) in enumerate(options)},
+        **{f"GIT_CONFIG_VALUE_{first + n}": value for n, (_, value) in enumerate(options)},
+    }
+
+
+def locations(directory: Path, keys: Sequence[str]) -> dict[str, Path]:
+    """Ask git-annex for the local filename of each exact content key.
+
+    Args:
+        directory: The repository owning the object store.
+        keys: Keys obtained from the pinned commit, deduplicated by the caller.
+
+    Returns:
+        Existing content files by key. Absent objects have no local filename.
+    """
+    if not keys:
+        return {}
+    asked = project._run(
+        ["git", "annex", "contentlocation", "--batch"], cwd=directory,
+        stdin="".join(f"{key}\n" for key in keys),
+    )
+    if asked.returncode != 0:
+        raise project.ProjectError(f"`git annex contentlocation` failed:\n{asked.stderr.strip()}")
+    return {
+        key: path.resolve()
+        for key, name in zip(keys, asked.stdout.splitlines(), strict=True)
+        if name and (path := directory / name).is_file()
+    }

@@ -864,11 +864,12 @@ def test_what_the_analysis_reads_at_a_commit_it_declares_is_sent_too(
     monkeypatch.setattr(project, "_run", recording)
     assert materialize.materialize(clone, ["compare"], cluster_id=CLUSTER_ID).made == ["compare"]
     assert (clone / "results/compare.txt").read_text() == "second\nfirst\n" * 2
-    # What the run clones and fetches for that commit, it reaches as `lc fetch` does.
-    cloned = [argv for argv in ran if "clone" in argv]
-    fetched = [argv for argv in ran if argv[-3:] == ["annex", "get", "--batch-keys"]]
-    assert cloned and fetched
-    assert all("core.sshCommand=ssh -o BatchMode=yes" in argv for argv in cloned + fetched)
+    # Local history uses a detached worktree and the project's own annex.
+    assert any("worktree" in argv and "add" in argv for argv in ran)
+    assert not any("clone" in argv for argv in ran)
+    fetched = [argv for argv in ran if "get" in argv and "--batch-keys" in argv]
+    assert fetched
+    assert all("core.sshCommand=ssh -o BatchMode=yes" in argv for argv in fetched)
 
 
 def test_an_analysis_that_cannot_be_read_does_not_keep_the_commit_offline(

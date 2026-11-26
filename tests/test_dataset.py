@@ -1173,3 +1173,19 @@ def test_ghs_own_credentials_are_offered_where_it_is_installed(
     monkeypatch.setattr(github, "has_gh", lambda: True)
 
     assert "credential.https://github.com.helper=!gh auth git-credential" in dataset.reaching(repo)
+
+
+@pytest.mark.parametrize("backend", ["SHA256E", "MD5E"])
+def test_save_checks_staged_content_against_the_workers_digest(repo: Path, backend: str) -> None:
+    """A replacement between execution and add cannot acquire a false record."""
+    dataset._git(["config", "annex.backend", backend], cwd=repo)
+    path = repo / "results/made.txt"
+    path.write_text("the bytes actually staged\n")
+    before = dataset.head(repo)
+    with pytest.raises(project.ProjectError, match="bytes its record does not name"):
+        dataset.save(repo, [path], "must not commit", annexed=[path],
+                     named={path: ("sha256:" + "0" * 64, 1)})
+    assert dataset.head(repo) == before
+    assert not dataset._git(["diff", "--cached", "--name-only"], cwd=repo).strip()
+    assert dataset.save(repo, [path], "true digest", annexed=[path],
+                        named={path: content.digest_file(path)})

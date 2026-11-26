@@ -1,15 +1,11 @@
-"""``lc run`` executes a command inside the reproducible environment.
+"""Development probes through the same per-execution staging as recipes.
 
-Byte-for-byte the environment recipes will get — the same lock, the same
-converged ``.venv`` — under the same sandbox. That equivalence is the
-point: if a probe works, the recipe will, and if a probe
-is denied, the recipe would have been.
-
-What the boundary catches is a reach *outside* the declared set — a
-tool, a library, or a data file that is on this machine and would not be
-in the image. The tree itself is read-only apart from ``results/``,
-which is where output goes, so the environment a run started with is the
-one it finishes with.
+A probe starts at HEAD, overlays uncommitted files as read-only links, and
+exposes locally available annex objects without bulk fetching. It uses the
+same complete environment cache and boundary as recipes. New/replaced regular
+files beneath results/ are collected after the probe reports, even on a
+nonzero exit; deletions and undeclared files are confined to the run tree.
+An interrupted probe retains its tree because its subprocess may still run.
 """
 
 from __future__ import annotations
@@ -19,11 +15,10 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from lightcone.engine import container, plan, sandbox
+from lightcone.engine import container, content, dataset, environments, identity, sandbox, staging
 from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
     ProjectError,
-    child_env,
     require_uv,
     uv_prefix,
     uv_scrub_warning,
@@ -48,35 +43,68 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     from lightcone.engine.compute.output import call, forwarding
 
     require_uv()
-    paths = input_paths(project)
     with compute.connect(cluster_id) as client:
         resources = TaskResources().requirements(
             worker_capacities(client.scheduler_info()["workers"]), whole_worker=True,
         )
         runtime = container.runtime_for_run(project, build=False)
-        notes = [f"uv: {warning}" for warning in container.converge(runtime)]
-        use_gpus = resources.get("GPU", 0) > 0 and runtime.supports_gpus
-        if resources.get("GPU", 0) > 0 and not use_gpus:
-            notes.append(
-                f"GPU access is not supported by {runtime.runtime}; this probe runs without GPUs"
+        stage = staging.take(project, dataset.head(project))
+        cleanup = True
+        try:
+            paths = staging.probe_files(stage)
+            before = {path: content.stamp(path) for path in (stage.root / "results").rglob("*")
+                      if path.is_file() and not path.is_symlink()}
+            runtime, warnings = environments.prepare(
+                project, runtime.at(stage.root), identity.environment(stage.root),
             )
-        invocation = uuid4().hex
-        with forwarding(client) as output:
-            future = client.submit(
-                call, _probe, output.topic, "probe", runtime, paths, tuple(command),
-                use_gpus,
-                key=f"lc-{invocation}-probe", pure=False, resources=resources,
-            )
-            try:
-                outcome: sandbox.Outcome = future.result()
-            except ProjectError:
-                raise
-            except Exception as exc:
+            notes = [f"uv: {warning}" for warning in warnings]
+            use_gpus = resources.get("GPU", 0) > 0 and runtime.supports_gpus
+            if resources.get("GPU", 0) > 0 and not use_gpus:
+                notes.append(
+                    f"GPU access is not supported by {runtime.runtime}; "
+                    "this probe runs without GPUs"
+                )
+            invocation = uuid4().hex
+            with forwarding(client) as output:
+                cleanup = False
+                future = client.submit(
+                    call, _probe, output.topic, "probe", runtime, paths, tuple(command),
+                    use_gpus,
+                    key=f"lc-{invocation}-probe", pure=False, resources=resources,
+                )
+                try:
+                    outcome: sandbox.Outcome = future.result()
+                    cleanup = True
+                except ProjectError:
+                    raise
+                except Exception as exc:
+                    raise ProjectError(
+                        f"cluster execution failed: {exc}. {compute.UNSTOPPED}"
+                    ) from exc
+                if not output.wait("probe"):
+                    notes.append("remote output forwarding did not finish before its deadline")
+            # Existing local files are symlinks; only files the probe made are regular.
+            made = [path for path in (stage.root / "results").rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                    and before.get(path) != content.stamp(path)]
+            cleanup = False
+            destinations = [project / path.relative_to(stage.root) for path in made]
+            with staging.collecting(stage, destinations):
+                for path in made:
+                    target = project / path.relative_to(stage.root)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    path.replace(target)
+            cleanup = True
+        except BaseException as exc:
+            if not cleanup and isinstance(exc, Exception):
                 raise ProjectError(
-                    f"cluster execution failed: {exc}. {compute.UNSTOPPED}"
+                    f"{exc}. Run files retained at {stage.root}; "
+                    "remove only after its tasks stop."
                 ) from exc
-            if not output.wait("probe"):
-                notes.append("remote output forwarding did not finish before its deadline")
+            raise
+        finally:
+            if cleanup:
+                stage.close()
     if warning := uv_scrub_warning():
         notes.append(warning)
     return replace(outcome, notes=(*notes, *outcome.notes))
@@ -92,43 +120,6 @@ def _probe(
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
             container.backend(runtime, workdir=runtime.root), policy, command, cwd=runtime.root,
-            prefix=uv_prefix(runtime.root), env=child_env(), output=output,
+            prefix=uv_prefix(runtime.root), env=runtime.env, output=output,
         )
     return outcome
-
-
-def input_paths(project: Path) -> list[Path]:
-    """Collect the files the analysis declares as inputs, best-effort.
-
-    Those of every analysis read from the working tree, as its recipes
-    get them: an analysis the project declares or drives has inputs of
-    its own, and a probe denied one is a denial the researcher cannot act
-    on. An input of an analysis at another commit is no file of this tree.
-
-    An analysis ASTRA cannot resolve declares nothing a probe could be
-    granted, and a probe is how someone debugs one, so that is no refusal
-    here.
-
-    Args:
-        project: The project root.
-
-    Returns:
-        The resolved paths that exist; none where there is no analysis
-        ASTRA can resolve.
-    """
-    from astra import api
-
-    try:
-        with plan.asking_astra(project):
-            # Offline: a probe reads the project, and never a remote for it.
-            analysis = api.resolve(project, offline=True)
-    except ProjectError:
-        return []
-    found = [
-        path.resolve()
-        for each in analysis.analyses
-        if each.commit is None
-        for declared in each.inputs
-        if (path := project / declared.path).exists()
-    ]
-    return list(dict.fromkeys(found))

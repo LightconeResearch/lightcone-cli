@@ -257,7 +257,10 @@ def exec_policy(
         # container with no `/data` at all. (The backend resolves the
         # *source* side itself.)
         return Policy(
-            read=_declared([project, *read_paths]),
+            read=_declared([
+                project, env_dir,
+                *(path.resolve() if path.is_relative_to(project) else path for path in read_paths),
+            ]),
             write=_declared([tmp_home, in_tree_write]),
             execute=(),
             tmp_home=tmp_home,
@@ -269,8 +272,12 @@ def exec_policy(
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
     devices = _gpu_device_paths() if use_gpus else ()
-    write = _existing([tmp_home, in_tree_write, *_write_roots(project), *devices])
-    read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
+    write = _existing([
+        tmp_home, in_tree_write, *_write_roots(project, env_dir, *read_paths), *devices,
+    ])
+    read = _existing(
+        [project, env_dir, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)]
+    )
 
     return Policy(
         read=read,
@@ -281,20 +288,18 @@ def exec_policy(
     )
 
 
-def _write_roots(project: Path) -> list[Path]:
-    """The write baseline, minus any root that would swallow the project.
+def _write_roots(*protected: Path) -> list[Path]:
+    """The write baseline, minus roots containing the project or its inputs.
 
     ``/tmp`` is writable by design — but a project that *lives* under it
-    would then be writable too, silently voiding the read-only tree for
-    exactly the people who keep scratch analyses in ``/tmp``. Dropping
-    the offending root is safe because ``TMPDIR`` points at the private
-    scope regardless, so ``tempfile`` keeps working either way. The
-    device entries can never contain a project, so the filter is a no-op
-    for them.
+    would then be writable too. The same holds for an input link or a shared
+    environment whose target lives there. Dropping the offending root is
+    safe because ``TMPDIR`` points at the private scope regardless, so
+    ``tempfile`` keeps working either way.
     """
-    resolved = project.resolve()
+    resolved = [path.resolve() for path in protected]
     roots = tuple(Path(root).resolve() for root in _WRITE_BASELINE)
-    return [root for root in roots if not resolved.is_relative_to(root)]
+    return [root for root in roots if not any(path.is_relative_to(root) for path in resolved)]
 
 
 def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) -> dict[str, str]:

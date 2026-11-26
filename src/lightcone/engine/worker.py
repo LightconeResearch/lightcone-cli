@@ -28,20 +28,30 @@ owning the loop.
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from lightcone.engine import commits, container, content, dataset, identity, plan, sandbox
+from lightcone.engine import (
+    container,
+    content,
+    dataset,
+    environments,
+    identity,
+    plan,
+    sandbox,
+    staging,
+)
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import ResultId, Task
 from lightcone.engine.project import (
     ProjectError,
-    child_env,
     declared_project,
     uv_prefix,
 )
@@ -201,10 +211,38 @@ def materialize(
     Returns:
         What happened. Never raises.
     """
+    receipt: Path | None = None
     try:
-        return _materialize(root, task, found, remotes, context, refresh, upstream, output)
+        if context.runtime.staged:
+            # Dask may resubmit after losing a worker's reply. A completed
+            # attempt is reused; a possibly live attempt must never be raced.
+            attempts = root / ".lightcone/tasks"
+            attempts.mkdir(parents=True, exist_ok=True)
+            claim = attempts / hashlib.sha256(task.id.encode()).hexdigest()
+            try:
+                claim.mkdir()
+            except FileExistsError:
+                done = claim / "outcome.json"
+                if not done.is_file():
+                    return TaskOutcome(task.id, "failed", reason=(
+                        "an earlier attempt is still running or was interrupted in this run"
+                    ))
+                saved = json.loads(done.read_text())
+                saved["stamp"] = tuple(saved["stamp"]) if saved["stamp"] is not None else None
+                saved["notes"] = tuple(saved["notes"])
+                return TaskOutcome(**saved)
+            receipt = claim / "outcome.json"
+        outcome = _materialize(root, task, found, remotes, context, refresh, upstream, output)
     except Exception as e:  # the contract is that this function returns
-        return TaskOutcome(task.id, "failed", reason=f"{type(e).__name__}: {e}")
+        outcome = TaskOutcome(task.id, "failed", reason=f"{type(e).__name__}: {e}")
+    if receipt is not None:
+        try:
+            pending = receipt.with_suffix(".partial")
+            pending.write_text(json.dumps(asdict(outcome)))
+            pending.replace(receipt)
+        except OSError as exc:
+            return TaskOutcome(task.id, "failed", reason=f"cannot retain task outcome: {exc}")
+    return outcome
 
 
 def _materialize(
@@ -351,7 +389,7 @@ def execute(
             [_SHELL, "-c", task.command],
             cwd=task.workdir,
             prefix=uv_prefix(root),
-            env=child_env(),
+            env=context.runtime.env,
             output=output,
         )
     finished = datetime.now(UTC)
@@ -419,7 +457,7 @@ def execute(
     try:
         # A result with two names is one file: the recipe writes the first
         # place, and the others are given its bytes.
-        for other in task.paths[1:]:
+        for other in (() if context.runtime.staged else task.paths[1:]):
             other.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(made, other)
         stamp = content.stamp(made)
@@ -449,6 +487,8 @@ def execute(
             reason=f"the recipe finished but its result could not be recorded: {e}",
             notes=outcome.notes,
         )
+    if context.runtime.staged:
+        staging.seal(task)
     return TaskOutcome(
         task.id, "made", content_hash=content_hash, size=size, stamp=stamp, notes=outcome.notes
     )
@@ -550,30 +590,51 @@ def main(argv: list[str]) -> int:
             )
             return 2
         require_in_commit(root, graph.specs)
-        # What the recipe reads at another commit is given as a run gives it.
-        trees: dict[str, list[str]] = {}
-        for path in task.inputs.values():
-            if (at := plan.at_commit(root, path)) is not None:
-                trees.setdefault(at[0], []).append(at[1])
-        for commit, paths in trees.items():
-            commits.give(root, commit, graph.commits[commit], paths)
-        # This one-task run resolves its own runtime and HEAD, because it
-        # *is* the driver here — the rule is that each is read once by
-        # whoever owns the run, not that a worker never reads them.
+        original = task
         runtime = container.runtime_for_run(
             root, build=False, use_gpus=TaskResources.parse(task.resources).gpus > 0,
         )
-        container.converge(runtime)
-        made = execute(
-            root,
-            task,
-            _from_disk(root, graph, task),
-            RunContext(
-                environment=identity.environment(root),
-                commit=dataset.head(root),
-                runtime=runtime,
-            ),
-        )
+        stage = staging.take(root, dataset.head(root))
+        cleanup = True
+        try:
+            task = task.at(stage.root)
+            trees: dict[str, list[str]] = {}
+            paths = []
+            for path in original.inputs.values():
+                if (at := plan.at_commit(root, path)) is not None:
+                    trees.setdefault(at[0], []).append(at[1])
+                else:
+                    paths.append(plan.declared_path(root, path))
+            staging.fill(root, stage.top, stage.root, stage.commit, paths, fetch=True)
+            for commit, paths in trees.items():
+                stage.give(commit, graph.commits[commit], paths)
+            runtime, _ = environments.prepare(
+                root, runtime.at(stage.root), identity.environment(stage.root),
+            )
+            # This entry point is a one-task driver; DataLad owns the final commit.
+            cleanup = False
+            made = execute(
+                stage.root, task, _from_disk(stage.root, graph, task),
+                RunContext(identity.environment(stage.root), stage.commit, runtime),
+            )
+            cleanup = True
+            if made.status == "made":
+                # DataLad removed/unlocked this task's destinations before calling us.
+                # Its earlier dirty-tree check deliberately allowed exactly those paths.
+                cleanup = False
+                with staging.collect(task, original):
+                    pass
+                cleanup = True
+        except BaseException as exc:
+            if not cleanup and isinstance(exc, Exception):
+                raise ProjectError(
+                    f"{exc}. Run files retained at {stage.root}; "
+                    "remove only after its tasks stop."
+                ) from exc
+            raise
+        finally:
+            if cleanup:
+                stage.close()
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
