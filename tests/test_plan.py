@@ -230,8 +230,8 @@ def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:
         _build(tmp_path)
 
 
-#: An analysis another declares: one decision, a universe of its own, an
-#: output it builds per universe and one it builds once.
+#: An analysis another declares: one decision, an output it builds per
+#: universe and one it builds once.
 _STAGE = """
 spec_version: "0.1.0"
 decisions:
@@ -249,9 +249,6 @@ outputs:
     format: json
     recipe:
       command: python make.py {output}
-universes:
-  v1:
-    decisions: {d: b}
 """
 
 #: A project that declares `stage` and reads what of it `%s` lists. It
@@ -299,21 +296,20 @@ def _declaring(root: Path, declaration: str, reads: str) -> Path:
 
 
 def test_the_results_of_a_declared_analysis_are_tasks_run_in_its_folder(tmp_path: Path) -> None:
-    """Whether the project drives it or reads its own universe's, a result
-    of `stage` is a task, and its recipe runs in `stage`'s folder
-    (`WRONG_WORKING_DIRECTORY`). A target may name it by id or by name."""
-    root = _declaring(tmp_path, "{path: stage}", "stage.out, stage.out#v1, stage.once")
+    """Driven by the project or built once, a result of `stage` is a task,
+    and its recipe runs in `stage`'s folder (`WRONG_WORKING_DIRECTORY`). A
+    target may name it by id or by name."""
+    root = _declaring(tmp_path, "{path: stage}", "stage.out, stage.once")
 
     graph = _build(root)
 
     assert {key: task.workdir for key, task in graph.tasks.items()} == {
         "stage.out#u1": root / "stage",
-        "stage:out#v1": root / "stage",
         "stage:once": root / "stage",
         "result#u1": root,
     }
-    assert graph.tasks["result#u1"].depends_on == ("stage.out#u1", "stage:out#v1", "stage:once")
-    assert graph.resolve(["stage:out", "stage.out"]) == ["stage:out#v1", "stage.out#u1"]
+    assert graph.tasks["result#u1"].depends_on == ("stage.out#u1", "stage:once")
+    assert graph.resolve(["stage:once", "stage.out"]) == ["stage:once", "stage.out#u1"]
     assert graph.commits == {}
 
 
@@ -323,7 +319,7 @@ def test_a_result_from_a_commit_is_no_task_and_is_read_in_that_commits_tree(
     """Read through its record at its commit, never built
     (`REBUILT_FROM_COMMIT`): what reads it reads it where a run gives that
     commit's tree, which ASTRA's command names."""
-    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.out#v1, stage.once")
+    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.once")
     commit = next(iter(_build(root).commits))
 
     graph = _build(root)
@@ -331,28 +327,15 @@ def test_a_result_from_a_commit_is_no_task_and_is_read_in_that_commits_tree(
     assert set(graph.tasks) == {"result"}
     task = graph.tasks["result"]
     tree = root / plan.COMMITS / commit / "stage" / "results"
-    assert task.inputs == {
-        "stage.out#v1": tree / "v1" / "out.json",
-        "stage.once": tree / "once.json",
-    }
+    assert task.inputs == {"stage.once": tree / "once.json"}
     assert task.command.startswith(
-        f"python make.py {plan.COMMITS}/{commit}/stage/results/v1/out.json "
+        f"python make.py {plan.COMMITS}/{commit}/stage/results/once.json "
     )
     assert graph.commits == {commit: None}
     assert plan.at_commit(root, tree / "once.json") == (commit, "stage/results/once.json")
     assert plan.at_commit(root, root / "data" / "catalog.fits") is None
     # A task is only what reads it: narrowing keeps no result from a commit.
     assert set(graph.closure(["result"]).tasks) == {"result"}
-
-
-def test_a_recipe_that_would_run_on_a_commits_files_is_refused(tmp_path: Path) -> None:
-    """Driven in the project's universe, `stage.out` would be made by
-    `stage`'s recipe at that commit, on that commit's files: lc does not
-    (`NOT_AT_COMMIT`)."""
-    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.out")
-
-    with pytest.raises(ProjectError, match="`stage.out#u1`.*NOT_AT_COMMIT"):
-        _build(root)
 
 
 def test_a_folder_of_the_project_whose_name_begins_with_two_dots_is_in_it(
@@ -370,6 +353,7 @@ def test_an_analysis_outside_the_projects_folder_is_refused(tmp_path: Path) -> N
     """Whatever a run reads or writes of the working tree is in the
     project's folder: one beside it, in the same repository, is read only
     at a commit."""
+    (tmp_path / "astra.yaml").write_text('spec_version: "0.1.0"\n')
     for folder, spec in (
         ("shared", _STAGE),
         ("project", _DECLARES % ("{path: ../shared}", "stage.once")),

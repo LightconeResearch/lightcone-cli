@@ -22,9 +22,8 @@ gives it. Whatever a recipe reads at another commit, a run gives it in
 that commit's tree, a clone of the repository that holds the commit
 checked out at it under :data:`COMMITS`, and ASTRA's command names it
 there, wherever that analysis is. Refused: an analysis read from the
-working tree outside the project's folder, one in a repository of its
-own, where lc could commit nothing, and a recipe that would run on a
-commit's files.
+working tree outside the project's folder, and one in a repository of its
+own, where lc could commit nothing.
 
 Nothing here schedules anything. ASTRA lists each result after every
 result it reads, and the graph keeps that order, which is all ``--check``
@@ -49,8 +48,8 @@ if TYPE_CHECKING:
 
 #: A result's id, as ASTRA gives it — ``fit#baseline``, or ``fit`` for an
 #: output built once; ``stage.fit#u1`` for one of an analysis the project
-#: drives, ``stage:fit#v1`` for one of an analysis it declares — which is
-#: also its task's.
+#: drives, ``stage:fit`` for one that an analysis it declares builds once —
+#: which is also its task's.
 ResultId = str
 
 #: Where a run gives the tree of each other commit a recipe reads a file
@@ -116,7 +115,10 @@ class Task:
     def command(self) -> str:
         """Its recipe's command as it runs: a shell command, run in
         :attr:`workdir`, which its paths are measured from."""
-        assert self.result.command is not None  # `build` refuses a result with none
+        # Told where a run gives another commit's files (`COMMITS`), ASTRA
+        # gives every result of the working tree one: none is driven at a
+        # commit.
+        assert self.result.command is not None
         return self.result.command
 
     @property
@@ -238,9 +240,8 @@ def build(root: Path) -> Graph:
     Raises:
         ProjectError: If there is no analysis, ASTRA finds it invalid, an
             analysis read from the working tree is outside the project's
-            folder or in a repository of its own, a recipe would run on a
-            commit's files, or the repository moved between ASTRA's two
-            answers.
+            folder or in a repository of its own, or the repository moved
+            between ASTRA's two answers.
     """
     from astra import api
 
@@ -286,16 +287,6 @@ def build(root: Path) -> Graph:
             # as its record at that commit gives it (REBUILT_FROM_COMMIT).
             continue
         owner = of_output[result.output]
-        if result.command is None:
-            # Told where a run gives another commit's files, ASTRA gives
-            # every result a command but one whose recipe runs on them.
-            assert owner.commit is not None
-            raise ProjectError(
-                f"`{result.id}` would be made by the recipe of `{owner.key}` at "
-                f"{owner.commit.id}, on that commit's files: lc builds nothing from an "
-                "analysis declared with a `commit` (NOT_AT_COMMIT). Declare it by `path` "
-                "alone to build it from the working tree, or read its results instead."
-            )
         inputs = {}
         for source in result.inputs:
             path, commit = read(source)

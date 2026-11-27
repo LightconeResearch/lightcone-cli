@@ -247,11 +247,11 @@ outputs:
       command: echo {decisions.d} > {output} && pwd >> {output}
 """
 
-#: The project that drives it, declared as `%s`.
+#: The project that drives it.
 _DRIVES = """
 spec_version: "0.1.0"
 analyses:
-  stage: %s
+  stage: {path: stage}
 outputs:
   copy:
     type: report
@@ -269,29 +269,13 @@ def test_wrong_working_directory(analysis: Callable[..., Path], inline: None) ->
     """Each recipe runs in its own analysis's folder, even when driven: the
     project's universe selects `stage`'s option, and `stage`'s recipe runs
     in `stage`, writing to the project's place."""
-    root = analysis(_DRIVES % "{path: stage}", {"stage/astra.yaml": _DRIVEN})
+    root = analysis(_DRIVES, {"stage/astra.yaml": _DRIVEN})
     tasks = plan.build(root).tasks
 
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
 
     assert tasks["stage.where#u1"].path.read_text().splitlines() == ["a", str(root / "stage")]
     assert tasks["copy#u1"].path.read_text().splitlines()[-1] == str(root)
-
-
-def test_not_at_commit(analysis: Callable[..., Path], inline: None) -> None:
-    """Driving `stage` as a commit has it would run its recipe on that
-    commit's files, which lc does not do: the run is refused before
-    anything runs, naming the result."""
-    root = analysis(FIRST, {"stage/astra.yaml": _DRIVEN})
-    spec = root / "astra.yaml"
-    spec.write_text(_DRIVES % f'{{path: stage, commit: "{dataset.head(root)}"}}')
-    dataset.save(root, [spec], "drive stage as a commit has it")
-    head = dataset.head(root)
-
-    with pytest.raises(ProjectError, match="`stage.where#u1`.*NOT_AT_COMMIT"):
-        engine.materialize(root, [], cluster_id=CLUSTER_ID)
-
-    assert dataset.head(root) == head
 
 
 def test_rebuilt_from_commit(analysis: Callable[..., Path], inline: None) -> None:
