@@ -315,7 +315,9 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
     synced. Pointing the cache somewhere writable instead makes Python
     look only there: every run then compiles every module it imports,
     and the environment's own bytecode is never read (measured: three
-    times the import time of a scientific stack).
+    times the import time of a scientific stack). ``LC_MESSAGES=C`` keeps
+    error messages in English, which is what :func:`denial.explain` reads
+    (measured: bash in French prints ``Permission non accordée``).
 
     Args:
         tmp_home: The per-run directory to point at.
@@ -341,6 +343,7 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
         ),
         **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()},
         "PYTHONDONTWRITEBYTECODE": "1",
+        "LC_MESSAGES": "C",
     }
     if containerized:
         overlay["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
