@@ -1,7 +1,7 @@
 """The specification's ways of composing analyses, run end to end.
 
-An analysis declares others: by path, to drive one or read the results of
-its universes, or with a `commit`, to read the results it had there, from
+An analysis declares others: by path, to drive one or read what it builds
+once, or with a `commit`, to read the results it had there, from
 the project's own history or another repository's. Each is run here on a
 real project, and what it leaves is looked at: where each result's bytes
 and record are, what each recipe read, and that ASTRA's checker finds it
@@ -23,8 +23,8 @@ from lightcone.engine import dataset, plan, templates, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 
-#: An analysis another declares: an output per universe, which says where
-#: its recipe ran, and a universe of its own.
+#: An analysis another declares: an output per universe and one built once,
+#: each of which says where its recipe ran.
 _STAGE = """
 spec_version: "0.1.0"
 decisions:
@@ -37,13 +37,15 @@ outputs:
     decisions: [d]
     recipe:
       command: echo {decisions.d} > {output} && pwd >> {output}
-universes:
-  v1:
-    decisions: {d: b}
+  once:
+    type: data
+    format: txt
+    recipe:
+      command: echo once > {output} && pwd >> {output}
 """
 
 #: A project that drives `stage` in a universe of its own, and reads the
-#: result `stage` makes in its own.
+#: result `stage` builds once.
 _DRIVES = """
 spec_version: "0.1.0"
 analyses:
@@ -52,7 +54,7 @@ outputs:
   both:
     type: report
     format: txt
-    inputs: [stage.out, stage.out#v1]
+    inputs: [stage.out, stage.once]
     recipe:
       command: cat {inputs} > {output}
 universes:
@@ -71,9 +73,9 @@ def _lines(path: Path) -> list[str]:
 def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
     analysis: Callable[..., Path], inline: None
 ) -> None:
-    """Driven in the project's universe or built in its own, `stage`'s
-    recipe runs in `stage`'s folder; a driven result is the project's, at
-    its place, and one of `stage`'s own universe is at `stage`'s. Each is
+    """Driven in the project's universe or built once, `stage`'s recipe
+    runs in `stage`'s folder; a driven result is the project's, at its
+    place, and one built once is `stage`'s, at `stage`'s. Each is
     committed with its record, and ASTRA's checker finds them all
     unchanged."""
     root = analysis(
@@ -88,13 +90,18 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert sorted(report.made) == ["both#u1", "stage.out#u1", "stage:out#v1"], report.warnings
-    driven, own = tasks["stage.out#u1"], tasks["stage:out#v1"]
+    assert sorted(report.made) == ["both#u1", "stage.out#u1", "stage:once"], report.warnings
+    driven, own = tasks["stage.out#u1"], tasks["stage:once"]
     assert driven.path.is_relative_to(root / "results")
     assert own.path.is_relative_to(root / "stage" / "results")
     assert _lines(driven.path) == ["a", str(root / "stage")]
-    assert _lines(own.path) == ["b", str(root / "stage")]
-    assert _lines(tasks["both#u1"].path) == ["a", str(root / "stage"), "b", str(root / "stage")]
+    assert _lines(own.path) == ["once", str(root / "stage")]
+    assert _lines(tasks["both#u1"].path) == [
+        "a",
+        str(root / "stage"),
+        "once",
+        str(root / "stage"),
+    ]
     assert all(record.is_file() for task in tasks.values() for record in task.record_paths)
     assert not dataset.status(root)
     assert engine.check(root, []).up_to_date
@@ -103,8 +110,8 @@ def test_a_declared_analysis_is_built_in_its_own_folder_driven_or_not(
 def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_committed(
     analysis: Callable[..., Path], inline: None
 ) -> None:
-    """`stage` keeps the results of its own universe, and their records, in
-    its own folder. What an interrupted run leaves there is lc's to
+    """`stage` keeps the results it builds once, and their records, in its
+    own folder. What an interrupted run leaves there is lc's to
     discard like what it leaves in the project's `results/`, and the
     command given undoes it; a note beside `stage`'s analysis is still the
     researcher's to commit."""
@@ -117,10 +124,10 @@ def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_co
         },
     )
     assert engine.materialize(root, [], cluster_id=CLUSTER_ID).ok
-    (root / "stage/.astra/records/v1/out.json").unlink()
-    (root / "stage/results/v1/out.txt").unlink()
-    (root / "stage/results/v1/out.txt").write_text("hal")
-    (root / "stage/results/v1/out.tmp").write_text("partial\n")
+    (root / "stage/.astra/records/once.json").unlink()
+    (root / "stage/results/once.txt").unlink()
+    (root / "stage/results/once.txt").write_text("hal")
+    (root / "stage/results/once.tmp").write_text("partial\n")
     (root / "stage/notes.md").write_text("in progress\n")
 
     with pytest.raises(ProjectError) as raised:
@@ -130,7 +137,7 @@ def test_what_an_interrupted_run_left_in_a_declared_analysis_is_discarded_not_co
     theirs, _, ours = message.partition("discard these")
     assert "commit these" in theirs and "stage/notes.md" in theirs
     assert "stage/" not in theirs.replace("stage/notes.md", "")
-    for left in ("stage/.astra/records/v1/out.json", "stage/results/v1/out.txt"):
+    for left in ("stage/.astra/records/once.json", "stage/results/once.txt"):
         assert left in ours
     [command] = [line.strip() for line in message.splitlines() if "git restore" in line]
     assert "git clean -fd stage/results/" in command
@@ -155,10 +162,10 @@ def test_a_file_left_beside_a_declared_analysiss_result_is_not_called_an_edit(
         },
     )
 
-    report = engine.materialize(root, ["stage:out#v1"], cluster_id=CLUSTER_ID)
+    report = engine.materialize(root, ["stage:once"], cluster_id=CLUSTER_ID)
 
-    assert report.made == ["stage:out#v1"], (report.failed, report.warnings)
-    [left] = [w for w in report.warnings if "stage/results/v1/out.txt.idx" in w]
+    assert report.made == ["stage:once"], (report.failed, report.warnings)
+    [left] = [w for w in report.warnings if "stage/results/once.txt.idx" in w]
     assert "left uncommitted where results go" in left
     assert not any("edited while the run was in flight" in w for w in report.warnings)
 
@@ -173,7 +180,7 @@ def test_a_declared_analysis_whose_results_nothing_annexes_is_refused(
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert "stage/results/v1/out.txt would be committed to git itself" in str(raised.value)
+    assert "stage/results/once.txt would be committed to git itself" in str(raised.value)
     assert "add `stage/results/** annex.largefiles=anything`" in str(raised.value)
 
 
@@ -199,7 +206,7 @@ def test_a_driven_result_is_stored_by_the_projects_own_results_line(
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
     assert f"{driven} would be committed to git itself" in str(raised.value)
-    assert "stage/results/v1" not in str(raised.value)
+    assert "stage/results/once" not in str(raised.value)
     assert "add `" not in str(raised.value)
 
 

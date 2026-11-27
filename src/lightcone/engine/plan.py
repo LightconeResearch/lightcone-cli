@@ -48,8 +48,8 @@ if TYPE_CHECKING:
 
 #: A result's id, as ASTRA gives it — ``fit#baseline``, or ``fit`` for an
 #: output built once; ``stage.fit#u1`` for one of an analysis the project
-#: drives, ``stage:fit#v1`` for one of an analysis it declares — which is
-#: also its task's.
+#: drives, ``stage:fit`` for one that an analysis it declares builds once —
+#: which is also its task's.
 ResultId = str
 
 #: Where a run gives the tree of each other commit a recipe reads a file
