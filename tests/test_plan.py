@@ -345,16 +345,6 @@ def test_a_result_from_a_commit_is_no_task_and_is_read_in_that_commits_tree(
     assert set(graph.closure(["result"]).tasks) == {"result"}
 
 
-def test_a_recipe_that_would_run_on_a_commits_files_is_refused(tmp_path: Path) -> None:
-    """Driven in the project's universe, `stage.out` would be made by
-    `stage`'s recipe at that commit, on that commit's files: lc does not
-    (`NOT_AT_COMMIT`)."""
-    root = _declaring(tmp_path, "{path: stage, commit: COMMIT}", "stage.out")
-
-    with pytest.raises(ProjectError, match="`stage.out#u1`.*NOT_AT_COMMIT"):
-        _build(root)
-
-
 def test_a_folder_of_the_project_whose_name_begins_with_two_dots_is_in_it(
     tmp_path: Path,
 ) -> None:
@@ -370,6 +360,7 @@ def test_an_analysis_outside_the_projects_folder_is_refused(tmp_path: Path) -> N
     """Whatever a run reads or writes of the working tree is in the
     project's folder: one beside it, in the same repository, is read only
     at a commit."""
+    (tmp_path / "astra.yaml").write_text('spec_version: "0.1.0"\n')
     for folder, spec in (
         ("shared", _STAGE),
         ("project", _DECLARES % ("{path: ../shared}", "stage.once")),

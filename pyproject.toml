@@ -24,13 +24,16 @@ classifiers = [
 ]
 
 # astra-tools 0.3 is the first release with `astra.api`, the one surface lc
-# reads an analysis through, and 0.3.0rc4 the first whose `resolve` takes
-# where a run gives another commit's files. astra-spec is a direct
-# dependency only for its specifier: 0.1 is a release candidate, which a
+# reads an analysis through, and 0.3.0rc5 the first whose validator
+# refuses every universe key through a declaration with a `commit`, so
+# that, told where a run gives another commit's files, `resolve` gives
+# every result of the working tree a command. astra-spec 0.1.0rc2 is the
+# specification whose runner rules lc keeps. It is a direct dependency for
+# that, and for its specifier: 0.1 is a release candidate, which a
 # resolver takes for a package it is asked for by such a version.
 dependencies = [
-    "astra-tools>=0.3.0rc4",
-    "astra-spec>=0.1.0rc1,<0.2",
+    "astra-tools>=0.3.0rc5",
+    "astra-spec>=0.1.0rc2,<0.2",
     "click>=8.0",
     "rich>=13.0",
     # 10.20261026 is the first git-annex that sends nothing to a store this
