@@ -567,6 +567,11 @@ def test_bytecode_is_read_and_never_written(built: policy_module.Policy) -> None
     assert "PYTHONPYCACHEPREFIX" not in built.env
 
 
+def test_error_messages_are_in_english(built: policy_module.Policy) -> None:
+    """The denial explanation reads them."""
+    assert built.env["LC_MESSAGES"] == "C"
+
+
 def test_the_home_subdirs_exist(built: policy_module.Policy) -> None:
     """Created up front: a tool that wants `~/.config` should find it
     rather than fail trying to make it."""
